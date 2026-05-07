@@ -1,0 +1,48 @@
+{
+  "name": "versely-mcp-server",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for the Versely content creation API.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "versely-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "docs": "tsx scripts/generate-tools-doc.ts",
+    "smoke": "npm run build && tsx scripts/smoke-test.ts",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "undici": "^7.0.0",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "versely",
+    "ai",
+    "content-creation",
+    "claude"
+  ],
+  "license": "MIT"
+}
