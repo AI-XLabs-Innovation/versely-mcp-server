@@ -14,6 +14,25 @@ import { jsonResult } from "./_helpers.js";
 
 const Empty = z.object({});
 
+// Backend's ReferenceImage shape (controllers/workflowAsset.controller.ts:8):
+//   { url: string; label?: string; created_at?: string }
+// The MCP schema must match — passing a bare string array gets a 400.
+const ReferenceImage = z.object({
+  url: z.string().url().describe("Image URL."),
+  label: z.string().optional().describe("Optional human label for this image."),
+  created_at: z
+    .string()
+    .optional()
+    .describe("ISO-8601 timestamp; backend defaults to now if omitted."),
+});
+
+// Backend's media_assets shape (controllers/workflow.controller.ts:572):
+//   array of { url: string; type: "image" | "video" }
+const MediaAsset = z.object({
+  url: z.string().url(),
+  type: z.enum(["image", "video"]),
+});
+
 // --- Workflows: CRUD ---------------------------------------------------------
 
 const versely_create_workflow = defineTool({
@@ -236,13 +255,15 @@ const versely_update_workflow_dates = defineTool({
 const versely_update_workflow_assets = defineTool({
   name: "versely_update_workflow_assets",
   description:
-    "Update the media_assets binding on a workflow (which workflow_assets back which scene reference keys).",
+    "Set the media_assets array on a step-mode workflow (legacy). Each item is { url, type: 'image' | 'video' }. NOT for scene workflows — those use the workflow_assets table; the backend rejects this call on scene workflows with error 'scene_workflow_uses_workflow_assets'. To attach images to a scene workflow, use versely_create_workflow_asset / versely_add_workflow_asset_images.",
   inputSchema: z
     .object({
       workflow_id: z.string().describe("Workflow UUID."),
       media_assets: z
-        .record(z.unknown())
-        .describe("Map of asset key → workflow_asset binding."),
+        .array(MediaAsset)
+        .describe(
+          "Array of { url, type } objects. type must be 'image' or 'video'. Pass [] to clear.",
+        ),
     })
     .passthrough(),
   handler: async (input, ctx) => {
@@ -327,9 +348,11 @@ const versely_create_workflow_asset = defineTool({
       name: z.string().describe("Display name."),
       description: z.string().optional(),
       reference_images: z
-        .array(z.string())
+        .array(ReferenceImage)
         .optional()
-        .describe("URLs of reference images attached to this asset."),
+        .describe(
+          "Reference images as objects: [{ url, label?, created_at? }]. NOT bare URL strings.",
+        ),
       metadata: z.record(z.unknown()).optional(),
       workflow_id: z
         .string()
@@ -390,7 +413,12 @@ const versely_update_workflow_asset = defineTool({
       asset_type: z.string().optional(),
       name: z.string().optional(),
       description: z.string().optional(),
-      reference_images: z.array(z.string()).optional(),
+      reference_images: z
+        .array(ReferenceImage)
+        .optional()
+        .describe(
+          "Replaces the asset's full reference_images list. Objects: [{ url, label?, created_at? }].",
+        ),
       metadata: z.record(z.unknown()).optional(),
     })
     .passthrough(),
@@ -411,7 +439,11 @@ const versely_add_workflow_asset_images = defineTool({
   inputSchema: z
     .object({
       asset_id: z.string().describe("Workflow asset UUID."),
-      reference_images: z.array(z.string()).describe("URLs of images to append."),
+      reference_images: z
+        .array(ReferenceImage)
+        .describe(
+          "Images to append as objects: [{ url, label?, created_at? }]. NOT bare URL strings.",
+        ),
     })
     .passthrough(),
   handler: async (input, ctx) => {
