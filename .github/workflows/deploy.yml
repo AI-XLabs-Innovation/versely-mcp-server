@@ -43,8 +43,10 @@ jobs:
             set -e
             cd /root/versely-mcp
 
-            # deploy/deploy.sh handles: git pull → npm ci → build → pm2 reload
-            ./deploy/deploy.sh
+            # deploy/deploy.sh handles: git pull → npm ci → build → pm2 reload.
+            # Invoked via `bash` so we don't depend on the executable bit being
+            # preserved in git (Windows commits often drop it).
+            bash ./deploy/deploy.sh
 
             # Persist process list so pm2 resurrects on reboot
             pm2 save
