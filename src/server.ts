@@ -39,7 +39,7 @@ export function buildServer(config: Config, client: VerselyClient): Server {
       description: t.description,
       inputSchema: zodToJsonSchema(t.inputSchema, {
         $refStrategy: "none",
-        target: "jsonSchema2019-09",
+        target: "jsonSchema7",
       }) as { type: "object"; [k: string]: unknown },
     })),
   }));
