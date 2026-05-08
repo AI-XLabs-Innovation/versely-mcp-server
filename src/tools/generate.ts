@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
 import { jsonResult } from "./_helpers.js";
+import { resolveCanonicalModel } from "./_modelResolver.js";
 
 const versely_list_models = defineTool({
   name: "versely_list_models",
@@ -175,7 +176,7 @@ const versely_generate_image = defineTool({
       model: z
         .string()
         .describe(
-          "Image model slug (e.g. 'flux-pro-ultra', 'flux-2-pro', 'imagen-4'). Call versely_find_models with type='image' first to discover valid slugs — guessing leads to 'Model not supported' errors.",
+          "Image model — pass either the slug (e.g. 'flux-pro-ultra') or the canonical name (e.g. 'Flux Pro Ultra'). The MCP resolves either form to the dispatcher's expected name. Call versely_find_models with type='image' first to discover valid identifiers.",
         ),
       prompt: z.string().describe("Text prompt describing the desired image."),
       negative_prompt: z.string().optional(),
@@ -201,6 +202,7 @@ const versely_generate_image = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    body.model = await resolveCanonicalModel(ctx, "image", body.model);
     const submission = await ctx.client.post("/api/v1/generate/image", body);
     return handleAsync({
       ctx,
@@ -221,7 +223,7 @@ const versely_generate_video = defineTool({
       model: z
         .string()
         .describe(
-          "Video model slug. Call versely_find_models with type='video' first to discover valid slugs — guessing leads to 'Model not supported' errors.",
+          "Video model — pass either the slug or the canonical name. Call versely_find_models with type='video' first to discover valid identifiers.",
         ),
       prompt: z.string().describe("Text prompt for the video."),
       image_url: z
@@ -243,6 +245,7 @@ const versely_generate_video = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    body.model = await resolveCanonicalModel(ctx, "video", body.model);
     const submission = await ctx.client.post("/api/v1/generate/video", body);
     return handleAsync({
       ctx,
@@ -262,7 +265,7 @@ const versely_generate_audio = defineTool({
       model: z
         .string()
         .describe(
-          "TTS / audio model slug. Call versely_find_models with type='audio' first to discover valid slugs.",
+          "TTS / audio model — pass either the slug or the canonical name. Call versely_find_models with type='audio' first to discover valid identifiers.",
         ),
       text: z.string(),
       voice: z.string().optional(),
@@ -273,6 +276,7 @@ const versely_generate_audio = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    body.model = await resolveCanonicalModel(ctx, "audio", body.model);
     const submission = await ctx.client.post("/api/v1/generate/audio", body);
     return handleAsync({
       ctx,
@@ -359,6 +363,9 @@ const versely_generate_lipsync = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    if (body.model !== undefined) {
+      body.model = await resolveCanonicalModel(ctx, "lipsync", body.model);
+    }
     const submission = await ctx.client.post("/api/v1/generate/lipsync", body);
     return handleAsync({
       ctx,
