@@ -20,7 +20,13 @@ echo "==> npm run build"
 npm run build
 
 echo "==> pm2 reload (zero-downtime)"
-pm2 reload deploy/ecosystem.config.cjs --update-env
+if pm2 reload deploy/ecosystem.config.cjs --update-env 2>/dev/null; then
+  echo "✅ pm2 reload succeeded"
+else
+  echo "⚠️  pm2 reload failed — doing fresh start"
+  pm2 delete versely-mcp 2>/dev/null || true
+  pm2 start deploy/ecosystem.config.cjs
+fi
 
 echo "==> done"
 pm2 status versely-mcp

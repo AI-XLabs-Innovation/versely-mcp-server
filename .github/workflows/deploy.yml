@@ -1,0 +1,52 @@
+name: Deploy MCP Server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # CI-side build acts as an early failure check — if TypeScript or deps
+      # are broken we fail before touching prod. The actual deployed bundle
+      # is built again on the server inside deploy/deploy.sh.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Smoke test
+        run: npx tsx scripts/smoke-test.ts
+
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            set -e
+            cd /root/versely-mcp
+
+            # deploy/deploy.sh handles: git pull → npm ci → build → pm2 reload
+            ./deploy/deploy.sh
+
+            # Persist process list so pm2 resurrects on reboot
+            pm2 save
+
+            echo "✅ MCP deployment complete"
