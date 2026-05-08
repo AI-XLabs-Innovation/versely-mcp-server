@@ -125,12 +125,27 @@ async function run(): Promise<void> {
 
   for (const required of [
     "versely_get_me",
+    "versely_find_models",
+    "versely_list_models",
     "versely_generate_image",
     "versely_create_movie",
     "versely_publish_post",
     "versely_get_task_status",
   ]) {
     assert(`tool present: ${required}`, names.includes(required));
+  }
+
+  // -------- find_models schema sanity --------
+  const findModels = tools.tools.find((t) => t.name === "versely_find_models");
+  if (findModels) {
+    const props = (findModels.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+    const expectedFields = ["type", "q", "provider", "category", "is_featured", "is_premium", "limit"];
+    const missing = expectedFields.filter((f) => !(f in props));
+    assert(
+      "versely_find_models exposes expected fields",
+      missing.length === 0,
+      missing.length ? `missing: ${missing.join(", ")}` : undefined,
+    );
   }
 
   // -------- tools/call: unknown name --------

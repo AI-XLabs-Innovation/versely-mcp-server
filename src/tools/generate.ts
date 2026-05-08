@@ -6,7 +6,7 @@ import { jsonResult } from "./_helpers.js";
 const versely_list_models = defineTool({
   name: "versely_list_models",
   description:
-    "List supported AI models. Optionally filter by media type (image / video / audio / lipsync) or provider.",
+    "List supported AI models with full metadata (rankings, descriptions, etc.). Response is large — prefer versely_find_models for discovery; use this only when full metadata is genuinely needed. Optionally filter by media type or provider.",
   inputSchema: z.object({
     type: z
       .enum(["image", "video", "audio", "lipsync", "all"])
@@ -40,6 +40,132 @@ const versely_list_models = defineTool({
   },
 });
 
+interface BackendModel {
+  slug?: string;
+  name?: string;
+  provider?: string;
+  content_type?: string;
+  categories?: string[];
+  credits?: number;
+  is_featured?: boolean;
+  is_premium?: boolean;
+  requires_image?: boolean;
+}
+
+interface ModelsListResponse {
+  data?: { models?: BackendModel[]; total?: number };
+}
+
+const FIND_MODELS_PATHS: Record<"image" | "video" | "audio" | "lipsync", string> = {
+  image: "/api/v1/ai-models/images",
+  video: "/api/v1/ai-models/videos",
+  audio: "/api/v1/ai-models/audio",
+  lipsync: "/api/v1/ai-models/lipsync",
+};
+
+const versely_find_models = defineTool({
+  name: "versely_find_models",
+  description:
+    "Discover AI model slugs for image / video / audio / lipsync generation. Returns a slim shape (slug, name, provider, categories, credits, featured/premium flags). ALWAYS call this first to find the exact slug before invoking versely_generate_image / versely_generate_video / versely_generate_audio / versely_generate_lipsync — model slugs change frequently and guessing leads to 'Model not supported' errors. Filter by name substring (q), media type, provider, category, or featured/premium flags.",
+  inputSchema: z.object({
+    type: z
+      .enum(["image", "video", "audio", "lipsync"])
+      .optional()
+      .describe("Filter by media type. If omitted, searches across all four types."),
+    q: z
+      .string()
+      .optional()
+      .describe(
+        "Case-insensitive substring match on model slug + name (e.g. 'flux ultra', 'kling', 'sora').",
+      ),
+    provider: z
+      .string()
+      .optional()
+      .describe(
+        "Filter by provider name (e.g. 'Flux', 'OpenAI', 'Google', 'ByteDance'). Case-insensitive.",
+      ),
+    category: z
+      .string()
+      .optional()
+      .describe(
+        "Filter by category. Valid values per type: image → 'text-to-image', 'image-to-image', 'edit-image'; video → 'text-to-video', 'image-to-video', 'edit-video'; audio → 'text-to-audio', 'voice-clone', 'audio-to-audio', 'audio-to-text'; lipsync → 'text-to-lipsync', 'image-to-lipsync', 'audio-to-lipsync', 'video-to-lipsync'.",
+      ),
+    is_featured: z.boolean().optional().describe("Only return featured models."),
+    is_premium: z
+      .boolean()
+      .optional()
+      .describe("If true, only premium models; if false, only non-premium."),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Max results returned. Default 30."),
+  }),
+  handler: async (input, ctx) => {
+    const types = input.type
+      ? [input.type]
+      : (["image", "video", "audio", "lipsync"] as const);
+
+    const query: Record<string, string | boolean | undefined> = {};
+    if (input.category) query.category = input.category;
+    if (input.is_featured !== undefined) query.is_featured = input.is_featured;
+
+    const responses = await Promise.all(
+      types.map((t) => ctx.client.get<ModelsListResponse>(FIND_MODELS_PATHS[t], { query })),
+    );
+
+    const merged: BackendModel[] = [];
+    for (const r of responses) {
+      const list = r?.data?.models;
+      if (Array.isArray(list)) merged.push(...list);
+    }
+
+    // Tokenize q: split on whitespace, require every token to appear in the haystack.
+    // Hyphens in slugs are normalized to spaces so 'flux pro ultra' matches 'flux-pro-ultra'.
+    const qTokens = input.q
+      ? input.q.toLowerCase().trim().split(/\s+/).filter(Boolean)
+      : [];
+    const provLower = input.provider?.toLowerCase().trim();
+
+    const filtered = merged.filter((m) => {
+      if (qTokens.length > 0) {
+        const hay = `${m.slug ?? ""} ${m.name ?? ""}`.toLowerCase().replace(/-/g, " ");
+        if (!qTokens.every((tok) => hay.includes(tok))) return false;
+      }
+      if (provLower) {
+        const p = String(m.provider ?? "").toLowerCase();
+        if (p !== provLower && !p.includes(provLower)) return false;
+      }
+      if (input.is_premium !== undefined && Boolean(m.is_premium) !== input.is_premium) {
+        return false;
+      }
+      return true;
+    });
+
+    const limit = input.limit ?? 30;
+    const slim = filtered.slice(0, limit).map((m) => ({
+      slug: m.slug,
+      name: m.name,
+      type: m.content_type,
+      provider: m.provider,
+      categories: m.categories ?? [],
+      credits: m.credits,
+      is_featured: Boolean(m.is_featured),
+      is_premium: Boolean(m.is_premium),
+      requires_image: Boolean(m.requires_image),
+    }));
+
+    return jsonResult({
+      total: filtered.length,
+      returned: slim.length,
+      truncated: filtered.length > slim.length,
+      models: slim,
+    });
+  },
+});
+
 const versely_generate_image = defineTool({
   name: "versely_generate_image",
   description:
@@ -49,7 +175,7 @@ const versely_generate_image = defineTool({
       model: z
         .string()
         .describe(
-          "Model slug (e.g. 'flux-2', 'imagen-4', 'nano-banana-2', 'midjourney-v7', 'gpt-image-2', 'recraft-4').",
+          "Image model slug (e.g. 'flux-pro-ultra', 'flux-2-pro', 'imagen-4'). Call versely_find_models with type='image' first to discover valid slugs — guessing leads to 'Model not supported' errors.",
         ),
       prompt: z.string().describe("Text prompt describing the desired image."),
       negative_prompt: z.string().optional(),
@@ -95,7 +221,7 @@ const versely_generate_video = defineTool({
       model: z
         .string()
         .describe(
-          "Model slug (e.g. 'sora-2', 'veo-3.1', 'kling-2.5', 'hailuo-2.3', 'seedance-2.0', 'ltx-2.3').",
+          "Video model slug. Call versely_find_models with type='video' first to discover valid slugs — guessing leads to 'Model not supported' errors.",
         ),
       prompt: z.string().describe("Text prompt for the video."),
       image_url: z
@@ -135,7 +261,9 @@ const versely_generate_audio = defineTool({
     .object({
       model: z
         .string()
-        .describe("TTS model slug (e.g. 'eleven-labs-multilingual-v2', 'cartesia-sonic')."),
+        .describe(
+          "TTS / audio model slug. Call versely_find_models with type='audio' first to discover valid slugs.",
+        ),
       text: z.string(),
       voice: z.string().optional(),
       voice_id: z.string().optional(),
@@ -316,6 +444,7 @@ const versely_upscale_video = defineTool({
 });
 
 export const generateTools: Tool[] = [
+  versely_find_models,
   versely_list_models,
   versely_generate_image,
   versely_generate_video,
