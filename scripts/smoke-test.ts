@@ -131,6 +131,14 @@ async function run(): Promise<void> {
     "versely_create_movie",
     "versely_publish_post",
     "versely_get_task_status",
+    "versely_create_workflow",
+    "versely_run_workflow",
+    "versely_get_workflow_run",
+    "versely_create_workflow_asset",
+    "versely_add_workflow_asset_images",
+    "versely_create_video_workflow_template",
+    "versely_start_video_workflow_run",
+    "versely_combine_video_workflow_run",
   ]) {
     assert(`tool present: ${required}`, names.includes(required));
   }

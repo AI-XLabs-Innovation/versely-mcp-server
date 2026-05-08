@@ -7,6 +7,8 @@ import { ugcTools } from "./ugc.js";
 import { socialTools } from "./social.js";
 import { statusTools } from "./status.js";
 import { featuresTools } from "./features.js";
+import { workflowTools } from "./workflows.js";
+import { videoWorkflowTools } from "./videoWorkflows.js";
 
 export const allTools: Tool[] = [
   ...userTools,
@@ -17,4 +19,6 @@ export const allTools: Tool[] = [
   ...socialTools,
   ...statusTools,
   ...featuresTools,
+  ...workflowTools,
+  ...videoWorkflowTools,
 ];
