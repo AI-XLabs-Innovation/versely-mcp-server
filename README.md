@@ -4,48 +4,71 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 
 > Full tool reference: **[TOOLS.md](./TOOLS.md)** (auto-generated, 51 tools across 8 categories).
 
-## Install & run
+The server speaks **Streamable HTTP** (the MCP spec's network transport) and uses **per-request authentication**: each MCP request must carry the caller's own `vsk_...` API key in `Authorization`. This makes one deployment usable by multiple users without sharing identity.
 
-Requires **Node 20+**. The server speaks stdio — clients spawn it as a subprocess.
+## Run locally (dev)
+
+Requires **Node 20+**.
 
 ```bash
 npm install
 npm run build
-node dist/index.js   # smoke test from terminal (stdin closes immediately)
+node dist/index.js          # listens on 127.0.0.1:8080 by default
 ```
 
-Once published to npm: `npx -y versely-mcp-server`.
+Health check from another terminal:
 
-## Configuration
+```bash
+curl -s http://127.0.0.1:8080/healthz
+# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":51}
+```
+
+For a real client to talk to it locally, expose it via your MCP client's URL config (see below) — or for production, deploy behind nginx + TLS following [`deploy/SETUP.md`](deploy/SETUP.md).
+
+## Configuration (server-side env)
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `VERSELY_API_KEY` | yes | — | Versely API key (must start with `vsk_`). Generate at `POST /api/v1/auth/api-keys`. |
-| `VERSELY_API_URL` | no | `https://api.versely.studio` | Override for dev / ngrok tunnels. |
-| `VERSELY_DEFAULT_POLL_TIMEOUT_MS` | no | `180000` (3 min) | Max wait for async tools when `mode: "wait"`. |
-| `VERSELY_DEFAULT_POLL_INTERVAL_MS` | no | `3000` | Initial poll interval (1.5× exponential backoff up to 4×). |
+| `MCP_HTTP_PORT` | no | `8080` | Local port to bind. |
+| `MCP_HTTP_HOST` | no | `127.0.0.1` | Bind address. Keep loopback in production; let nginx proxy in. |
+| `VERSELY_API_URL` | no | `https://api.versely.studio` | Versely backend base URL. Override for ngrok / staging. |
+| `VERSELY_DEFAULT_POLL_TIMEOUT_MS` | no | `180000` (3 min) | Max wait when a tool runs in `mode: "wait"`. |
+| `VERSELY_DEFAULT_POLL_INTERVAL_MS` | no | `3000` | Initial poll interval (1.5× backoff up to 4×). |
 
-The server fails fast (exit code 2) if any value is missing or malformed, so misconfiguration surfaces before the MCP transport opens.
+There is **no** `VERSELY_API_KEY` env var anymore — the server is multi-tenant; clients send their own `vsk_` key per request.
+
+The server fails fast (exit 2) on bad config so misconfiguration surfaces before it starts listening.
+
+## Endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/mcp` | `Authorization: Bearer vsk_...` | MCP JSON-RPC (Streamable HTTP transport) |
+| GET | `/healthz` | none | Liveness probe |
+| GET | `/` | none | Tiny landing JSON describing the endpoints |
+
+Auth-gate failure modes (all return 401):
+
+- `missing_authorization` — no `Authorization` header
+- `invalid_authorization_format` — header isn't `Bearer <token>`
+- `invalid_api_key_format` — token isn't `vsk_...`
 
 ## Client config
-
-### Claude Desktop / Claude Code
 
 ```json
 {
   "mcpServers": {
     "versely": {
-      "command": "node",
-      "args": ["/absolute/path/to/versely-mcp/dist/index.js"],
-      "env": {
-        "VERSELY_API_KEY": "vsk_..."
+      "url": "https://versely-mcp.YOURDOMAIN.com/mcp",
+      "headers": {
+        "Authorization": "Bearer vsk_YOUR_REAL_KEY"
       }
     }
   }
 }
 ```
 
-After publish: replace `command`/`args` with `"command": "npx", "args": ["-y", "versely-mcp-server"]`.
+Drop into Claude Desktop / Cursor / Claude Code's `mcp.json` (or platform equivalent).
 
 ## Tools at a glance
 
@@ -67,18 +90,31 @@ See [TOOLS.md](./TOOLS.md) for every tool's input schema.
 Most generation tools (`versely_generate_image`, `versely_generate_video`, `versely_generate_music`, etc.) take an optional `mode` field:
 
 - **`mode: "wait"` (default)** — submits the request, polls `/api/v1/status/:request_id` until the job completes (or fails / times out), and returns the final result data inline.
-- **`mode: "submit"`** — submits the request and returns the `request_id` immediately. Useful when you want to parallelize multiple generations or come back later. Pass the returned `request_id` to `versely_get_task_status` (single check) or `versely_wait_for_task` (block-and-poll).
+- **`mode: "submit"`** — submits and returns the `request_id` immediately. Useful when parallelizing multiple generations. Pass the `request_id` to `versely_get_task_status` (single check) or `versely_wait_for_task` (block-and-poll).
 
 Per-call overrides: `poll_timeout_ms` and `poll_interval_ms`.
+
+## Deploy to a server (DigitalOcean / any VPS)
+
+The walkthrough lives in [`deploy/SETUP.md`](deploy/SETUP.md). Short version:
+
+1. SSH in, install Node 20 + nginx + certbot + PM2
+2. Clone, `npm ci && npm run build`
+3. `pm2 start deploy/ecosystem.config.cjs && pm2 save && pm2 startup`
+4. Drop [`deploy/nginx.conf`](deploy/nginx.conf) into `/etc/nginx/sites-available/` (replace placeholder hostname)
+5. `sudo certbot --nginx -d versely-mcp.YOURDOMAIN.com`
+6. Enable ufw
+
+Subsequent deploys: `./deploy/deploy.sh` on the droplet — git pull + build + zero-downtime PM2 reload.
 
 ## Development
 
 ```bash
-npm run dev         # tsx, no build step
+npm run dev         # tsx watch (no build step)
 npm run typecheck   # tsc --noEmit
 npm run build       # bundle to dist/index.js with shebang
-npm run docs        # regenerate TOOLS.md
-npm run smoke       # build + offline JSON-RPC handshake test
+npm run docs        # regenerate TOOLS.md from tool definitions
+npm run smoke       # build + spawn HTTP server + 20 assertions
 ```
 
 ## Project layout
@@ -86,40 +122,47 @@ npm run smoke       # build + offline JSON-RPC handshake test
 ```
 versely-mcp/
 ├── src/
-│   ├── index.ts          # bootstrap (loads config, starts server)
-│   ├── server.ts         # MCP server + tool dispatch
-│   ├── config.ts         # env loader
-│   ├── client.ts         # Versely HTTP client (undici)
-│   ├── poller.ts         # async status polling
-│   ├── errors.ts         # typed error classes + message builder
+│   ├── index.ts                  # bootstrap
+│   ├── server.ts                 # MCP server factory (per-request)
+│   ├── config.ts                 # env loader
+│   ├── client.ts                 # Versely HTTP client (per-key)
+│   ├── poller.ts                 # async status polling
+│   ├── errors.ts                 # typed error classes
+│   ├── transports/
+│   │   └── http.ts               # Express + Streamable HTTP transport
 │   └── tools/
-│       ├── _types.ts     # Tool / ToolContext / ToolResult
-│       ├── _helpers.ts   # jsonResult / errorResult / resolveUserId
-│       ├── _async.ts     # mode + AsyncFields + handleAsync
-│       ├── _registry.ts  # tool collection
-│       ├── index.ts      # aggregator
-│       ├── user.ts       # 6 tools
-│       ├── generate.ts   # 10 tools
-│       ├── slideshow.ts  # 8 tools
-│       ├── movie.ts      # 7 tools
-│       ├── ugc.ts        # 5 tools
-│       ├── social.ts     # 8 tools
-│       ├── status.ts     # 2 tools
-│       └── features.ts   # 5 tools
+│       ├── _types.ts / _helpers.ts / _async.ts / _registry.ts
+│       ├── index.ts              # aggregator
+│       ├── user.ts               # 6 tools
+│       ├── generate.ts           # 10 tools
+│       ├── slideshow.ts          # 8 tools
+│       ├── movie.ts              # 7 tools
+│       ├── ugc.ts                # 5 tools
+│       ├── social.ts             # 8 tools
+│       ├── status.ts             # 2 tools
+│       └── features.ts           # 5 tools
 ├── scripts/
-│   ├── generate-tools-doc.ts    # TOOLS.md generator
-│   └── smoke-test.ts            # offline MCP handshake test
-└── dist/                        # build output (gitignored)
+│   ├── generate-tools-doc.ts     # TOOLS.md generator
+│   └── smoke-test.ts             # HTTP-mode smoke harness
+├── deploy/
+│   ├── ecosystem.config.cjs      # PM2 config
+│   ├── nginx.conf                # nginx vhost template
+│   ├── deploy.sh                 # pull + build + reload
+│   └── SETUP.md                  # one-time droplet bootstrap
+└── dist/                         # build output (gitignored)
 ```
 
 ## Troubleshooting
 
-- **`config error: VERSELY_API_KEY is required`** — set the env var in your client config under `mcpServers.versely.env`. The server cannot prompt; missing config is a fatal startup error.
-- **`401 authentication failed`** — your API key is invalid or revoked. Check at the Versely dashboard or rotate via `POST /api/v1/auth/api-keys`.
-- **`402 insufficient credits`** — top up at <https://versely.studio>.
-- **`403 forbidden`** — the key lacks the required scope. Run `versely_list_api_key_scopes` to see the catalog and create a new key with the right scope.
-- **`Timed out after Xms waiting on request …`** — the generation took longer than your poll timeout. Either increase `poll_timeout_ms`, raise `VERSELY_DEFAULT_POLL_TIMEOUT_MS`, or pass `mode: "submit"` and poll later with `versely_wait_for_task`.
-- **Want a tool that's not here?** — the curated set covers the most common workflows. For one-off endpoints not exposed as tools, use the existing markdown skills (which document the raw HTTP API) until the tool is added.
+| Symptom | Likely cause |
+|---|---|
+| `401 missing_authorization` | client didn't send `Authorization` header |
+| `401 invalid_api_key_format` | token doesn't start with `vsk_` |
+| `401 authentication failed` from a tool call | the `vsk_` key is invalid / revoked at the Versely backend |
+| `402 insufficient credits` | top up at <https://versely.studio> |
+| `403 forbidden` | the API key lacks the required scope (run `versely_list_api_key_scopes`) |
+| `Timed out after Xms waiting on request …` | generation took longer than the poll timeout. Increase `poll_timeout_ms`, raise `VERSELY_DEFAULT_POLL_TIMEOUT_MS`, or use `mode: "submit"` |
+| `502 Bad Gateway` from the proxy | PM2 process down — `pm2 status`, `pm2 logs versely-mcp` |
 
 ## License
 

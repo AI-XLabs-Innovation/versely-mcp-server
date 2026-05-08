@@ -1,11 +1,12 @@
 import { VerselyConfigError } from "./errors.js";
 
 export interface Config {
-  apiKey: string;
   apiUrl: string;
   defaultPollTimeoutMs: number;
   defaultPollIntervalMs: number;
   userAgent: string;
+  httpPort: number;
+  httpHost: string;
 }
 
 export const SERVER_NAME = "versely-mcp";
@@ -15,18 +16,6 @@ let cached: Config | null = null;
 
 export function loadConfig(): Config {
   if (cached) return cached;
-
-  const apiKey = process.env.VERSELY_API_KEY?.trim();
-  if (!apiKey) {
-    throw new VerselyConfigError(
-      "VERSELY_API_KEY is required. Generate one via POST /api/v1/auth/api-keys, then set the env var before launching the MCP server.",
-    );
-  }
-  if (!apiKey.startsWith("vsk_")) {
-    throw new VerselyConfigError(
-      'VERSELY_API_KEY must start with "vsk_". The value provided does not look like a Versely API key.',
-    );
-  }
 
   const rawUrl = process.env.VERSELY_API_URL?.trim() || "https://api.versely.studio";
   const apiUrl = stripTrailingSlash(rawUrl);
@@ -44,11 +33,18 @@ export function loadConfig(): Config {
     );
   }
 
+  const httpPort = parsePositiveInt("MCP_HTTP_PORT", 8080);
+  if (httpPort > 65535) {
+    throw new VerselyConfigError(`MCP_HTTP_PORT must be 1-65535. Got: ${httpPort}`);
+  }
+  const httpHost = process.env.MCP_HTTP_HOST?.trim() || "127.0.0.1";
+
   cached = {
-    apiKey,
     apiUrl,
     defaultPollTimeoutMs,
     defaultPollIntervalMs,
+    httpPort,
+    httpHost,
     userAgent: `${SERVER_NAME}/${SERVER_VERSION} (+https://versely.studio)`,
   };
   return cached;

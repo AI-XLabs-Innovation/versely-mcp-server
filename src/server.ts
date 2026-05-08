@@ -1,5 +1,4 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -7,24 +6,35 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { SERVER_NAME, SERVER_VERSION, type Config } from "./config.js";
-import { VerselyClient } from "./client.js";
+import type { VerselyClient } from "./client.js";
 import { ToolRegistry } from "./tools/_registry.js";
 import { allTools } from "./tools/index.js";
 import { errorResult, formatErr } from "./tools/_helpers.js";
 import type { ToolContext } from "./tools/_types.js";
 
-export async function startServer(config: Config): Promise<void> {
-  const client = new VerselyClient(config);
-  const registry = new ToolRegistry();
-  registry.registerMany(allTools);
+const sharedRegistry = (() => {
+  const r = new ToolRegistry();
+  r.registerMany(allTools);
+  return r;
+})();
 
+export function getRegisteredToolCount(): number {
+  return sharedRegistry.size();
+}
+
+/**
+ * Build a fresh MCP `Server` wired to a request-scoped Versely client.
+ * Each HTTP request constructs its own server (cheap — just attaches handlers)
+ * so the per-user `vsk_` API key stays scoped to that request.
+ */
+export function buildServer(config: Config, client: VerselyClient): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: registry.list().map((t) => ({
+    tools: sharedRegistry.list().map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: zodToJsonSchema(t.inputSchema, {
@@ -36,7 +46,7 @@ export async function startServer(config: Config): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
     const { name, arguments: args } = request.params;
-    const tool = registry.get(name);
+    const tool = sharedRegistry.get(name);
     if (!tool) {
       return errorResult(`Unknown tool: ${name}`) as CallToolResult;
     }
@@ -54,9 +64,5 @@ export async function startServer(config: Config): Promise<void> {
     }
   });
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  process.stderr.write(
-    `[${SERVER_NAME}] ready (v${SERVER_VERSION}, api=${config.apiUrl}, tools=${registry.size()})\n`,
-  );
+  return server;
 }

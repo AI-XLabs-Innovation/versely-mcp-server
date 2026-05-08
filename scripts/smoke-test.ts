@@ -1,63 +1,48 @@
-// Smoke test: spawn the built MCP server, run a JSON-RPC handshake over stdio,
-// and assert basic correctness. No real backend calls — uses a placeholder API key.
+// Smoke test: spawn the built MCP server in HTTP mode, run a JSON-RPC handshake
+// over Streamable HTTP, and assert basic correctness. No real backend calls — uses
+// a placeholder vsk_ token (only validation paths exercise the auth gate).
 // Exits non-zero on any failure. Run via `npm run smoke`.
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { resolve } from "node:path";
-
-interface JsonRpcMessage {
-  jsonrpc: "2.0";
-  id?: number | string;
-  method?: string;
-  params?: unknown;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
+import { fetch } from "undici";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const dist = resolve(process.cwd(), "dist", "index.js");
+const PORT = String(20000 + Math.floor(Math.random() * 10000));
+const HOST = "127.0.0.1";
+const TOKEN = "vsk_smoke_test_placeholder_value";
+const BASE_URL = `http://${HOST}:${PORT}`;
+const MCP_URL = `${BASE_URL}/mcp`;
 
-const proc = spawn(process.execPath, [dist], {
+const proc: ChildProcess = spawn(process.execPath, [dist], {
   env: {
     ...process.env,
-    VERSELY_API_KEY: "vsk_smoke_test_placeholder",
+    MCP_HTTP_PORT: PORT,
+    MCP_HTTP_HOST: HOST,
     VERSELY_API_URL: "https://api.versely.studio",
   },
-  stdio: ["pipe", "pipe", "pipe"],
-});
-
-let stdoutBuf = "";
-const messages: JsonRpcMessage[] = [];
-
-proc.stdout.on("data", (chunk: Buffer) => {
-  stdoutBuf += chunk.toString();
-  let nl: number;
-  while ((nl = stdoutBuf.indexOf("\n")) !== -1) {
-    const line = stdoutBuf.slice(0, nl).trim();
-    stdoutBuf = stdoutBuf.slice(nl + 1);
-    if (!line) continue;
-    try {
-      messages.push(JSON.parse(line) as JsonRpcMessage);
-    } catch {
-      /* ignore malformed lines */
-    }
-  }
+  stdio: ["ignore", "pipe", "pipe"],
 });
 
 let stderrBuf = "";
-proc.stderr.on("data", (chunk: Buffer) => {
+proc.stderr?.on("data", (chunk: Buffer) => {
   stderrBuf += chunk.toString();
 });
 
-function send(msg: JsonRpcMessage): void {
-  proc.stdin.write(JSON.stringify(msg) + "\n");
-}
+proc.on("exit", (code) => {
+  if (code !== null && code !== 0) {
+    process.stderr.write(`server exited unexpectedly with code ${code}\n${stderrBuf}\n`);
+  }
+});
 
-function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+function waitForListening(timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   return new Promise<void>((res, rej) => {
     const tick = () => {
-      if (predicate()) return res();
-      if (Date.now() > deadline) return rej(new Error("waitFor timeout"));
+      if (stderrBuf.includes('"http_listening"')) return res();
+      if (Date.now() > deadline) return rej(new Error("server never started listening"));
       setTimeout(tick, 25);
     };
     tick();
@@ -75,47 +60,67 @@ function assert(name: string, cond: boolean, detail?: string): void {
 }
 
 async function run(): Promise<void> {
-  await waitFor(() => stderrBuf.includes("ready"), 3000).catch(() => {
-    throw new Error(`Server never printed "ready". stderr:\n${stderrBuf}`);
-  });
+  await waitForListening();
 
-  send({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {
-      protocolVersion: "2025-03-26",
-      capabilities: {},
-      clientInfo: { name: "smoke", version: "0.0.0" },
-    },
-  });
-  await waitFor(() => messages.some((m) => m.id === 1));
-  const init = messages.find((m) => m.id === 1)!;
-  const initResult = init.result as { serverInfo?: { name: string; version: string } } | undefined;
-  assert("initialize returns serverInfo", !!initResult?.serverInfo, JSON.stringify(init.error));
+  // -------- health endpoint --------
+  const healthRes = await fetch(`${BASE_URL}/healthz`);
+  const health = (await healthRes.json()) as Record<string, unknown>;
+  assert("GET /healthz returns 200", healthRes.status === 200);
+  assert("health reports server name", health.server === "versely-mcp");
   assert(
-    "server identifies as versely-mcp",
-    initResult?.serverInfo?.name === "versely-mcp",
-    `got "${initResult?.serverInfo?.name}"`,
+    "health reports tools count",
+    typeof health.tools === "number" && (health.tools as number) >= 50,
   );
 
-  send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
+  // -------- root landing --------
+  const rootRes = await fetch(`${BASE_URL}/`);
+  assert("GET / returns 200", rootRes.status === 200);
 
-  send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
-  await waitFor(() => messages.some((m) => m.id === 2));
-  const list = messages.find((m) => m.id === 2)!;
-  const tools = (list.result as { tools?: Array<{ name: string; inputSchema?: { type?: string } }> } | undefined)?.tools ?? [];
-  assert("tools/list returns >= 50 tools", tools.length >= 50, `got ${tools.length}`);
+  // -------- auth gate failures --------
+  const noAuth = await fetch(MCP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert("POST /mcp without auth → 401", noAuth.status === 401);
 
-  const names = tools.map((t) => t.name);
+  const badAuth = await fetch(MCP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Token abc123" },
+    body: "{}",
+  });
+  assert("POST /mcp with non-Bearer auth → 401", badAuth.status === 401);
+
+  const badToken = await fetch(MCP_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer not_a_vsk_key" },
+    body: "{}",
+  });
+  assert("POST /mcp with malformed vsk_ → 401", badToken.status === 401);
+
+  const wrongMethod = await fetch(MCP_URL, { method: "GET" });
+  assert("GET /mcp → 405", wrongMethod.status === 405);
+
+  // -------- MCP handshake via SDK client --------
+  const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
+    requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } },
+  });
+  const client = new Client({ name: "smoke", version: "0.0.0" });
+  await client.connect(transport);
+  assert("SDK client connects (initialize succeeds)", true);
+
+  const tools = await client.listTools();
+  assert("tools/list returns >= 50 tools", tools.tools.length >= 50, `got ${tools.tools.length}`);
+
+  const names = tools.tools.map((t) => t.name);
   const dups = names.filter((n, i) => names.indexOf(n) !== i);
-  assert("tool names are unique", dups.length === 0, `duplicates: ${dups.join(", ")}`);
+  assert("tool names are unique", dups.length === 0, dups.join(", "));
 
   const namePattern = /^versely_[a-z0-9_]+$/;
   const badNames = names.filter((n) => !namePattern.test(n));
   assert("tool names match versely_snake_case", badNames.length === 0, badNames.join(", "));
 
-  const badSchemas = tools.filter((t) => !t.inputSchema || t.inputSchema.type !== "object");
+  const badSchemas = tools.tools.filter((t) => !t.inputSchema || t.inputSchema.type !== "object");
   assert("every tool has object inputSchema", badSchemas.length === 0, `${badSchemas.length} bad`);
 
   for (const required of [
@@ -128,31 +133,26 @@ async function run(): Promise<void> {
     assert(`tool present: ${required}`, names.includes(required));
   }
 
-  send({
-    jsonrpc: "2.0",
-    id: 3,
-    method: "tools/call",
-    params: { name: "definitely_not_a_real_tool", arguments: {} },
-  });
-  await waitFor(() => messages.some((m) => m.id === 3));
-  const errCall = messages.find((m) => m.id === 3)!;
-  const errResult = errCall.result as { isError?: boolean } | undefined;
-  assert("unknown tool returns isError", errResult?.isError === true, JSON.stringify(errCall));
+  // -------- tools/call: unknown name --------
+  const unknown = await client.callTool({ name: "definitely_not_a_real_tool", arguments: {} });
+  assert("unknown tool returns isError", unknown.isError === true);
 
-  send({
-    jsonrpc: "2.0",
-    id: 4,
-    method: "tools/call",
-    params: { name: "versely_generate_image", arguments: { model: 123 } },
+  // -------- tools/call: invalid args --------
+  const invalidArgs = await client.callTool({
+    name: "versely_generate_image",
+    arguments: { model: 123 },
   });
-  await waitFor(() => messages.some((m) => m.id === 4));
-  const validationCall = messages.find((m) => m.id === 4)!;
-  const valRes = validationCall.result as { isError?: boolean; content?: Array<{ text?: string }> } | undefined;
+  const firstContent = Array.isArray(invalidArgs.content) ? invalidArgs.content[0] : undefined;
+  const firstText =
+    firstContent && typeof firstContent === "object" && "text" in firstContent
+      ? String((firstContent as { text: unknown }).text ?? "")
+      : "";
   assert(
     "invalid arguments return isError",
-    valRes?.isError === true && (valRes.content?.[0]?.text ?? "").toLowerCase().includes("invalid"),
-    JSON.stringify(validationCall),
+    invalidArgs.isError === true && firstText.toLowerCase().includes("invalid"),
   );
+
+  await client.close();
 }
 
 run()

@@ -18,10 +18,21 @@ export interface RequestOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * Returns true if the value looks like a Versely API key.
+ * Format check only — actual key validity is enforced by the backend.
+ */
+export function isValidApiKeyFormat(key: unknown): key is string {
+  return typeof key === "string" && /^vsk_[A-Za-z0-9_-]{8,}$/.test(key.trim());
+}
+
 export class VerselyClient {
   #cachedUserId?: string;
 
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly config: Config,
+    private readonly apiKey: string,
+  ) {}
 
   async getCurrentUserId(): Promise<string> {
     if (this.#cachedUserId) return this.#cachedUserId;
@@ -144,7 +155,7 @@ export class VerselyClient {
 
   #buildHeaders(extra?: Record<string, string>): Record<string, string> {
     return {
-      Authorization: `Bearer ${this.config.apiKey}`,
+      Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
       "User-Agent": this.config.userAgent,

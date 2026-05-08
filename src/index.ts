@@ -1,10 +1,10 @@
 import { loadConfig, SERVER_NAME } from "./config.js";
-import { startServer } from "./server.js";
+import { startHttpServer } from "./transports/http.js";
 import { VerselyConfigError } from "./errors.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  await startServer(config);
+  await startHttpServer(config);
 }
 
 main().catch((err) => {
