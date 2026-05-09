@@ -151,16 +151,57 @@ const versely_start_video_workflow_run = defineTool({
 
 const versely_list_video_workflow_runs = defineTool({
   name: "versely_list_video_workflow_runs",
-  description: "List the authenticated user's video-workflow runs.",
+  description:
+    "List the authenticated user's video-workflow runs. `status` is forwarded to the backend (server-side filter). `since`/`until` filter MCP-side on created_at after the page is fetched.",
   inputSchema: z.object({
+    status: z
+      .string()
+      .optional()
+      .describe(
+        "Literal backend status (e.g. 'queued', 'running', 'completed', 'failed', 'cancelled'). Forwarded to the backend's ?status= filter.",
+      ),
+    since: z
+      .string()
+      .optional()
+      .describe("ISO-8601 timestamp. Only return runs created at or after this time."),
+    until: z
+      .string()
+      .optional()
+      .describe("ISO-8601 timestamp. Only return runs created at or before this time."),
     limit: z.number().int().min(1).max(100).optional(),
     offset: z.number().int().min(0).optional(),
   }),
   handler: async (input, ctx) => {
-    const data = await ctx.client.get("/api/v1/video-workflows/runs", {
-      query: { limit: input.limit, offset: input.offset },
+    const res = await ctx.client.get<{
+      runs?: Array<Record<string, unknown>>;
+      total?: number;
+    }>("/api/v1/video-workflows/runs", {
+      query: { limit: input.limit, offset: input.offset, status: input.status },
     });
-    return jsonResult(data);
+    const runs = res?.runs ?? [];
+    let filtered = runs;
+    if (input.since || input.until) {
+      filtered = runs.filter((r) => {
+        const created = (r as { created_at?: string }).created_at;
+        if (typeof created !== "string") return false;
+        const t = Date.parse(created);
+        if (Number.isNaN(t)) return false;
+        if (input.since) {
+          const s = Date.parse(input.since);
+          if (!Number.isNaN(s) && t < s) return false;
+        }
+        if (input.until) {
+          const u = Date.parse(input.until);
+          if (!Number.isNaN(u) && t > u) return false;
+        }
+        return true;
+      });
+    }
+    return jsonResult({
+      total: res?.total ?? runs.length,
+      total_returned: filtered.length,
+      runs: filtered,
+    });
   },
 });
 

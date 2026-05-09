@@ -37,7 +37,7 @@ proc.on("exit", (code) => {
   }
 });
 
-function waitForListening(timeoutMs = 5000): Promise<void> {
+function waitForListening(timeoutMs = 15000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   return new Promise<void>((res, rej) => {
     const tick = () => {
@@ -134,6 +134,10 @@ async function run(): Promise<void> {
     "versely_create_workflow",
     "versely_run_workflow",
     "versely_get_workflow_run",
+    "versely_list_active_workflow_runs",
+    "versely_list_failed_workflow_runs",
+    "versely_summarize_workflow",
+    "versely_list_scheduled_workflows",
     "versely_create_workflow_asset",
     "versely_add_workflow_asset_images",
     "versely_create_video_workflow_template",
