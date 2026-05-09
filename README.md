@@ -2,7 +2,11 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes the Versely content creation API as **51 curated tools** for any MCP-compatible client (Claude Desktop, Claude Code, Cursor, etc.). Generate images / videos / music, build slideshows, assemble multi-scene movies, edit UGC, and post to 9 social platforms — all from a single MCP connection.
 
-> Full tool reference: **[TOOLS.md](./TOOLS.md)** (auto-generated, 51 tools across 8 categories).
+> **End user?** Skip to **[INSTALL.md](./INSTALL.md)** — connect Claude / Cursor / VS Code in 3 steps. No Node, no self-hosting needed.
+>
+> **Operator self-hosting?** See **[deploy/SETUP.md](./deploy/SETUP.md)**.
+>
+> **Full tool reference:** **[TOOLS.md](./TOOLS.md)** (auto-generated).
 
 The server speaks **Streamable HTTP** (the MCP spec's network transport) and uses **per-request authentication**: each MCP request must carry the caller's own `vsk_...` API key in `Authorization`. This makes one deployment usable by multiple users without sharing identity.
 
