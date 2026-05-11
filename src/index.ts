@@ -1,3 +1,13 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+
+// Load .env from the package root (one level up from dist/index.js after build,
+// or src/ during dev — both resolve to the same parent directory).
+dotenv.config({
+  path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".env"),
+});
+
 import { loadConfig, SERVER_NAME } from "./config.js";
 import { startHttpServer } from "./transports/http.js";
 import { VerselyConfigError } from "./errors.js";
