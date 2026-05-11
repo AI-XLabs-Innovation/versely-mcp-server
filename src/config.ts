@@ -7,6 +7,13 @@ export interface Config {
   userAgent: string;
   httpPort: number;
   httpHost: string;
+  // OAuth resource server settings. The MCP server validates JWT access tokens
+  // (issued by the backend) without phoning home, so it needs the shared HS256
+  // secret and the expected audience.
+  oauthJwtSecret: string | null;
+  oauthIssuer: string;
+  resourceUrl: string;          // canonical URL of this resource (audience claim)
+  authServerUrl: string;        // base URL of the OAuth authorization server
 }
 
 export const SERVER_NAME = "versely-mcp";
@@ -39,6 +46,18 @@ export function loadConfig(): Config {
   }
   const httpHost = process.env.MCP_HTTP_HOST?.trim() || "127.0.0.1";
 
+  const oauthJwtSecret = process.env.OAUTH_JWT_SECRET?.trim() || null;
+  if (oauthJwtSecret !== null && oauthJwtSecret.length < 32) {
+    throw new VerselyConfigError("OAUTH_JWT_SECRET must be at least 32 characters when set.");
+  }
+  const oauthIssuer = stripTrailingSlash(process.env.OAUTH_ISSUER?.trim() || apiUrl);
+  const resourceUrl = stripTrailingSlash(
+    process.env.MCP_RESOURCE_URL?.trim() || "https://mcp.versely.studio/mcp",
+  );
+  const authServerUrl = stripTrailingSlash(
+    process.env.OAUTH_AUTH_SERVER_URL?.trim() || apiUrl,
+  );
+
   cached = {
     apiUrl,
     defaultPollTimeoutMs,
@@ -46,6 +65,10 @@ export function loadConfig(): Config {
     httpPort,
     httpHost,
     userAgent: `${SERVER_NAME}/${SERVER_VERSION} (+https://versely.studio)`,
+    oauthJwtSecret,
+    oauthIssuer,
+    resourceUrl,
+    authServerUrl,
   };
   return cached;
 }

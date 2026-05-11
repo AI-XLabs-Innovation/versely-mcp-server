@@ -12,11 +12,15 @@ import {
 } from "../config.js";
 import { VerselyClient, isValidApiKeyFormat } from "../client.js";
 import { buildServer, getRegisteredToolCount } from "../server.js";
+import { verifyAccessToken, looksLikeJwt } from "../oauth.js";
 
 const PROCESS_START_MS = Date.now();
 
 interface AuthedRequest extends Request {
+  /** The bearer to forward to api.versely.studio. Either a `vsk_*` key or an OAuth JWT. */
   apiKey?: string;
+  /** When the bearer is an OAuth JWT, the verified claims. */
+  oauthClaims?: { sub: string; scope: string; azp: string };
 }
 
 interface ResLocals {
@@ -52,24 +56,56 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-function requireApiKey(req: AuthedRequest, res: Response, next: NextFunction): void {
-  const auth = req.header("authorization");
-  if (!auth) {
-    res.status(401).json({ error: "missing_authorization" });
-    return;
-  }
-  const match = /^Bearer\s+(.+)$/i.exec(auth.trim());
-  if (!match) {
-    res.status(401).json({ error: "invalid_authorization_format" });
-    return;
-  }
-  const token = match[1]!.trim();
-  if (!isValidApiKeyFormat(token)) {
-    res.status(401).json({ error: "invalid_api_key_format" });
-    return;
-  }
-  req.apiKey = token;
-  next();
+function makeAuthMiddleware(config: Config) {
+  // Per RFC 9728: 401 responses on protected resources must include a
+  // WWW-Authenticate header pointing clients at our protected-resource metadata
+  // so they can discover the authorization server and start an OAuth flow.
+  // mcp.versely.studio/.well-known/oauth-protected-resource is served below.
+  const resourceMetadataUrl = `${new URL(config.resourceUrl).origin}/.well-known/oauth-protected-resource`;
+  const challenge = `Bearer realm="versely-mcp", resource_metadata="${resourceMetadataUrl}"`;
+
+  return function requireBearer(req: AuthedRequest, res: Response, next: NextFunction): void {
+    const send401 = (error: string, description?: string) => {
+      res.setHeader("WWW-Authenticate", description
+        ? `${challenge}, error="${error}", error_description="${description}"`
+        : `${challenge}, error="${error}"`);
+      res.status(401).json({ error, ...(description ? { error_description: description } : {}) });
+    };
+
+    const auth = req.header("authorization");
+    if (!auth) return send401("missing_authorization");
+
+    const match = /^Bearer\s+(.+)$/i.exec(auth.trim());
+    if (!match) return send401("invalid_token", "Authorization header must be 'Bearer <token>'");
+    const token = match[1]!.trim();
+
+    // Legacy path: `vsk_*` keys forward straight through to the backend.
+    if (isValidApiKeyFormat(token)) {
+      req.apiKey = token;
+      return next();
+    }
+
+    // OAuth JWT path: verify locally (HS256, shared secret with backend).
+    if (looksLikeJwt(token)) {
+      if (!config.oauthJwtSecret) {
+        return send401("invalid_token", "OAuth JWT verification disabled (OAUTH_JWT_SECRET unset)");
+      }
+      try {
+        const claims = verifyAccessToken(token, {
+          secret: config.oauthJwtSecret,
+          audience: config.resourceUrl,
+          issuer: config.oauthIssuer,
+        });
+        req.apiKey = token;        // forwarded as Bearer to api.versely.studio
+        req.oauthClaims = { sub: claims.sub, scope: claims.scope, azp: claims.azp };
+        return next();
+      } catch (err) {
+        return send401("invalid_token", err instanceof Error ? err.message : "JWT verification failed");
+      }
+    }
+
+    return send401("invalid_token", "Unrecognized token format");
+  };
 }
 
 export async function startHttpServer(config: Config): Promise<void> {
@@ -90,20 +126,38 @@ export async function startHttpServer(config: Config): Promise<void> {
     });
   });
 
+  // RFC 9728 OAuth Protected Resource Metadata. Tells clients which authorization
+  // server protects this MCP endpoint and which scopes/auth methods are supported.
+  app.get("/.well-known/oauth-protected-resource", (_req, res) => {
+    res.json({
+      resource: config.resourceUrl,
+      authorization_servers: [config.authServerUrl],
+      scopes_supported: [
+        "generate", "post", "manage_accounts", "slideshow",
+        "ugc", "workflows", "analytics", "read",
+      ],
+      bearer_methods_supported: ["header"],
+      resource_documentation: "https://github.com/AI-XLabs-Innovation/versely-mcp",
+    });
+  });
+
   app.get("/", (_req, res) => {
     res.json({
       server: SERVER_NAME,
       version: SERVER_VERSION,
       transport: "streamable-http",
       endpoints: {
-        mcp: "POST /mcp (requires Authorization: Bearer vsk_...)",
+        mcp: "POST /mcp (requires Authorization: Bearer <vsk_... or OAuth JWT>)",
         health: "GET /healthz",
+        oauth_protected_resource: "GET /.well-known/oauth-protected-resource",
       },
       docs: "https://github.com/AI-XLabs-Innovation/versely-mcp",
     });
   });
 
-  app.post("/mcp", requireApiKey, async (req: AuthedRequest, res) => {
+  const requireBearer = makeAuthMiddleware(config);
+
+  app.post("/mcp", requireBearer, async (req: AuthedRequest, res) => {
     const apiKey = req.apiKey!;
     const requestId = (res.locals as ResLocals).requestId;
     const client = new VerselyClient(config, apiKey);
