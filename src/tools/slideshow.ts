@@ -1,6 +1,17 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
+
+function slideshowIdOf(data: unknown, fallback: string): string {
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    const candidates = [obj.id, obj.slideshow_id, (obj.slideshow as Record<string, unknown> | undefined)?.id];
+    for (const c of candidates) {
+      if (typeof c === "string" && c.trim()) return c.trim();
+    }
+  }
+  return fallback;
+}
 
 const versely_create_slideshow = defineTool({
   name: "versely_create_slideshow",
@@ -16,7 +27,10 @@ const versely_create_slideshow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const data = await ctx.client.post("/api/v1/slideshow/create", input);
-    return jsonResult(data);
+    return mediaResult(data, {
+      idPrefix: `slideshow-${slideshowIdOf(data, "new")}`,
+      gallery: true,
+    });
   },
 });
 
@@ -35,7 +49,10 @@ const versely_create_automated_slideshow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const data = await ctx.client.post("/api/v1/slideshow/create-automated", input);
-    return jsonResult(data);
+    return mediaResult(data, {
+      idPrefix: `slideshow-${slideshowIdOf(data, "new")}`,
+      gallery: true,
+    });
   },
 });
 
@@ -47,7 +64,10 @@ const versely_get_slideshow = defineTool({
     const data = await ctx.client.get(
       `/api/v1/slideshow/${encodeURIComponent(input.slideshow_id)}`,
     );
-    return jsonResult(data);
+    return mediaResult(data, {
+      idPrefix: `slideshow-${input.slideshow_id}`,
+      gallery: true,
+    });
   },
 });
 
@@ -95,7 +115,10 @@ const versely_add_slideshow_images = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/images`,
       body,
     );
-    return jsonResult(data);
+    return mediaResult(data, {
+      idPrefix: `slideshow-${slideshow_id}-add`,
+      gallery: true,
+    });
   },
 });
 
@@ -127,7 +150,10 @@ const versely_add_text_overlay = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/text-overlay`,
       body,
     );
-    return jsonResult(data);
+    return mediaResult(data, {
+      idPrefix: `slideshow-${slideshow_id}-overlay`,
+      gallery: true,
+    });
   },
 });
 
@@ -150,7 +176,7 @@ const versely_slideshow_to_video = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/video`,
       body,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `slideshow-${slideshow_id}-video` });
   },
 });
 

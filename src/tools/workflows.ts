@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
 
 const Empty = z.object({});
 
@@ -463,7 +463,7 @@ const versely_get_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `wf-run-${input.run_id}` });
   },
 });
 

@@ -10,7 +10,11 @@ export interface ToolContext {
 
 export type ContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string }
+  | {
+      type: "resource";
+      resource: { uri: string; mimeType: string; text: string };
+    };
 
 export interface ToolResult {
   content: ContentBlock[];

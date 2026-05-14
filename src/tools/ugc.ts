@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
 
 const CaptionPosition = z.enum(["top", "middle", "bottom"]);
 
@@ -135,7 +135,7 @@ const versely_get_ugc = defineTool({
     const data = await ctx.client.get(
       `/api/v1/ugc/${encodeURIComponent(input.ugc_id)}`,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `ugc-${input.ugc_id}` });
   },
 });
 

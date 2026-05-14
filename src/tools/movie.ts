@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
 
 const SceneInputSchema = z
   .object({
@@ -61,7 +61,7 @@ const versely_get_movie = defineTool({
     const data = await ctx.client.get(
       `/api/v1/movie/${encodeURIComponent(input.movie_id)}`,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `movie-${input.movie_id}` });
   },
 });
 
@@ -86,7 +86,7 @@ const versely_get_movie_status = defineTool({
     const data = await ctx.client.get(
       `/api/v1/movie/${encodeURIComponent(input.movie_id)}/status`,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `movie-${input.movie_id}-status` });
   },
 });
 
@@ -123,7 +123,7 @@ const versely_combine_movie = defineTool({
       `/api/v1/movie/${encodeURIComponent(movie_id)}/combine`,
       body,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `movie-${movie_id}-final` });
   },
 });
 

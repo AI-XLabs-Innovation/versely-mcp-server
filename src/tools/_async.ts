@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ToolContext, ToolResult } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
 import { pollStatus } from "../poller.js";
 
 export type AsyncMode = "wait" | "submit";
@@ -74,11 +74,16 @@ export async function handleAsync(args: {
     signal: args.ctx.signal,
   });
 
-  return jsonResult({
-    mode: "wait",
+  const payload = {
+    mode: "wait" as const,
     request_id: requestId,
     outcome: outcome.kind,
     ...(outcome.kind === "failed" ? { error: outcome.error } : {}),
     data: outcome.data,
-  });
+  };
+
+  if (outcome.kind === "completed") {
+    return mediaResult(payload, { idPrefix: requestId });
+  }
+  return jsonResult(payload);
 }

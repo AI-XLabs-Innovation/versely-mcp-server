@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
 
 // --- Templates ---------------------------------------------------------------
 
@@ -215,7 +215,7 @@ const versely_get_video_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `vwf-run-${input.run_id}` });
   },
 });
 
@@ -249,7 +249,7 @@ const versely_combine_video_workflow_run = defineTool({
     const data = await ctx.client.post(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}/combine`,
     );
-    return jsonResult(data);
+    return mediaResult(data, { idPrefix: `vwf-run-${input.run_id}-final` });
   },
 });
 
