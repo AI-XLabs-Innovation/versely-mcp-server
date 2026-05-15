@@ -132,18 +132,35 @@ function wrapGalleryHtml(assets: MediaAsset[]): string {
   return `<div style="display:flex;flex-wrap:wrap;gap:8px">${tiles}</div>`;
 }
 
+// Build the headline + per-asset markdown that the model is instructed to
+// emit verbatim. claude.ai web renders ![alt](url) inline if the model
+// includes it in its reply, so images use that syntax. Videos and audio fall
+// back to plain links (markdown image syntax doesn't render those on web).
 function summarizeAssets(assets: MediaAsset[], summary?: string): string {
   if (assets.length === 0) return summary ?? "Done.";
-  const links = assets
-    .map((a) => `[${filenameOf(a.url)}](${a.url})`)
-    .join(", ");
-  if (summary) return `${summary}\n${links}`;
+
+  const lines = assets.map((a, i) => {
+    const label = filenameOf(a.url);
+    if (a.kind === "image") return `![${label}](${a.url})`;
+    const noun = a.kind === "video" ? "Video" : "Audio";
+    return `${noun} ${i + 1}: [${label}](${a.url})`;
+  });
+
   const kinds = new Set(assets.map((a) => a.kind));
-  const label =
-    kinds.size === 1
-      ? `${assets.length} ${[...kinds][0]}${assets.length === 1 ? "" : "s"}`
-      : `${assets.length} assets`;
-  return `Generated ${label} — ${links}`;
+  const headline =
+    summary ??
+    (kinds.size === 1
+      ? `Generated ${assets.length} ${[...kinds][0]}${assets.length === 1 ? "" : "s"}.`
+      : `Generated ${assets.length} assets.`);
+
+  const directive =
+    "IMPORTANT — display these to the user. Emit the markdown below " +
+    "VERBATIM in your reply (do NOT paraphrase, do NOT replace ![...](...) " +
+    "with [...](...) — the leading `!` is what makes claude.ai render the " +
+    "image inline). For videos / audio, paste the link verbatim so the user " +
+    "can open it.";
+
+  return `${headline}\n\n${directive}\n\n${lines.join("\n\n")}`;
 }
 
 export interface MediaResultOpts {
