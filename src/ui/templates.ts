@@ -144,9 +144,25 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   }
   .err { padding: 16px; color: #b91c1c; font-size: 13px; }
   @media (prefers-color-scheme: dark) { .err { color: #f87171; } }
+  /* Placeholder shown before state arrives so the iframe has visible content
+     and claude.ai grows the chat-bubble iframe instead of collapsing it. */
+  .placeholder {
+    padding: 28px 20px;
+    display: flex; align-items: center; gap: 12px;
+    font-size: 13px; color: var(--muted);
+  }
+  .placeholder .dot {
+    width: 8px; height: 8px; border-radius: 999px;
+    background: var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(0.85); opacity: 0.5; }
+    50%      { transform: scale(1.1);  opacity: 1; }
+  }
 </style></head>
 <body>
-<div id="root"><div class="loading">Loading preview…</div></div>
+<div id="root"><div class="card"><div class="placeholder"><span class="dot"></span>Versely · preparing preview…</div></div></div>
 <script>
 (function () {
   var root = document.getElementById('root');
@@ -348,7 +364,18 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     var ro = new ResizeObserver(function () { reportSize(); });
     ro.observe(document.body);
   } catch (e) {}
-  window.addEventListener('load', function () { reportSize(); });
+  // Report eagerly at multiple lifecycle points so the iframe grows to fit the
+  // placeholder before state arrives — otherwise claude.ai keeps it at h=0
+  // and the user sees a blank gap.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', reportSize);
+  } else {
+    reportSize();
+  }
+  window.addEventListener('load', reportSize);
+  setTimeout(reportSize, 50);
+  setTimeout(reportSize, 200);
+  setTimeout(reportSize, 800);
 
   // Channel 1: window.openai-style globals (ChatGPT and look-alikes).
   try {
@@ -412,13 +439,16 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
 // --- Registry ---------------------------------------------------------------
 
 /**
- * Spec-canonical MIME for SEP-1865 UI resources, per the 2026-01-26 stable
- * spec (corrected from the original `text/html+mcp` proposal after IANA
- * review — `+mcp` is not a valid structured-suffix). Some hosts still
- * recognize the legacy form; we ship the canonical one and accept that
- * out-of-date hosts may need to update.
+ * MIME type for SEP-1865 UI resources.
+ *
+ * The 2026-01-26 spec corrects the original `text/html+mcp` to
+ * `text/html;profile=mcp-app` (IANA reviewer rejected `+mcp` as an invalid
+ * structured-suffix). HOWEVER, claude.ai's empirical detection — verified by
+ * the "30 Interactive tools" bucketing — was against the legacy `+mcp` form.
+ * Until claude.ai migrates to the corrected MIME, ship the legacy form so
+ * the iframe actually loads. When claude.ai accepts both, switch.
  */
-export const UI_MIME_TYPE = "text/html;profile=mcp-app";
+export const UI_MIME_TYPE = "text/html+mcp";
 
 /** Single resource URI all media tools point at. */
 export const MEDIA_CARD_URI = "ui://versely/media-card";
