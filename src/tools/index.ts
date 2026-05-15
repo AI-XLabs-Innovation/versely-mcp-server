@@ -9,6 +9,7 @@ import { statusTools } from "./status.js";
 import { featuresTools } from "./features.js";
 import { workflowTools } from "./workflows.js";
 import { videoWorkflowTools } from "./videoWorkflows.js";
+import { debugTools } from "./debug.js";
 
 export const allTools: Tool[] = [
   ...userTools,
@@ -21,4 +22,5 @@ export const allTools: Tool[] = [
   ...featuresTools,
   ...workflowTools,
   ...videoWorkflowTools,
+  ...debugTools,
 ];

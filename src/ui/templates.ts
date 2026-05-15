@@ -437,17 +437,20 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     if (match) { lastResultStructured = JSON.parse(atob(decodeURIComponent(match[1]))); recomputeState(); }
   } catch (e) {}
 
-  // Spec-canonical initialization handshake. Hosts wait for this before
-  // delivering tool-input / tool-result notifications. Declare a broad set
-  // of display modes — if the host picks a mode we don't list, it may
-  // refuse to render at all.
+  // Spec-canonical initialization handshake (ext-apps spec, draft 2025-12).
+  // Hosts wait for this before delivering tool-input / tool-result. Field
+  // names follow the spec verbatim: appInfo, appCapabilities,
+  // protocolVersion. availableDisplayModes is restricted to the spec
+  // enum (inline | fullscreen | pip) — advertising an unknown mode like
+  // "compact" causes claude.ai to silently reject the handshake.
   send({
     jsonrpc: '2.0', id: nextId(),
     method: 'ui/initialize',
     params: {
-      protocolVersion: '2026-01-26',
+      protocolVersion: '2025-06-18',
+      appInfo: { name: 'Versely Media Card', version: '1.0.0' },
       appCapabilities: {
-        availableDisplayModes: ['inline', 'compact', 'fullscreen', 'pip'],
+        availableDisplayModes: ['inline', 'fullscreen', 'pip'],
       },
     },
   });
@@ -478,7 +481,36 @@ interface UiResourceEntry {
   name: string;
   description: string;
   html: string;
+  /**
+   * Spec-canonical _meta attached to the resource (NOT the tool). The
+   * resource's _meta.ui declares CSP/permissions — tool _meta.ui only
+   * carries resourceUri + visibility.
+   */
+  meta: Record<string, unknown>;
 }
+
+const MEDIA_CARD_RESOURCE_META: Record<string, unknown> = {
+  ui: {
+    // Hosts that respect csp will allow the Versely CDN subdomains so the
+    // iframe sandbox doesn't block media loads. claude.ai currently
+    // hardcodes its sandbox CSP (anthropics/claude-ai-mcp#40); these
+    // declarations kick in once that's fixed and on other hosts today.
+    csp: {
+      resourceDomains: [
+        "https://img.versely.studio",
+        "https://videos.versely.studio",
+        "https://audio.versely.studio",
+        "https://user-files.versely.studio",
+        "https://slideshow-images.versely.studio",
+        "https://slideshowvideos.versely.studio",
+        "https://avatars.versely.studio",
+        "https://cdn.versely.studio",
+      ],
+      connectDomains: [],
+      frameDomains: [],
+    },
+  },
+};
 
 export const UI_RESOURCES: ReadonlyArray<UiResourceEntry> = [
   {
@@ -487,6 +519,7 @@ export const UI_RESOURCES: ReadonlyArray<UiResourceEntry> = [
     description:
       "Branded inline card rendering Versely-generated images, videos, audio, and slideshows. Hydrates from structuredContent { kind, assets, model, prompt, toolName, toolArgs }.",
     html: MEDIA_CARD_HTML,
+    meta: MEDIA_CARD_RESOURCE_META,
   },
 ];
 
@@ -497,40 +530,18 @@ export function getUiResource(uri: string): UiResourceEntry | undefined {
 // --- Tool _meta -------------------------------------------------------------
 
 /**
- * Build the `_meta` block to attach to a tool definition. Emits the
- * spec-canonical nested `_meta.ui = { resourceUri, csp, ... }` form **and**
- * the deprecated flat `ui/resourceUri` key for compatibility with hosts
- * that still match the old shape.
+ * Build the `_meta` block to attach to a tool definition. Per the
+ * ext-apps spec, tool `_meta.ui` only carries `resourceUri` and
+ * `visibility` — CSP and permissions live on the resource's _meta,
+ * not the tool's. Extra fields here can cause hosts to reject the
+ * tool as malformed, so keep this minimal.
  */
 export function metaForMediaCard(): Record<string, unknown> {
   return {
-    // Spec-canonical (SEP-1865 stable, 2026-01-26).
     ui: {
       resourceUri: MEDIA_CARD_URI,
-      // Hosts that respect csp will whitelist the Versely CDN subdomains so
-      // the iframe sandbox doesn't block media loads. claude.ai currently
-      // hardcodes its sandbox CSP (anthropics/claude-ai-mcp#40); these
-      // declarations kick in once that's fixed and on other hosts today.
-      csp: {
-        resourceDomains: [
-          "https://img.versely.studio",
-          "https://videos.versely.studio",
-          "https://audio.versely.studio",
-          "https://user-files.versely.studio",
-          "https://slideshow-images.versely.studio",
-          "https://slideshowvideos.versely.studio",
-          "https://avatars.versely.studio",
-          "https://cdn.versely.studio",
-        ],
-        connectDomains: [],
-        frameDomains: [],
-      },
-      prefersBorder: true,
       visibility: ["model"],
     },
-    // Deprecated flat-key form — kept as a compatibility hint for older
-    // host implementations that haven't migrated to the nested object yet.
-    "ui/resourceUri": MEDIA_CARD_URI,
   };
 }
 

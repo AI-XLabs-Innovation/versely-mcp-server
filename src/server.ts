@@ -74,15 +74,17 @@ export function buildServer(config: Config, client: VerselyClient): Server {
     }
   });
 
-  // MCP Apps (SEP-1865): expose `ui://` resources as a discoverable list.
-  // Hosts call resources/list during initialization, then resources/read on
-  // the URI declared in a tool's `_meta["ui/resourceUri"]`.
+  // MCP Apps: expose `ui://` resources as a discoverable list. Hosts call
+  // resources/list during initialization, then resources/read on the URI
+  // declared in a tool's `_meta.ui.resourceUri`. The resource's own _meta
+  // carries `ui.csp` (and `ui.permissions` if needed) per spec.
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     resources: UI_RESOURCES.map((r) => ({
       uri: r.uri,
       name: r.name,
       description: r.description,
       mimeType: UI_MIME_TYPE,
+      _meta: r.meta,
     })),
   }));
 
@@ -98,6 +100,7 @@ export function buildServer(config: Config, client: VerselyClient): Server {
           uri: resource.uri,
           mimeType: UI_MIME_TYPE,
           text: resource.html,
+          _meta: resource.meta,
         },
       ],
     };
