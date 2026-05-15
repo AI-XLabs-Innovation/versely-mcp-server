@@ -68,6 +68,10 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     overflow: hidden;
     display: flex; flex-direction: column;
     max-width: 100%;
+    /* Defensive: if neither state nor placeholder fills the card, keep a
+       visible minimum so iframe sandboxes that ignore size-changed don't
+       collapse us to 0. */
+    min-height: 96px;
   }
   .head {
     padding: 14px 16px 10px;
@@ -145,24 +149,35 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   .err { padding: 16px; color: #b91c1c; font-size: 13px; }
   @media (prefers-color-scheme: dark) { .err { color: #f87171; } }
   /* Placeholder shown before state arrives so the iframe has visible content
-     and claude.ai grows the chat-bubble iframe instead of collapsing it. */
+     and claude.ai grows the chat-bubble iframe instead of collapsing it.
+     Strong colors so it can't be lost in a sandboxed color-scheme. */
   .placeholder {
-    padding: 28px 20px;
-    display: flex; align-items: center; gap: 12px;
-    font-size: 13px; color: var(--muted);
+    min-height: 120px;
+    padding: 24px 20px;
+    display: flex; align-items: center; gap: 14px;
+    background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+    color: #ffffff;
+    font-size: 14px; font-weight: 500;
   }
   .placeholder .dot {
-    width: 8px; height: 8px; border-radius: 999px;
-    background: var(--accent);
+    width: 10px; height: 10px; border-radius: 999px;
+    background: #ffffff;
     animation: pulse 1.4s ease-in-out infinite;
+    flex: 0 0 auto;
   }
+  .placeholder .tag {
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    opacity: 0.85;
+  }
+  .placeholder .col { display: flex; flex-direction: column; gap: 4px; }
   @keyframes pulse {
     0%, 100% { transform: scale(0.85); opacity: 0.5; }
-    50%      { transform: scale(1.1);  opacity: 1; }
+    50%      { transform: scale(1.2);  opacity: 1; }
   }
 </style></head>
 <body>
-<div id="root"><div class="card"><div class="placeholder"><span class="dot"></span>Versely · preparing preview…</div></div></div>
+<div id="root"><div class="card"><div class="placeholder"><span class="dot"></span><div class="col"><span class="tag">Versely Media Card</span><span>Preparing preview…</span></div></div></div></div>
 <script>
 (function () {
   var root = document.getElementById('root');
@@ -423,13 +438,17 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   } catch (e) {}
 
   // Spec-canonical initialization handshake. Hosts wait for this before
-  // delivering tool-input / tool-result notifications.
+  // delivering tool-input / tool-result notifications. Declare a broad set
+  // of display modes — if the host picks a mode we don't list, it may
+  // refuse to render at all.
   send({
     jsonrpc: '2.0', id: nextId(),
     method: 'ui/initialize',
     params: {
       protocolVersion: '2026-01-26',
-      appCapabilities: { availableDisplayModes: ['inline'] },
+      appCapabilities: {
+        availableDisplayModes: ['inline', 'compact', 'fullscreen', 'pip'],
+      },
     },
   });
 })();
@@ -441,14 +460,15 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
 /**
  * MIME type for SEP-1865 UI resources.
  *
- * The 2026-01-26 spec corrects the original `text/html+mcp` to
- * `text/html;profile=mcp-app` (IANA reviewer rejected `+mcp` as an invalid
- * structured-suffix). HOWEVER, claude.ai's empirical detection — verified by
- * the "30 Interactive tools" bucketing — was against the legacy `+mcp` form.
- * Until claude.ai migrates to the corrected MIME, ship the legacy form so
- * the iframe actually loads. When claude.ai accepts both, switch.
+ * The 2026-01-26 spec specifies `text/html;profile=mcp-app` (the original
+ * `+mcp` form was rejected by the IANA reviewer as not a valid structured-
+ * suffix). claude.ai may detect tools as "Interactive" based on
+ * `_meta.ui.resourceUri` presence regardless of resource MIME, but its
+ * actual iframe-render validation may strictly require the spec form —
+ * which would explain "30 Interactive tools" *and* a non-rendering iframe.
+ * Shipping the spec form.
  */
-export const UI_MIME_TYPE = "text/html+mcp";
+export const UI_MIME_TYPE = "text/html;profile=mcp-app";
 
 /** Single resource URI all media tools point at. */
 export const MEDIA_CARD_URI = "ui://versely/media-card";
