@@ -29,24 +29,57 @@ export const AsyncFields = {
     .describe("Override default poll interval in ms (only used when mode='wait')."),
 };
 
+const REQUEST_ID_KEYS = [
+  "requestId",
+  "request_id",
+  "taskId",
+  "task_id",
+  "jobId",
+  "job_id",
+  "recordId",
+  "record_id",
+  "id",
+] as const;
+
+// Containers that wrap the polling handle. Dispatchers vary wildly:
+// fal → `data.taskId`, Kie/GPT-Image-2 → `data[0].taskId`, some adapters
+// → `response.data.taskId`. Drill into all of them.
+const REQUEST_ID_CONTAINERS = ["data", "response", "result"] as const;
+
+/**
+ * Walk a provider response shape looking for a polling handle. Returns the
+ * first canonical-key match found in a depth-first walk through objects,
+ * arrays, and the known wrapper containers.
+ */
 export function pickRequestId(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const obj = value as Record<string, unknown>;
-  for (const key of [
-    "requestId",
-    "request_id",
-    "taskId",
-    "task_id",
-    "jobId",
-    "job_id",
-    "id",
-  ]) {
-    const v = obj[key];
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
-  const data = obj["data"];
-  if (data && typeof data === "object") return pickRequestId(data);
-  return undefined;
+  const seen = new WeakSet<object>();
+  const visit = (v: unknown): string | undefined => {
+    if (v == null || typeof v !== "object") return undefined;
+    if (seen.has(v as object)) return undefined;
+    seen.add(v as object);
+
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        const hit = visit(item);
+        if (hit) return hit;
+      }
+      return undefined;
+    }
+
+    const obj = v as Record<string, unknown>;
+    for (const key of REQUEST_ID_KEYS) {
+      const candidate = obj[key];
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+    for (const containerKey of REQUEST_ID_CONTAINERS) {
+      const hit = visit(obj[containerKey]);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  return visit(value);
 }
 
 export async function handleAsync(args: {
@@ -61,6 +94,12 @@ export async function handleAsync(args: {
    * JSON regardless (no media yet).
    */
   template?: UiTemplate;
+  /**
+   * Extra fields to echo into the completed result's `structuredContent`
+   * (e.g. `model`, `prompt`). Surfaces metadata that hosts and the LLM can
+   * read on the next turn without re-parsing the raw provider payload.
+   */
+  extra?: Record<string, unknown>;
 }): Promise<ToolResult> {
   const requestId = pickRequestId(args.submitResponse);
 
@@ -90,7 +129,10 @@ export async function handleAsync(args: {
   };
 
   if (outcome.kind === "completed") {
-    return mediaResult(payload, { template: args.template });
+    return mediaResult(payload, {
+      template: args.template,
+      extra: { ...(args.extra ?? {}), request_id: requestId },
+    });
   }
   return jsonResult(payload);
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
 import { pollStatus } from "../poller.js";
 
 const versely_get_task_status = defineTool({
@@ -45,12 +45,17 @@ const versely_wait_for_task = defineTool({
       intervalMs: input.poll_interval_ms ?? ctx.config.defaultPollIntervalMs,
       signal: ctx.signal,
     });
-    return jsonResult({
+    const payload = {
       request_id: input.request_id,
       outcome: outcome.kind,
       ...(outcome.kind === "failed" ? { error: outcome.error } : {}),
       data: outcome.data,
-    });
+    };
+    // Route completed results through mediaResult so the response shape is
+    // normalized (slim text + structuredContent) regardless of which provider
+    // serviced the underlying generation. Failed / aborted outcomes stay as
+    // raw JSON since there's no asset to render.
+    return outcome.kind === "completed" ? mediaResult(payload) : jsonResult(payload);
   },
 });
 

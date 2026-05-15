@@ -213,6 +213,7 @@ const versely_generate_image = defineTool({
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
       template: "image-viewer",
+      extra: { model: body.model, prompt: input.prompt },
     });
   },
 });
@@ -258,6 +259,7 @@ const versely_generate_video = defineTool({
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
       template: "video-player",
+      extra: { model: body.model, prompt: input.prompt },
     });
   },
 });
@@ -291,6 +293,7 @@ const versely_generate_audio = defineTool({
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
       template: "audio-player",
+      extra: { model: body.model, text: input.text },
     });
   },
 });
@@ -327,6 +330,12 @@ const versely_generate_music = defineTool({
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
       template: "audio-player",
+      extra: {
+        model_version: input.model_version,
+        prompt: input.prompt,
+        ...(input.lyrics ? { lyrics: input.lyrics } : {}),
+        ...(input.title ? { title: input.title } : {}),
+      },
     });
   },
 });

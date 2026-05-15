@@ -1,4 +1,5 @@
-import type { ToolContext, ToolResult } from "./_types.js";
+import { fetch } from "undici";
+import type { ContentBlock, ToolContext, ToolResult } from "./_types.js";
 import {
   VerselyApiError,
   VerselyConfigError,
@@ -139,14 +140,60 @@ export interface MediaResultOpts {
   template?: UiTemplate;
   /** Plain-text headline; overrides the auto "Generated N images." summary. */
   summary?: string;
+  /**
+   * Extra fields to merge into `structuredContent` (e.g. echoed `model` /
+   * `prompt` / `request_id`). Useful for non-MCP-Apps clients that consume
+   * structuredContent directly and for richer LLM-side reasoning.
+   */
+  extra?: Record<string, unknown>;
+}
+
+// --- Inline image previews ---------------------------------------------------
+// MCP `type: "image"` content blocks let the LLM actually see the generated
+// pixels (vs. just reading the URL). claude.ai shows these inside the tool
+// accordion, so they're a redundancy layer when the MCP Apps iframe fails
+// (mobile bug, CSP block, non-Apps host) and a real reasoning input when the
+// next turn asks the model to compare or describe the result.
+//
+// Costs: each base64-image expands ~33% over raw bytes and bills as image
+// tokens (~1.6K per image at default detail). Capped + bounded + opt-out-able.
+
+const INLINE_PREVIEW_ENABLED =
+  (process.env.VERSELY_INLINE_IMAGE_PREVIEW ?? "true").toLowerCase() !== "false";
+const MAX_INLINE_IMAGES = 4;
+const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+const INLINE_FETCH_TIMEOUT_MS = 8_000;
+
+async function fetchImageAsBase64(
+  url: string,
+): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(INLINE_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const contentType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
+    if (!contentType.startsWith("image/")) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length === 0 || buf.length > MAX_INLINE_IMAGE_BYTES) return null;
+    return { data: buf.toString("base64"), mimeType: contentType };
+  } catch {
+    // Network error, timeout, CSP, signed-URL expiry — degrade gracefully.
+    return null;
+  }
 }
 
 /**
  * Build a tool result whose `structuredContent` hydrates an MCP Apps iframe,
  * with a plain-text `content` block for hosts that don't render inline.
+ * When the result contains images and inline previews are enabled, also
+ * fetches up to `MAX_INLINE_IMAGES` and emits MCP `type: "image"` blocks.
  * Falls back to a JSON result when no asset URLs are detected.
  */
-export function mediaResult(payload: unknown, opts: MediaResultOpts = {}): ToolResult {
+export async function mediaResult(
+  payload: unknown,
+  opts: MediaResultOpts = {},
+): Promise<ToolResult> {
   const assets = extractMediaAssets(payload);
   if (assets.length === 0) return jsonResult(payload);
 
@@ -155,10 +202,31 @@ export function mediaResult(payload: unknown, opts: MediaResultOpts = {}): ToolR
     url: a.url,
     label: filenameOf(a.url),
   }));
-  const structuredContent = buildUiPayload(template, uiAssets);
+  const templatePayload = buildUiPayload(template, uiAssets);
+  const structuredContent =
+    templatePayload || opts.extra
+      ? { ...(templatePayload ?? {}), ...(opts.extra ?? {}) }
+      : undefined;
+
+  const content: ContentBlock[] = [
+    { type: "text", text: summarizeAssets(assets, opts.summary) },
+  ];
+
+  if (INLINE_PREVIEW_ENABLED) {
+    const imageUrls = assets
+      .filter((a) => a.kind === "image")
+      .slice(0, MAX_INLINE_IMAGES)
+      .map((a) => a.url);
+    if (imageUrls.length > 0) {
+      const fetched = await Promise.all(imageUrls.map(fetchImageAsBase64));
+      for (const img of fetched) {
+        if (img) content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      }
+    }
+  }
 
   return {
-    content: [{ type: "text", text: summarizeAssets(assets, opts.summary) }],
+    content,
     ...(structuredContent ? { structuredContent } : {}),
   };
 }
