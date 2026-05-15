@@ -443,20 +443,21 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     if (match) { lastResultStructured = JSON.parse(atob(decodeURIComponent(match[1]))); recomputeState(); }
   } catch (e) {}
 
-  // Spec-canonical initialization handshake (ext-apps build guide).
-  // Hosts gate the iframe's visibility on receiving this; until it lands
-  // they keep the container at visibility:hidden. Field names mirror core
-  // MCP initialize: capabilities + clientInfo + protocolVersion.
-  // availableDisplayModes is restricted to the spec enum (inline |
-  // fullscreen | pip) — unknown modes get the handshake rejected.
+  // Spec-canonical initialization handshake. claude.ai's Zod schema for
+  // ui/initialize requires appInfo (object) and appCapabilities (object) —
+  // NOT clientInfo / capabilities as some older docs suggest. Confirmed
+  // by capturing claude.ai's JSON-RPC error response. The container stays
+  // at visibility:hidden until this handshake lands. availableDisplayModes
+  // is restricted to the spec enum (inline | fullscreen | pip) — unknown
+  // modes get the handshake rejected.
   console.log('[versely-mcp ui] script start, sending ui/initialize');
   send({
     jsonrpc: '2.0', id: nextId(),
     method: 'ui/initialize',
     params: {
       protocolVersion: '2025-06-18',
-      clientInfo: { name: 'Versely Media Card', version: '1.0.0' },
-      capabilities: {
+      appInfo: { name: 'Versely Media Card', version: '1.0.0' },
+      appCapabilities: {
         availableDisplayModes: ['inline', 'fullscreen', 'pip'],
       },
     },
