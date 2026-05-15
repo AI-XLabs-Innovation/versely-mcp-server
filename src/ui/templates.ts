@@ -409,10 +409,32 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   // Channel 2: spec-canonical postMessage notifications from the host.
   // Also accept several legacy/non-spec shapes seen in inspectors during the
   // SEP-1865 transition period.
+  // Track the ui/initialize id so we can recognize the host's reply and
+  // send the spec-required ui/notifications/initialized acknowledgement.
+  // Without that ack, claude.ai sits on tool-result delivery and keeps the
+  // iframe container at visibility:hidden — confirmed empirically.
+  var initRequestId = null;
+  var initAcked = false;
+  function ackInitialized() {
+    if (initAcked) return;
+    initAcked = true;
+    send({
+      jsonrpc: '2.0',
+      method: 'ui/notifications/initialized',
+      params: {},
+    });
+  }
+
   window.addEventListener('message', function (ev) {
     var m = ev.data;
     if (!m || typeof m !== 'object') return;
     console.log('[versely-mcp ui] ← host', m && (m.method || m.type), 'from', ev.origin, m);
+
+    // Response to our ui/initialize: ack with ui/notifications/initialized.
+    if (m.result && m.id != null && initRequestId != null && m.id === initRequestId) {
+      ackInitialized();
+      return;
+    }
 
     // Spec methods (SEP-1865 / 2026-01-26).
     if (m.method === 'ui/notifications/tool-input' && m.params) {
@@ -451,14 +473,15 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   // is restricted to the spec enum (inline | fullscreen | pip) — unknown
   // modes get the handshake rejected.
   console.log('[versely-mcp ui] script start, sending ui/initialize');
+  initRequestId = nextId();
   send({
-    jsonrpc: '2.0', id: nextId(),
+    jsonrpc: '2.0', id: initRequestId,
     method: 'ui/initialize',
     params: {
       protocolVersion: '2025-06-18',
       appInfo: { name: 'Versely Media Card', version: '1.0.0' },
       appCapabilities: {
-        availableDisplayModes: ['inline', 'fullscreen', 'pip'],
+        availableDisplayModes: ['inline', 'fullscreen'],
       },
     },
   });
