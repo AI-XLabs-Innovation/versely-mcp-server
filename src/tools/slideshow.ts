@@ -1,22 +1,13 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
-
-function slideshowIdOf(data: unknown, fallback: string): string {
-  if (data && typeof data === "object") {
-    const obj = data as Record<string, unknown>;
-    const candidates = [obj.id, obj.slideshow_id, (obj.slideshow as Record<string, unknown> | undefined)?.id];
-    for (const c of candidates) {
-      if (typeof c === "string" && c.trim()) return c.trim();
-    }
-  }
-  return fallback;
-}
+import { metaForTemplate } from "../ui/templates.js";
 
 const versely_create_slideshow = defineTool({
   name: "versely_create_slideshow",
   description:
     "Create a slideshow by generating multiple AI images from a prompt (no automation, no overlays).",
+  meta: metaForTemplate("gallery"),
   inputSchema: z
     .object({
       prompt: z.string(),
@@ -27,10 +18,7 @@ const versely_create_slideshow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const data = await ctx.client.post("/api/v1/slideshow/create", input);
-    return mediaResult(data, {
-      idPrefix: `slideshow-${slideshowIdOf(data, "new")}`,
-      gallery: true,
-    });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
@@ -38,6 +26,7 @@ const versely_create_automated_slideshow = defineTool({
   name: "versely_create_automated_slideshow",
   description:
     "Full automation: AI plans the slideshow, generates the images, and burns text overlays in one request.",
+  meta: metaForTemplate("gallery"),
   inputSchema: z
     .object({
       topic: z.string().describe("Topic / theme for the slideshow."),
@@ -49,25 +38,20 @@ const versely_create_automated_slideshow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const data = await ctx.client.post("/api/v1/slideshow/create-automated", input);
-    return mediaResult(data, {
-      idPrefix: `slideshow-${slideshowIdOf(data, "new")}`,
-      gallery: true,
-    });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
 const versely_get_slideshow = defineTool({
   name: "versely_get_slideshow",
   description: "Get a slideshow by ID, including its images.",
+  meta: metaForTemplate("gallery"),
   inputSchema: z.object({ slideshow_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.get(
       `/api/v1/slideshow/${encodeURIComponent(input.slideshow_id)}`,
     );
-    return mediaResult(data, {
-      idPrefix: `slideshow-${input.slideshow_id}`,
-      gallery: true,
-    });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
@@ -101,6 +85,7 @@ const versely_delete_slideshow = defineTool({
 const versely_add_slideshow_images = defineTool({
   name: "versely_add_slideshow_images",
   description: "Generate and append more AI images to an existing slideshow.",
+  meta: metaForTemplate("gallery"),
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -115,10 +100,7 @@ const versely_add_slideshow_images = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/images`,
       body,
     );
-    return mediaResult(data, {
-      idPrefix: `slideshow-${slideshow_id}-add`,
-      gallery: true,
-    });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
@@ -126,6 +108,7 @@ const versely_add_text_overlay = defineTool({
   name: "versely_add_text_overlay",
   description:
     "Burn text overlays onto a slideshow's images. Pass an array of overlays (one per slide or shared).",
+  meta: metaForTemplate("gallery"),
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -150,10 +133,7 @@ const versely_add_text_overlay = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/text-overlay`,
       body,
     );
-    return mediaResult(data, {
-      idPrefix: `slideshow-${slideshow_id}-overlay`,
-      gallery: true,
-    });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
@@ -161,6 +141,7 @@ const versely_slideshow_to_video = defineTool({
   name: "versely_slideshow_to_video",
   description:
     "Compile a slideshow's images (and optional audio) into an MP4 video with transitions (server-side FFmpeg).",
+  meta: metaForTemplate("video-player"),
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -176,7 +157,7 @@ const versely_slideshow_to_video = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/video`,
       body,
     );
-    return mediaResult(data, { idPrefix: `slideshow-${slideshow_id}-video` });
+    return mediaResult(data, { template: "video-player" });
   },
 });
 

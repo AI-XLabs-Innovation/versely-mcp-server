@@ -18,6 +18,12 @@ export type ContentBlock =
 
 export interface ToolResult {
   content: ContentBlock[];
+  /**
+   * Per-MCP-Apps (SEP-1865): a JSON object hydrated into the linked
+   * `ui://` resource via postMessage. Hidden from the LLM — used only by
+   * the host's iframe renderer.
+   */
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }
 
@@ -25,6 +31,12 @@ export interface Tool<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
   inputSchema: TSchema;
+  /**
+   * Optional MCP `_meta`. For MCP Apps inline rendering, set both
+   * `ui/resourceUri` (spec form) and `ui.resourceUri` (compat form) to a
+   * registered `ui://` resource URI.
+   */
+  meta?: Record<string, unknown>;
   handler: (input: z.infer<TSchema>, ctx: ToolContext) => Promise<ToolResult>;
 }
 

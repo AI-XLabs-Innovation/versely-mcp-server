@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ToolContext, ToolResult } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
+import type { UiTemplate } from "../ui/templates.js";
 import { pollStatus } from "../poller.js";
 
 export type AsyncMode = "wait" | "submit";
@@ -54,6 +55,12 @@ export async function handleAsync(args: {
   mode: AsyncMode;
   pollTimeoutMs?: number;
   pollIntervalMs?: number;
+  /**
+   * UI template to bind on the completed-result path. If omitted, mediaResult
+   * infers one from the asset kinds. Submit-mode and failure paths emit plain
+   * JSON regardless (no media yet).
+   */
+  template?: UiTemplate;
 }): Promise<ToolResult> {
   const requestId = pickRequestId(args.submitResponse);
 
@@ -83,7 +90,7 @@ export async function handleAsync(args: {
   };
 
   if (outcome.kind === "completed") {
-    return mediaResult(payload, { idPrefix: requestId });
+    return mediaResult(payload, { template: args.template });
   }
   return jsonResult(payload);
 }

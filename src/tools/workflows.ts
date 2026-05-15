@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
+import { metaForTemplate } from "../ui/templates.js";
 
 const Empty = z.object({});
 
@@ -454,6 +455,7 @@ const versely_get_workflow_run = defineTool({
   name: "versely_get_workflow_run",
   description:
     "Fetch a single workflow run by its run/task ID. Unified across scenes-mode and steps-mode runs.",
+  meta: metaForTemplate("gallery"),
   inputSchema: z.object({
     run_id: z
       .string()
@@ -463,7 +465,7 @@ const versely_get_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    return mediaResult(data, { idPrefix: `wf-run-${input.run_id}` });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 

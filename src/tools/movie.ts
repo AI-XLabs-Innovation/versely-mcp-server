@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
+import { metaForTemplate } from "../ui/templates.js";
 
 const SceneInputSchema = z
   .object({
@@ -56,12 +57,13 @@ const versely_list_movies = defineTool({
 const versely_get_movie = defineTool({
   name: "versely_get_movie",
   description: "Get a movie with all its scenes and metadata.",
+  meta: metaForTemplate("gallery"),
   inputSchema: z.object({ movie_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.get(
       `/api/v1/movie/${encodeURIComponent(input.movie_id)}`,
     );
-    return mediaResult(data, { idPrefix: `movie-${input.movie_id}` });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
@@ -81,12 +83,13 @@ const versely_get_movie_status = defineTool({
   name: "versely_get_movie_status",
   description:
     "Get real-time generation status for a movie and each of its scenes (preferred over per-scene status polling).",
+  meta: metaForTemplate("gallery"),
   inputSchema: z.object({ movie_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.get(
       `/api/v1/movie/${encodeURIComponent(input.movie_id)}/status`,
     );
-    return mediaResult(data, { idPrefix: `movie-${input.movie_id}-status` });
+    return mediaResult(data, { template: "gallery" });
   },
 });
 
@@ -110,6 +113,7 @@ const versely_combine_movie = defineTool({
   name: "versely_combine_movie",
   description:
     "Once all scenes are completed, combine them into the final movie video (server-side FFmpeg).",
+  meta: metaForTemplate("video-player"),
   inputSchema: z
     .object({
       movie_id: z.string(),
@@ -123,7 +127,7 @@ const versely_combine_movie = defineTool({
       `/api/v1/movie/${encodeURIComponent(movie_id)}/combine`,
       body,
     );
-    return mediaResult(data, { idPrefix: `movie-${movie_id}-final` });
+    return mediaResult(data, { template: "video-player" });
   },
 });
 

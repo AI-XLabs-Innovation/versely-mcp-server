@@ -1,10 +1,11 @@
-import type { ContentBlock, ToolContext, ToolResult } from "./_types.js";
+import type { ToolContext, ToolResult } from "./_types.js";
 import {
   VerselyApiError,
   VerselyConfigError,
   VerselyNetworkError,
   VerselyTimeoutError,
 } from "../errors.js";
+import { buildUiPayload, type UiAsset, type UiTemplate } from "../ui/templates.js";
 
 export function jsonResult(value: unknown): ToolResult {
   return {
@@ -24,10 +25,11 @@ export function errorResult(message: string): ToolResult {
 }
 
 // --- Media preview helpers ---------------------------------------------------
-// Tool results that contain asset URLs (image/video/audio) are augmented with
-// MCP-UI `resource` content blocks so MCP Apps-capable hosts (Claude Desktop,
-// claude.ai) render the asset inline. Hosts without MCP-UI support still see
-// the leading markdown link and the trailing raw-JSON block.
+// Tool results that contain asset URLs (image/video/audio) emit
+// `structuredContent` shaped to the linked MCP Apps (SEP-1865) UI template.
+// MCP Apps-capable hosts render the bound `ui://` iframe and hydrate it with
+// that payload. Non-MCP-Apps clients fall back to the plain-text `content`
+// summary, which includes asset URLs so the conversation still reads well.
 
 const IMAGE_EXTS = new Set([
   "png",
@@ -74,14 +76,6 @@ function filenameOf(url: string): string {
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 // Recursively walk an arbitrary payload collecting media asset URLs in
 // traversal order. Deduplicates by URL so the same asset surfacing under
 // multiple keys (e.g. `result_url` + `output[0].url`) only renders once.
@@ -110,110 +104,63 @@ export function extractMediaAssets(payload: unknown): MediaAsset[] {
   return out;
 }
 
-function wrapAssetHtml(asset: MediaAsset): string {
-  const url = escapeHtml(asset.url);
-  switch (asset.kind) {
-    case "image":
-      return `<img src="${url}" style="max-width:100%;border-radius:8px" alt="Generated image" />`;
-    case "video":
-      return `<video src="${url}" controls style="max-width:100%;border-radius:8px"></video>`;
-    case "audio":
-      return `<audio src="${url}" controls style="width:100%"></audio>`;
-  }
+// Pick the appropriate template when one isn't passed explicitly. Single-kind
+// asset lists map to their dedicated viewer; multi-kind or multi-video lists
+// fall through to the gallery (which auto-detects videos by extension).
+function inferTemplate(assets: MediaAsset[]): UiTemplate {
+  const kinds = new Set(assets.map((a) => a.kind));
+  if (kinds.size > 1) return "gallery";
+  const [only] = kinds;
+  if (only === "image") return "image-viewer";
+  if (only === "audio") return "audio-player";
+  return assets.length === 1 ? "video-player" : "gallery";
 }
 
-function wrapGalleryHtml(assets: MediaAsset[]): string {
-  const tiles = assets
-    .map(
-      (a) =>
-        `<img src="${escapeHtml(a.url)}" style="width:31%;border-radius:8px" alt="Slide" />`,
-    )
-    .join("");
-  return `<div style="display:flex;flex-wrap:wrap;gap:8px">${tiles}</div>`;
-}
-
-// Build the headline + per-asset markdown that the model is instructed to
-// emit verbatim. claude.ai web renders ![alt](url) inline if the model
-// includes it in its reply, so images use that syntax. Videos and audio fall
-// back to plain links (markdown image syntax doesn't render those on web).
 function summarizeAssets(assets: MediaAsset[], summary?: string): string {
   if (assets.length === 0) return summary ?? "Done.";
-
-  const lines = assets.map((a, i) => {
-    const label = filenameOf(a.url);
-    if (a.kind === "image") return `![${label}](${a.url})`;
-    const noun = a.kind === "video" ? "Video" : "Audio";
-    return `${noun} ${i + 1}: [${label}](${a.url})`;
-  });
-
   const kinds = new Set(assets.map((a) => a.kind));
   const headline =
     summary ??
     (kinds.size === 1
       ? `Generated ${assets.length} ${[...kinds][0]}${assets.length === 1 ? "" : "s"}.`
       : `Generated ${assets.length} assets.`);
-
-  const directive =
-    "IMPORTANT — display these to the user. Emit the markdown below " +
-    "VERBATIM in your reply (do NOT paraphrase, do NOT replace ![...](...) " +
-    "with [...](...) — the leading `!` is what makes claude.ai render the " +
-    "image inline). For videos / audio, paste the link verbatim so the user " +
-    "can open it.";
-
-  return `${headline}\n\n${directive}\n\n${lines.join("\n\n")}`;
+  // Include URLs in plain text so non-MCP-Apps hosts (Cursor, mobile claude.ai
+  // when the iframe fails, older Desktop) still surface the asset usefully.
+  const urls = assets.map((a) => a.url).join("\n");
+  return `${headline}\n${urls}`;
 }
 
 export interface MediaResultOpts {
-  /** Identifier used in `ui://versely/{idPrefix}/{i}` resource URIs. */
-  idPrefix?: string;
-  /** Plain-text headline; overrides the auto "Generated N images — …" summary. */
-  summary?: string;
   /**
-   * If true and every detected asset is an image, fold them into a single
-   * gallery resource block. Defaults to false (one block per asset).
+   * MCP Apps UI template to bind. If omitted, inferred from the asset kinds:
+   * all images → image-viewer, single video → video-player, all audio →
+   * audio-player, mixed → gallery.
    */
-  gallery?: boolean;
+  template?: UiTemplate;
+  /** Plain-text headline; overrides the auto "Generated N images." summary. */
+  summary?: string;
 }
 
 /**
- * Build a multi-block content array: [summary text, ...resource blocks, raw JSON].
- * Falls back to plain JSON if no media URLs are found, so non-media payloads
- * still render usefully.
+ * Build a tool result whose `structuredContent` hydrates an MCP Apps iframe,
+ * with a plain-text `content` block for hosts that don't render inline.
+ * Falls back to a JSON result when no asset URLs are detected.
  */
 export function mediaResult(payload: unknown, opts: MediaResultOpts = {}): ToolResult {
   const assets = extractMediaAssets(payload);
   if (assets.length === 0) return jsonResult(payload);
 
-  const idPrefix = opts.idPrefix ?? `asset-${Date.now()}`;
-  const content: ContentBlock[] = [
-    { type: "text", text: summarizeAssets(assets, opts.summary) },
-  ];
+  const template = opts.template ?? inferTemplate(assets);
+  const uiAssets: UiAsset[] = assets.map((a) => ({
+    url: a.url,
+    label: filenameOf(a.url),
+  }));
+  const structuredContent = buildUiPayload(template, uiAssets);
 
-  const allImages = assets.every((a) => a.kind === "image");
-  if (opts.gallery && allImages && assets.length > 1) {
-    content.push({
-      type: "resource",
-      resource: {
-        uri: `ui://versely/${idPrefix}/gallery`,
-        mimeType: "text/html",
-        text: wrapGalleryHtml(assets),
-      },
-    });
-  } else {
-    assets.forEach((asset, i) => {
-      content.push({
-        type: "resource",
-        resource: {
-          uri: `ui://versely/${idPrefix}/${i}`,
-          mimeType: "text/html",
-          text: wrapAssetHtml(asset),
-        },
-      });
-    });
-  }
-
-  content.push({ type: "text", text: JSON.stringify(payload, null, 2) });
-  return { content };
+  return {
+    content: [{ type: "text", text: summarizeAssets(assets, opts.summary) }],
+    ...(structuredContent ? { structuredContent } : {}),
+  };
 }
 
 export function formatErr(err: unknown): string {

@@ -2,10 +2,12 @@ import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
 import { jsonResult } from "./_helpers.js";
+import { metaForTemplate } from "../ui/templates.js";
 
 const versely_extract_frames = defineTool({
   name: "versely_extract_frames",
   description: "Extract frames from a video at given timestamps or evenly spaced.",
+  meta: metaForTemplate("image-viewer"),
   inputSchema: z
     .object({
       video_url: z.string().url(),
@@ -28,6 +30,7 @@ const versely_extract_frames = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
+      template: "image-viewer",
     });
   },
 });
@@ -35,6 +38,7 @@ const versely_extract_frames = defineTool({
 const versely_merge_videos = defineTool({
   name: "versely_merge_videos",
   description: "Merge multiple videos into a single video (server-side FFmpeg).",
+  meta: metaForTemplate("video-player"),
   inputSchema: z
     .object({
       video_urls: z.array(z.string().url()).min(2),
@@ -54,6 +58,7 @@ const versely_merge_videos = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
+      template: "video-player",
     });
   },
 });
@@ -81,6 +86,7 @@ const versely_generate_prompt = defineTool({
 const versely_colorize_photo = defineTool({
   name: "versely_colorize_photo",
   description: "Colorize a grayscale or faded photo.",
+  meta: metaForTemplate("image-viewer"),
   inputSchema: z
     .object({
       image_url: z.string().url(),
@@ -96,6 +102,7 @@ const versely_colorize_photo = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
+      template: "image-viewer",
     });
   },
 });
@@ -103,6 +110,7 @@ const versely_colorize_photo = defineTool({
 const versely_audio_isolation = defineTool({
   name: "versely_audio_isolation",
   description: "Isolate vocals (or remove background noise) from an audio clip.",
+  meta: metaForTemplate("audio-player"),
   inputSchema: z
     .object({
       audio_url: z.string().url(),
@@ -118,6 +126,7 @@ const versely_audio_isolation = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
+      template: "audio-player",
     });
   },
 });
