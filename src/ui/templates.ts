@@ -8,16 +8,24 @@
 // and renders accordingly. Buttons (Recreate, etc.) round-trip through the
 // host via `tools/call` JSON-RPC over postMessage.
 //
-// Hydration channels supported (host implementations differ):
-//   1. `window.openai.toolOutput` / `.toolInput` — ChatGPT-style global
-//   2. `postMessage` JSON-RPC `ui/state` / `ui/setState` (spec-canonical)
-//   3. Legacy `{ type: "tool-output", payload }` postMessage
-//   4. URL hash `#state=<base64-json>` (debug fallback)
+// Protocol (host ↔ iframe over `postMessage`):
+//   Host → iframe (notifications):
+//     `ui/notifications/tool-input`  — { arguments: <ToolInput> }
+//     `ui/notifications/tool-result` — { content, structuredContent }
+//     `ui/notifications/tool-cancelled` — { reason }
+//   Iframe → host (requests):
+//     `ui/initialize`               — handshake, declares display modes
+//     `tools/call`                  — invoke a server tool (Recreate, etc.)
+//     `ui/notifications/size-changed` — report iframe content size
+//
+// Fallbacks: also accepts `window.openai.{toolInput,toolOutput}` and a
+// `#state=<base64-json>` URL hash for dev inspectors that don't speak the
+// spec yet.
 //
 // CSP: hosts that respect `_meta.ui.csp.resourceDomains` will allow the
 // Versely CDN subdomains declared on each tool. claude.ai currently
-// hardcodes its sandbox CSP (see anthropics/claude-ai-mcp#40) — when that
-// regression is fixed our declarations kick in automatically.
+// hardcodes its sandbox CSP (anthropics/claude-ai-mcp#40); our declarations
+// kick in once that's fixed.
 
 const MEDIA_CARD_HTML = String.raw`<!doctype html>
 <html><head><meta charset="utf-8"/>
@@ -298,43 +306,105 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     });
   }
 
-  function hydrate(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    state = payload;
+  // Track the two halves of host-delivered state separately. The host sends
+  // tool-input and tool-result as independent notifications, sometimes in
+  // either order, so we merge as each arrives.
+  var lastToolInput = null;
+  var lastResultStructured = null;
+
+  function recomputeState() {
+    var s = lastResultStructured ? Object.assign({}, lastResultStructured) : null;
+    if (!s) return;
+    // Prefer host-provided tool-input for Recreate args; fall back to whatever
+    // the server echoed in structuredContent.toolArgs if the host didn't send
+    // tool-input separately.
+    if (lastToolInput && !s.toolArgs) s.toolArgs = lastToolInput;
+    state = s;
     render();
+    reportSize();
   }
+
+  // Report iframe content size so the host can grow the chat-bubble iframe
+  // to fit. Without this, claude.ai renders us at height 0 and the card is
+  // invisible even when fully populated.
+  var lastReportedH = -1;
+  function reportSize() {
+    try {
+      var card = document.querySelector('.card') || document.body;
+      var rect = card.getBoundingClientRect();
+      var h = Math.ceil(rect.height) || document.documentElement.scrollHeight;
+      var w = Math.ceil(rect.width) || document.documentElement.scrollWidth;
+      if (h === lastReportedH || h <= 0) return;
+      lastReportedH = h;
+      send({
+        jsonrpc: '2.0',
+        method: 'ui/notifications/size-changed',
+        params: { width: w, height: h },
+      });
+    } catch (e) {}
+  }
+  // Watch for layout changes (image load, prompt expand) and re-report.
+  try {
+    var ro = new ResizeObserver(function () { reportSize(); });
+    ro.observe(document.body);
+  } catch (e) {}
+  window.addEventListener('load', function () { reportSize(); });
 
   // Channel 1: window.openai-style globals (ChatGPT and look-alikes).
   try {
-    if (window.openai && window.openai.toolOutput) {
-      hydrate(Object.assign(
-        {},
-        window.openai.toolOutput,
-        window.openai.toolInput ? { toolArgs: window.openai.toolInput } : {}
-      ));
+    if (window.openai) {
+      if (window.openai.toolInput) lastToolInput = window.openai.toolInput;
+      if (window.openai.toolOutput) lastResultStructured = window.openai.toolOutput;
+      if (lastResultStructured) recomputeState();
     }
   } catch (e) {}
 
-  // Channel 2: postMessage. Accept the spec form and several legacy wrappers
-  // so the same template works in MCPJam Inspector, ChatGPT, claude.ai, etc.
+  // Channel 2: spec-canonical postMessage notifications from the host.
+  // Also accept several legacy/non-spec shapes seen in inspectors during the
+  // SEP-1865 transition period.
   window.addEventListener('message', function (ev) {
     var m = ev.data;
     if (!m || typeof m !== 'object') return;
-    if (m.type === 'tool-output' && m.payload) return hydrate(m.payload);
-    if (m.type === 'mcp.ui.state' && m.payload) return hydrate(m.payload);
-    if (m.method === 'ui/state' && m.params) return hydrate(m.params);
-    if (m.method === 'ui/setState' && m.params) return hydrate(m.params);
-    if (m.structuredContent) return hydrate(m.structuredContent);
+
+    // Spec methods (SEP-1865 / 2026-01-26).
+    if (m.method === 'ui/notifications/tool-input' && m.params) {
+      lastToolInput = m.params.arguments || m.params;
+      return recomputeState();
+    }
+    if (m.method === 'ui/notifications/tool-result' && m.params) {
+      lastResultStructured = m.params.structuredContent || null;
+      return recomputeState();
+    }
+    if (m.method === 'ui/notifications/tool-cancelled') {
+      var btn = document.querySelector('[data-recreate]');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<span aria-hidden="true">↻</span>Recreate'; }
+      return;
+    }
+
+    // Legacy / inspector fallbacks.
+    if (m.type === 'tool-output' && m.payload) { lastResultStructured = m.payload; return recomputeState(); }
+    if (m.type === 'mcp.ui.state' && m.payload) { lastResultStructured = m.payload; return recomputeState(); }
+    if (m.method === 'ui/state' && m.params) { lastResultStructured = m.params; return recomputeState(); }
+    if (m.method === 'ui/setState' && m.params) { lastResultStructured = m.params; return recomputeState(); }
+    if (m.structuredContent) { lastResultStructured = m.structuredContent; return recomputeState(); }
   });
 
   // Channel 3: URL hash debug fallback.
   try {
     var match = (location.hash || '').match(/state=([^&]+)/);
-    if (match) hydrate(JSON.parse(atob(decodeURIComponent(match[1]))));
+    if (match) { lastResultStructured = JSON.parse(atob(decodeURIComponent(match[1]))); recomputeState(); }
   } catch (e) {}
 
-  // Spec-canonical readiness ping. Many hosts wait for this before sending state.
-  send({ jsonrpc: '2.0', method: 'ui/ready', id: nextId(), params: {} });
+  // Spec-canonical initialization handshake. Hosts wait for this before
+  // delivering tool-input / tool-result notifications.
+  send({
+    jsonrpc: '2.0', id: nextId(),
+    method: 'ui/initialize',
+    params: {
+      protocolVersion: '2026-01-26',
+      appCapabilities: { availableDisplayModes: ['inline'] },
+    },
+  });
 })();
 </script>
 </body></html>`;
