@@ -327,7 +327,12 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
 
   function nextId() { return Date.now() * 1000 + Math.floor(Math.random() * 1000); }
   function send(msg) {
-    try { window.parent && window.parent.postMessage(msg, '*'); } catch (e) {}
+    try {
+      console.log('[versely-mcp ui] → host', msg && msg.method, msg);
+      window.parent && window.parent.postMessage(msg, '*');
+    } catch (e) {
+      console.warn('[versely-mcp ui] send failed', e);
+    }
   }
   function callTool(name, args) {
     send({
@@ -407,6 +412,7 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   window.addEventListener('message', function (ev) {
     var m = ev.data;
     if (!m || typeof m !== 'object') return;
+    console.log('[versely-mcp ui] ← host', m && (m.method || m.type), 'from', ev.origin, m);
 
     // Spec methods (SEP-1865 / 2026-01-26).
     if (m.method === 'ui/notifications/tool-input' && m.params) {
@@ -437,19 +443,20 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     if (match) { lastResultStructured = JSON.parse(atob(decodeURIComponent(match[1]))); recomputeState(); }
   } catch (e) {}
 
-  // Spec-canonical initialization handshake (ext-apps spec, draft 2025-12).
-  // Hosts wait for this before delivering tool-input / tool-result. Field
-  // names follow the spec verbatim: appInfo, appCapabilities,
-  // protocolVersion. availableDisplayModes is restricted to the spec
-  // enum (inline | fullscreen | pip) — advertising an unknown mode like
-  // "compact" causes claude.ai to silently reject the handshake.
+  // Spec-canonical initialization handshake (ext-apps build guide).
+  // Hosts gate the iframe's visibility on receiving this; until it lands
+  // they keep the container at visibility:hidden. Field names mirror core
+  // MCP initialize: capabilities + clientInfo + protocolVersion.
+  // availableDisplayModes is restricted to the spec enum (inline |
+  // fullscreen | pip) — unknown modes get the handshake rejected.
+  console.log('[versely-mcp ui] script start, sending ui/initialize');
   send({
     jsonrpc: '2.0', id: nextId(),
     method: 'ui/initialize',
     params: {
       protocolVersion: '2025-06-18',
-      appInfo: { name: 'Versely Media Card', version: '1.0.0' },
-      appCapabilities: {
+      clientInfo: { name: 'Versely Media Card', version: '1.0.0' },
+      capabilities: {
         availableDisplayModes: ['inline', 'fullscreen', 'pip'],
       },
     },
