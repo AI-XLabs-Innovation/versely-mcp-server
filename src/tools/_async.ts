@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolContext, ToolResult } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
-import type { UiTemplate } from "../ui/templates.js";
+import type { MediaKind } from "../ui/templates.js";
 import { pollStatus } from "../poller.js";
 
 export type AsyncMode = "wait" | "submit";
@@ -89,15 +89,20 @@ export async function handleAsync(args: {
   pollTimeoutMs?: number;
   pollIntervalMs?: number;
   /**
-   * UI template to bind on the completed-result path. If omitted, mediaResult
-   * infers one from the asset kinds. Submit-mode and failure paths emit plain
-   * JSON regardless (no media yet).
+   * Asset-kind discriminator the media card uses to pick its render path.
+   * If omitted, mediaResult infers from the asset URLs. Submit-mode and
+   * failure paths emit plain JSON regardless (no media yet).
    */
-  template?: UiTemplate;
+  kind?: MediaKind;
   /**
-   * Extra fields to echo into the completed result's `structuredContent`
-   * (e.g. `model`, `prompt`). Surfaces metadata that hosts and the LLM can
-   * read on the next turn without re-parsing the raw provider payload.
+   * Tool name + args for the Recreate button. Should be the original tool's
+   * name and the args the user invoked it with.
+   */
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  /**
+   * Extra fields echoed into `structuredContent` (e.g. `model`, `prompt`).
+   * Surfaces metadata for the card chips and downstream LLM reasoning.
    */
   extra?: Record<string, unknown>;
 }): Promise<ToolResult> {
@@ -130,7 +135,9 @@ export async function handleAsync(args: {
 
   if (outcome.kind === "completed") {
     return mediaResult(payload, {
-      template: args.template,
+      kind: args.kind,
+      toolName: args.toolName,
+      toolArgs: args.toolArgs,
       extra: { ...(args.extra ?? {}), request_id: requestId },
     });
   }

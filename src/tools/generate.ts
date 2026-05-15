@@ -3,7 +3,7 @@ import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
 import { jsonResult } from "./_helpers.js";
 import { resolveCanonicalModel } from "./_modelResolver.js";
-import { metaForTemplate } from "../ui/templates.js";
+import { metaForMediaCard } from "../ui/templates.js";
 
 const versely_list_models = defineTool({
   name: "versely_list_models",
@@ -172,7 +172,7 @@ const versely_generate_image = defineTool({
   name: "versely_generate_image",
   description:
     "Generate one or more images (text-to-image, image-to-image, editing) using a chosen model. Default polls until done.",
-  meta: metaForTemplate("image-viewer"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       model: z
@@ -212,8 +212,10 @@ const versely_generate_image = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "image-viewer",
-      extra: { model: body.model, prompt: input.prompt },
+      kind: "image",
+      toolName: "versely_generate_image",
+      toolArgs: body,
+      extra: { model: body.model, prompt: input.prompt, aspect_ratio: input.aspect_ratio, size: input.size },
     });
   },
 });
@@ -222,7 +224,7 @@ const versely_generate_video = defineTool({
   name: "versely_generate_video",
   description:
     "Generate a video (text-to-video, image-to-video, frame-to-frame) using a chosen model. Default polls until done.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       model: z
@@ -258,8 +260,15 @@ const versely_generate_video = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
-      extra: { model: body.model, prompt: input.prompt },
+      kind: "video",
+      toolName: "versely_generate_video",
+      toolArgs: body,
+      extra: {
+        model: body.model,
+        prompt: input.prompt,
+        aspect_ratio: input.aspect_ratio,
+        duration_seconds: input.duration_seconds,
+      },
     });
   },
 });
@@ -267,7 +276,7 @@ const versely_generate_video = defineTool({
 const versely_generate_audio = defineTool({
   name: "versely_generate_audio",
   description: "Generate speech / audio via TTS. Default polls until done.",
-  meta: metaForTemplate("audio-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       model: z
@@ -292,8 +301,10 @@ const versely_generate_audio = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "audio-player",
-      extra: { model: body.model, text: input.text },
+      kind: "audio",
+      toolName: "versely_generate_audio",
+      toolArgs: body,
+      extra: { model: body.model, prompt: input.text },
     });
   },
 });
@@ -302,7 +313,7 @@ const versely_generate_music = defineTool({
   name: "versely_generate_music",
   description:
     "Generate music with Suno (V3.5–V5.5). Returns a Suno taskId; default polls via the unified status endpoint.",
-  meta: metaForTemplate("audio-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       prompt: z.string().describe("Style / mood / theme prompt."),
@@ -329,9 +340,11 @@ const versely_generate_music = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "audio-player",
+      kind: "audio",
+      toolName: "versely_generate_music",
+      toolArgs: body,
       extra: {
-        model_version: input.model_version,
+        model: input.model_version ? `Suno ${input.model_version}` : "Suno",
         prompt: input.prompt,
         ...(input.lyrics ? { lyrics: input.lyrics } : {}),
         ...(input.title ? { title: input.title } : {}),
@@ -343,7 +356,7 @@ const versely_generate_music = defineTool({
 const versely_extend_music = defineTool({
   name: "versely_extend_music",
   description: "Extend an existing Suno track from a given timestamp.",
-  meta: metaForTemplate("audio-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       task_id: z.string().describe("Suno task_id of the source track."),
@@ -365,7 +378,9 @@ const versely_extend_music = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "audio-player",
+      kind: "audio",
+      toolName: "versely_extend_music",
+      toolArgs: body,
     });
   },
 });
@@ -373,7 +388,7 @@ const versely_extend_music = defineTool({
 const versely_generate_lipsync = defineTool({
   name: "versely_generate_lipsync",
   description: "Generate a lipsync video from a still image and an audio clip.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       image_url: z.string().url(),
@@ -394,7 +409,10 @@ const versely_generate_lipsync = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
+      kind: "video",
+      toolName: "versely_generate_lipsync",
+      toolArgs: body,
+      extra: body.model ? { model: body.model } : {},
     });
   },
 });
@@ -402,7 +420,7 @@ const versely_generate_lipsync = defineTool({
 const versely_remove_background = defineTool({
   name: "versely_remove_background",
   description: "Remove the background from an image.",
-  meta: metaForTemplate("image-viewer"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       image_url: z.string().url(),
@@ -422,7 +440,9 @@ const versely_remove_background = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "image-viewer",
+      kind: "image",
+      toolName: "versely_remove_background",
+      toolArgs: body,
     });
   },
 });
@@ -430,7 +450,7 @@ const versely_remove_background = defineTool({
 const versely_upscale_image = defineTool({
   name: "versely_upscale_image",
   description: "Upscale an image to higher resolution.",
-  meta: metaForTemplate("image-viewer"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       image_url: z.string().url(),
@@ -448,7 +468,9 @@ const versely_upscale_image = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "image-viewer",
+      kind: "image",
+      toolName: "versely_upscale_image",
+      toolArgs: body,
     });
   },
 });
@@ -456,7 +478,7 @@ const versely_upscale_image = defineTool({
 const versely_upscale_video = defineTool({
   name: "versely_upscale_video",
   description: "Upscale a video to higher resolution.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       video_url: z.string().url(),
@@ -473,7 +495,9 @@ const versely_upscale_video = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
+      kind: "video",
+      toolName: "versely_upscale_video",
+      toolArgs: body,
     });
   },
 });

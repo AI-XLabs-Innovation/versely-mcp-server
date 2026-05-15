@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
-import { metaForTemplate } from "../ui/templates.js";
+import { metaForMediaCard } from "../ui/templates.js";
 
 const CaptionPosition = z.enum(["top", "middle", "bottom"]);
 
@@ -10,7 +10,7 @@ const versely_add_video_overlay = defineTool({
   name: "versely_add_video_overlay",
   description:
     "Overlay a foreground video (e.g. talking head) on top of a base video, positioned in a corner.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       base_video_url: z.string().url(),
@@ -36,7 +36,9 @@ const versely_add_video_overlay = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
+      kind: "video",
+      toolName: "versely_add_video_overlay",
+      toolArgs: body,
     });
   },
 });
@@ -44,7 +46,7 @@ const versely_add_video_overlay = defineTool({
 const versely_add_captions = defineTool({
   name: "versely_add_captions",
   description: "Add a single static caption to a video at top / middle / bottom.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       video_url: z.string().url(),
@@ -65,7 +67,10 @@ const versely_add_captions = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
+      kind: "video",
+      toolName: "versely_add_captions",
+      toolArgs: body,
+      extra: { prompt: input.caption_text },
     });
   },
 });
@@ -74,7 +79,7 @@ const versely_add_timestamped_captions = defineTool({
   name: "versely_add_timestamped_captions",
   description:
     "Auto-transcribe a video's audio and burn timestamped captions onto it (Reels-style).",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       video_url: z.string().url(),
@@ -95,7 +100,9 @@ const versely_add_timestamped_captions = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
+      kind: "video",
+      toolName: "versely_add_timestamped_captions",
+      toolArgs: body,
     });
   },
 });
@@ -104,7 +111,7 @@ const versely_compose_with_overlay = defineTool({
   name: "versely_compose_with_overlay",
   description:
     "Stitch a sequence of images/videos into a base composition and optionally overlay another video on top.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       media_urls: z.array(z.string().url()).min(1).describe("Images or video clips to stitch."),
@@ -129,7 +136,9 @@ const versely_compose_with_overlay = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      template: "video-player",
+      kind: "video",
+      toolName: "versely_compose_with_overlay",
+      toolArgs: body,
     });
   },
 });
@@ -137,7 +146,7 @@ const versely_compose_with_overlay = defineTool({
 const versely_get_ugc = defineTool({
   name: "versely_get_ugc",
   description: "Get a UGC video by ID.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z.object({
     ugc_id: z.string(),
   }),
@@ -145,7 +154,8 @@ const versely_get_ugc = defineTool({
     const data = await ctx.client.get(
       `/api/v1/ugc/${encodeURIComponent(input.ugc_id)}`,
     );
-    return mediaResult(data, { template: "video-player" });
+    // Read-only fetch — no Recreate.
+    return mediaResult(data, { kind: "video" });
   },
 });
 

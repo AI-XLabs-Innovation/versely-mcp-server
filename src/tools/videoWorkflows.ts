@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
-import { metaForTemplate } from "../ui/templates.js";
+import { metaForMediaCard } from "../ui/templates.js";
 
 // --- Templates ---------------------------------------------------------------
 
@@ -209,7 +209,7 @@ const versely_list_video_workflow_runs = defineTool({
 const versely_get_video_workflow_run = defineTool({
   name: "versely_get_video_workflow_run",
   description: "Fetch a video-workflow run's status, including per-scene progress.",
-  meta: metaForTemplate("gallery"),
+  meta: metaForMediaCard(),
   inputSchema: z.object({
     run_id: z.string().describe("Run UUID."),
   }),
@@ -217,7 +217,7 @@ const versely_get_video_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    return mediaResult(data, { template: "gallery" });
+    return mediaResult(data, { kind: "gallery" });
   },
 });
 
@@ -244,7 +244,7 @@ const versely_combine_video_workflow_run = defineTool({
   name: "versely_combine_video_workflow_run",
   description:
     "Finalize a completed video-workflow run by combining its rendered scenes into a single output video.",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z.object({
     run_id: z.string().describe("Run UUID (all scenes must be complete)."),
   }),
@@ -252,7 +252,11 @@ const versely_combine_video_workflow_run = defineTool({
     const data = await ctx.client.post(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}/combine`,
     );
-    return mediaResult(data, { template: "video-player" });
+    return mediaResult(data, {
+      kind: "video",
+      toolName: "versely_combine_video_workflow_run",
+      toolArgs: { run_id: input.run_id },
+    });
   },
 });
 

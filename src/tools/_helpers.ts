@@ -6,7 +6,11 @@ import {
   VerselyNetworkError,
   VerselyTimeoutError,
 } from "../errors.js";
-import { buildUiPayload, type UiAsset, type UiTemplate } from "../ui/templates.js";
+import {
+  buildMediaCardPayload,
+  type MediaKind as UiMediaKind,
+  type UiAsset,
+} from "../ui/templates.js";
 
 export function jsonResult(value: unknown): ToolResult {
   return {
@@ -105,16 +109,16 @@ export function extractMediaAssets(payload: unknown): MediaAsset[] {
   return out;
 }
 
-// Pick the appropriate template when one isn't passed explicitly. Single-kind
-// asset lists map to their dedicated viewer; multi-kind or multi-video lists
-// fall through to the gallery (which auto-detects videos by extension).
-function inferTemplate(assets: MediaAsset[]): UiTemplate {
+// Pick the asset-kind discriminator for the media card when one isn't passed
+// explicitly. Single-kind lists map directly; multi-kind or multi-video lists
+// fall through to "gallery" (the card auto-detects video vs image by URL).
+function inferKind(assets: MediaAsset[]): UiMediaKind {
   const kinds = new Set(assets.map((a) => a.kind));
   if (kinds.size > 1) return "gallery";
   const [only] = kinds;
-  if (only === "image") return "image-viewer";
-  if (only === "audio") return "audio-player";
-  return assets.length === 1 ? "video-player" : "gallery";
+  if (only === "image") return assets.length === 1 ? "image" : "gallery";
+  if (only === "audio") return "audio";
+  return assets.length === 1 ? "video" : "gallery";
 }
 
 function summarizeAssets(assets: MediaAsset[], summary?: string): string {
@@ -133,17 +137,27 @@ function summarizeAssets(assets: MediaAsset[], summary?: string): string {
 
 export interface MediaResultOpts {
   /**
-   * MCP Apps UI template to bind. If omitted, inferred from the asset kinds:
-   * all images → image-viewer, single video → video-player, all audio →
-   * audio-player, mixed → gallery.
+   * Asset-kind discriminator the media card uses to pick its render path.
+   * Inferred from the asset URLs if omitted.
    */
-  template?: UiTemplate;
+  kind?: UiMediaKind;
   /** Plain-text headline; overrides the auto "Generated N images." summary. */
   summary?: string;
   /**
-   * Extra fields to merge into `structuredContent` (e.g. echoed `model` /
-   * `prompt` / `request_id`). Useful for non-MCP-Apps clients that consume
-   * structuredContent directly and for richer LLM-side reasoning.
+   * Name of the tool that produced this result. Surfaced as
+   * `structuredContent.toolName` so the card's Recreate button can call
+   * back via `tools/call` with the same args.
+   */
+  toolName?: string;
+  /**
+   * Arguments to pass to the Recreate call. Should match the original
+   * tool input so "Recreate" produces a parallel generation.
+   */
+  toolArgs?: Record<string, unknown>;
+  /**
+   * Extra fields merged into `structuredContent` (echoed `model` / `prompt`
+   * / `seed` / `request_id`). Used by the card's chips and prompt header,
+   * and by non-MCP-Apps clients that consume structuredContent directly.
    */
   extra?: Record<string, unknown>;
 }
@@ -197,16 +211,16 @@ export async function mediaResult(
   const assets = extractMediaAssets(payload);
   if (assets.length === 0) return jsonResult(payload);
 
-  const template = opts.template ?? inferTemplate(assets);
+  const kind = opts.kind ?? inferKind(assets);
   const uiAssets: UiAsset[] = assets.map((a) => ({
     url: a.url,
     label: filenameOf(a.url),
   }));
-  const templatePayload = buildUiPayload(template, uiAssets);
-  const structuredContent =
-    templatePayload || opts.extra
-      ? { ...(templatePayload ?? {}), ...(opts.extra ?? {}) }
-      : undefined;
+  const structuredContent = buildMediaCardPayload(kind, uiAssets, {
+    ...(opts.extra ?? {}),
+    ...(opts.toolName ? { toolName: opts.toolName } : {}),
+    ...(opts.toolArgs ? { toolArgs: opts.toolArgs } : {}),
+  });
 
   const content: ContentBlock[] = [
     { type: "text", text: summarizeAssets(assets, opts.summary) },

@@ -1,90 +1,322 @@
-// Self-contained HTML templates served via the MCP Apps (SEP-1865) extension.
+// Branded inline media card served via the MCP Apps extension (SEP-1865).
 //
-// Each template is a single string that gets served from `resources/read` with
-// mimeType `text/html+mcp`. The host renders it in a sandboxed iframe and
-// hydrates it with the tool result's `structuredContent` via postMessage
-// (and/or a window-injected `window.openai`-style object, depending on host).
+// Spec: https://github.com/modelcontextprotocol/ext-apps
+// Stable: specification/2026-01-26/apps.mdx
 //
-// Templates must be:
-//   - Self-contained (no external scripts, no external CSS frameworks)
-//   - Resilient to multiple hydration channels (postMessage, window globals,
-//     URL params) — we don't know in advance which the host uses
-//   - Graceful when hydration never arrives ("Loading…" placeholder)
+// One template covers every Versely media-producing tool. The card detects
+// asset kind (image / video / audio / mixed) from `structuredContent.kind`
+// and renders accordingly. Buttons (Recreate, etc.) round-trip through the
+// host via `tools/call` JSON-RPC over postMessage.
 //
-// Images/videos load from the Versely CDN — that domain must be reachable
-// from the iframe (claude.ai's CSP permits arbitrary https origins as media
-// sources for now).
+// Hydration channels supported (host implementations differ):
+//   1. `window.openai.toolOutput` / `.toolInput` — ChatGPT-style global
+//   2. `postMessage` JSON-RPC `ui/state` / `ui/setState` (spec-canonical)
+//   3. Legacy `{ type: "tool-output", payload }` postMessage
+//   4. URL hash `#state=<base64-json>` (debug fallback)
+//
+// CSP: hosts that respect `_meta.ui.csp.resourceDomains` will allow the
+// Versely CDN subdomains declared on each tool. claude.ai currently
+// hardcodes its sandbox CSP (see anthropics/claude-ai-mcp#40) — when that
+// regression is fixed our declarations kick in automatically.
 
-export const IMAGE_VIEWER_HTML = String.raw`<!DOCTYPE html>
+const MEDIA_CARD_HTML = String.raw`<!doctype html>
 <html><head><meta charset="utf-8"/>
+<meta name="color-scheme" content="light dark"/>
 <style>
-  :root { color-scheme: light dark; }
-  html, body { margin: 0; padding: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { padding: 4px; }
-  .loading { padding: 16px; opacity: 0.6; font-size: 13px; }
-  .grid { display: grid; gap: 8px; }
-  .n1 { grid-template-columns: 1fr; }
-  .n2 { grid-template-columns: 1fr 1fr; }
-  .n3 { grid-template-columns: repeat(3, 1fr); }
-  .nMany { grid-template-columns: repeat(2, 1fr); }
-  figure { margin: 0; }
-  img { width: 100%; display: block; border-radius: 8px; cursor: zoom-in; transition: transform 120ms ease; }
-  img:hover { transform: scale(1.01); }
-  figcaption { font-size: 11px; opacity: 0.55; margin-top: 4px; word-break: break-all; }
+  :root {
+    color-scheme: light dark;
+    --bg: transparent;
+    --card: #ffffff;
+    --card-border: #e5e7eb;
+    --fg: #0a0a0b;
+    --muted: #6b7280;
+    --chip-bg: #f3f4f6;
+    --chip-fg: #374151;
+    --accent: #7c3aed;
+    --accent-fg: #ffffff;
+    --accent-hover: #6d28d9;
+    --radius: 14px;
+    --radius-sm: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --card: #131316;
+      --card-border: #27272a;
+      --fg: #f4f4f5;
+      --muted: #a1a1aa;
+      --chip-bg: #1f1f23;
+      --chip-fg: #d4d4d8;
+    }
+  }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    color: var(--fg); -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    max-width: 100%;
+  }
+  .head {
+    padding: 14px 16px 10px;
+    display: flex; align-items: flex-start; gap: 8px;
+  }
+  .prompt {
+    flex: 1; min-width: 0;
+    font-size: 13px; line-height: 1.45; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .prompt.expanded { -webkit-line-clamp: unset; display: block; }
+  .toggle {
+    flex: 0 0 auto; background: none; border: 0; cursor: pointer;
+    color: var(--muted); padding: 0 2px; line-height: 1;
+    font-size: 14px;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px; }
+  .chip {
+    background: var(--chip-bg); color: var(--chip-fg);
+    border-radius: 999px; padding: 3px 10px;
+    font-size: 11px; font-weight: 500; line-height: 1.5;
+    white-space: nowrap;
+  }
+  .body { padding: 0 0 0 0; }
+  .body.padded { padding: 0 16px; }
+  .loading { padding: 28px 16px; color: var(--muted); font-size: 13px; text-align: center; }
+  /* Image grid */
+  .grid { display: grid; gap: 4px; padding: 0; }
+  .grid.n1 { grid-template-columns: 1fr; }
+  .grid.n2 { grid-template-columns: 1fr 1fr; }
+  .grid.n3 { grid-template-columns: repeat(3, 1fr); }
+  .grid.n4plus { grid-template-columns: repeat(2, 1fr); }
+  .tile { position: relative; overflow: hidden; background: #000; }
+  .tile img, .tile video {
+    width: 100%; height: 100%; display: block;
+    object-fit: cover; cursor: zoom-in;
+  }
+  .tile.solo img, .tile.solo video { aspect-ratio: var(--ar, auto); object-fit: contain; background: #000; cursor: pointer; }
+  /* Video / single-asset */
+  .player { width: 100%; display: block; background: #000; }
+  /* Audio rows */
+  .audio-list { padding: 8px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .audio-row { display: flex; flex-direction: column; gap: 4px; }
+  .audio-label { font-size: 12px; color: var(--muted); }
+  audio { width: 100%; }
+  /* Footer */
+  .foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px 14px;
+    border-top: 1px solid var(--card-border);
+  }
+  .actions { display: flex; gap: 8px; flex: 1; }
+  .btn {
+    appearance: none; border: 1px solid var(--card-border);
+    background: var(--card); color: var(--fg);
+    padding: 6px 12px; border-radius: var(--radius-sm);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .btn:hover { background: var(--chip-bg); }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn[disabled] { opacity: 0.5; cursor: default; }
+  .brand {
+    margin-left: auto;
+    font-size: 11px; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .brand-dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--accent); display: inline-block;
+  }
+  .err { padding: 16px; color: #b91c1c; font-size: 13px; }
+  @media (prefers-color-scheme: dark) { .err { color: #f87171; } }
 </style></head>
 <body>
-<div id="app"><div class="loading">Loading preview…</div></div>
+<div id="root"><div class="loading">Loading preview…</div></div>
 <script>
 (function () {
+  var root = document.getElementById('root');
   var state = null;
-  var root = document.getElementById('app');
 
   function esc(s) {
     return String(s == null ? '' : s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
-
-  function render() {
-    if (!state) { return; }
-    var images = (state && state.images) || [];
-    if (!images.length) {
-      root.innerHTML = '<div class="loading">No images.</div>';
-      return;
+  function urlExt(u) {
+    try { var p = new URL(u).pathname; var m = p.match(/\.([a-z0-9]+)$/i); return (m ? m[1] : '').toLowerCase(); }
+    catch (e) { return ''; }
+  }
+  function isVideoUrl(u) { return /^(mp4|mov|webm|m4v|mkv)$/.test(urlExt(u)); }
+  function isAudioUrl(u) { return /^(mp3|wav|m4a|ogg|flac|aac)$/.test(urlExt(u)); }
+  function defaultKind(assets) {
+    if (!assets || !assets.length) return 'image';
+    var kinds = assets.map(function (a) {
+      var u = a && a.url;
+      if (isVideoUrl(u)) return 'video';
+      if (isAudioUrl(u)) return 'audio';
+      return 'image';
+    });
+    var uniq = {}; kinds.forEach(function (k) { uniq[k] = true; });
+    var u = Object.keys(uniq);
+    if (u.length === 1) {
+      if (u[0] === 'image') return assets.length === 1 ? 'image' : 'gallery';
+      if (u[0] === 'video') return assets.length === 1 ? 'video' : 'gallery';
+      return 'audio';
     }
-    var n = images.length;
-    var cls = n === 1 ? 'n1' : n === 2 ? 'n2' : n === 3 ? 'n3' : 'nMany';
-    var html = '<div class="grid ' + cls + '">';
-    for (var i = 0; i < n; i++) {
-      var img = images[i] || {};
-      var url = esc(img.url || '');
-      var lab = esc(img.label || '');
-      html += '<figure>' +
-        '<a href="' + url + '" target="_blank" rel="noopener">' +
-          '<img src="' + url + '" alt="' + lab + '"/>' +
-        '</a>' +
-        (lab ? '<figcaption>' + lab + '</figcaption>' : '') +
-      '</figure>';
-    }
-    html += '</div>';
-    root.innerHTML = html;
+    return 'gallery';
   }
 
-  function hydrate(data) {
-    if (!data) return;
-    state = data;
+  function renderChips(s) {
+    var chips = [];
+    if (s.model) chips.push('<span class="chip">' + esc(s.model) + '</span>');
+    if (s.aspect_ratio) chips.push('<span class="chip">' + esc(s.aspect_ratio) + '</span>');
+    if (s.size) chips.push('<span class="chip">' + esc(s.size) + '</span>');
+    if (s.duration_seconds) chips.push('<span class="chip">' + esc(s.duration_seconds) + 's</span>');
+    if (s.seed != null) chips.push('<span class="chip">seed ' + esc(s.seed) + '</span>');
+    return chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '';
+  }
+
+  function renderHead(s) {
+    var text = s.prompt || s.text || s.title || s.summary || '';
+    if (!text) return '';
+    var safe = esc(text);
+    return '<div class="head">' +
+      '<div class="prompt" data-prompt>' + safe + '</div>' +
+      '<button class="toggle" data-toggle aria-label="Expand">⌄</button>' +
+    '</div>';
+  }
+
+  function renderImageGrid(assets) {
+    var n = assets.length;
+    var cls = n === 1 ? 'n1' : n === 2 ? 'n2' : n === 3 ? 'n3' : 'n4plus';
+    var html = '<div class="grid ' + cls + '">';
+    for (var i = 0; i < n; i++) {
+      var a = assets[i] || {};
+      var url = esc(a.url || '');
+      var label = esc(a.label || '');
+      var tileCls = n === 1 ? 'tile solo' : 'tile';
+      html += '<div class="' + tileCls + '">' +
+        '<a href="' + url + '" target="_blank" rel="noopener">' +
+          '<img src="' + url + '" alt="' + label + '" loading="lazy"/>' +
+        '</a>' +
+      '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderVideo(asset) {
+    if (!asset || !asset.url) return '<div class="err">No video.</div>';
+    var u = esc(asset.url);
+    return '<video class="player" src="' + u + '" controls playsinline preload="metadata"></video>';
+  }
+
+  function renderAudio(assets) {
+    if (!assets.length) return '<div class="err">No audio.</div>';
+    var html = '<div class="audio-list">';
+    for (var i = 0; i < assets.length; i++) {
+      var a = assets[i] || {}; if (!a.url) continue;
+      var lab = esc(a.label || ('Track ' + (i + 1)));
+      html += '<div class="audio-row">' +
+        '<div class="audio-label">' + lab + '</div>' +
+        '<audio src="' + esc(a.url) + '" controls preload="metadata"></audio>' +
+      '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function renderActions(s) {
+    var canRecreate = !!(s.toolName);
+    var html = '<div class="actions">';
+    html += '<button class="btn primary" data-recreate' + (canRecreate ? '' : ' disabled') + '>' +
+      '<span aria-hidden="true">↻</span>Recreate</button>';
+    html += '</div>';
+    var toolLabel = s.toolName ? s.toolName.replace(/^versely_/, '') : 'media';
+    html += '<span class="brand"><span class="brand-dot"></span>Versely · ' + esc(toolLabel) + '</span>';
+    return html;
+  }
+
+  function render() {
+    if (!state) return;
+    var s = state;
+    var assets = Array.isArray(s.assets) ? s.assets.filter(function (a) { return a && a.url; }) : [];
+    var kind = s.kind || defaultKind(assets);
+    if (kind === 'gallery') kind = assets.every(function (a) { return !isVideoUrl(a.url) && !isAudioUrl(a.url); })
+      ? 'gallery-images' : 'gallery-mixed';
+
+    var bodyHtml;
+    if (assets.length === 0) {
+      bodyHtml = '<div class="loading">No assets returned.</div>';
+    } else if (kind === 'video' || (assets.length === 1 && isVideoUrl(assets[0].url))) {
+      bodyHtml = renderVideo(assets[0]);
+    } else if (kind === 'audio' || (assets.length >= 1 && isAudioUrl(assets[0].url))) {
+      bodyHtml = renderAudio(assets);
+    } else {
+      bodyHtml = renderImageGrid(assets);
+    }
+
+    var html = '<div class="card">' +
+      renderHead(s) +
+      renderChips(s) +
+      '<div class="body">' + bodyHtml + '</div>' +
+      '<div class="foot">' + renderActions(s) + '</div>' +
+    '</div>';
+    root.innerHTML = html;
+
+    var toggle = root.querySelector('[data-toggle]');
+    var prompt = root.querySelector('[data-prompt]');
+    if (toggle && prompt) {
+      toggle.addEventListener('click', function () { prompt.classList.toggle('expanded'); });
+    }
+    var recreate = root.querySelector('[data-recreate]');
+    if (recreate && s.toolName) {
+      recreate.addEventListener('click', function () {
+        recreate.disabled = true;
+        recreate.innerHTML = '<span aria-hidden="true">…</span>Working…';
+        callTool(s.toolName, s.toolArgs || {});
+      });
+    }
+  }
+
+  function nextId() { return Date.now() * 1000 + Math.floor(Math.random() * 1000); }
+  function send(msg) {
+    try { window.parent && window.parent.postMessage(msg, '*'); } catch (e) {}
+  }
+  function callTool(name, args) {
+    send({
+      jsonrpc: '2.0', id: nextId(),
+      method: 'tools/call',
+      params: { name: name, arguments: args || {} },
+    });
+  }
+
+  function hydrate(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    state = payload;
     render();
   }
 
-  // Channel 1: window.openai-style global injected by host before load.
+  // Channel 1: window.openai-style globals (ChatGPT and look-alikes).
   try {
     if (window.openai && window.openai.toolOutput) {
-      hydrate(window.openai.toolOutput);
+      hydrate(Object.assign(
+        {},
+        window.openai.toolOutput,
+        window.openai.toolInput ? { toolArgs: window.openai.toolInput } : {}
+      ));
     }
   } catch (e) {}
 
-  // Channel 2: postMessage from host. Accept several wire formats observed
-  // in the SEP-1865 ecosystem.
+  // Channel 2: postMessage. Accept the spec form and several legacy wrappers
+  // so the same template works in MCPJam Inspector, ChatGPT, claude.ai, etc.
   window.addEventListener('message', function (ev) {
     var m = ev.data;
     if (!m || typeof m !== 'object') return;
@@ -95,185 +327,33 @@ export const IMAGE_VIEWER_HTML = String.raw`<!DOCTYPE html>
     if (m.structuredContent) return hydrate(m.structuredContent);
   });
 
-  // Channel 3: URL hash fallback (?state=<base64-json>)
+  // Channel 3: URL hash debug fallback.
   try {
     var match = (location.hash || '').match(/state=([^&]+)/);
     if (match) hydrate(JSON.parse(atob(decodeURIComponent(match[1]))));
   } catch (e) {}
 
-  // Signal readiness — many hosts wait for this before sending state.
-  try {
-    window.parent && window.parent.postMessage(
-      { jsonrpc: '2.0', method: 'ui/ready', id: 1 }, '*'
-    );
-  } catch (e) {}
+  // Spec-canonical readiness ping. Many hosts wait for this before sending state.
+  send({ jsonrpc: '2.0', method: 'ui/ready', id: nextId(), params: {} });
 })();
 </script>
 </body></html>`;
 
-export const VIDEO_PLAYER_HTML = String.raw`<!DOCTYPE html>
-<html><head><meta charset="utf-8"/>
-<style>
-  :root { color-scheme: light dark; }
-  html, body { margin: 0; padding: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { padding: 4px; }
-  .loading { padding: 16px; opacity: 0.6; font-size: 13px; }
-  video { width: 100%; max-height: 70vh; border-radius: 8px; background: #000; display: block; }
-  .meta { font-size: 11px; opacity: 0.6; margin-top: 6px; word-break: break-all; }
-</style></head>
-<body>
-<div id="app"><div class="loading">Loading video…</div></div>
-<script>
-(function () {
-  var root = document.getElementById('app');
-  function esc(s) { return String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-  function render(state) {
-    if (!state) return;
-    var url = state.videoUrl || (state.video && state.video.url);
-    var poster = state.posterUrl || state.poster;
-    var label = state.label || state.title || '';
-    if (!url) { root.innerHTML = '<div class="loading">No video URL.</div>'; return; }
-    var u = esc(url);
-    root.innerHTML =
-      '<video src="' + u + '" controls playsinline preload="metadata"' +
-        (poster ? ' poster="' + esc(poster) + '"' : '') + '></video>' +
-      (label ? '<div class="meta">' + esc(label) + '</div>' : '');
-  }
-  function hydrate(data) { if (data) render(data); }
-  try { if (window.openai && window.openai.toolOutput) hydrate(window.openai.toolOutput); } catch (e) {}
-  window.addEventListener('message', function (ev) {
-    var m = ev.data; if (!m || typeof m !== 'object') return;
-    if (m.type === 'tool-output' && m.payload) return hydrate(m.payload);
-    if (m.type === 'mcp.ui.state' && m.payload) return hydrate(m.payload);
-    if (m.method === 'ui/state' && m.params) return hydrate(m.params);
-    if (m.method === 'ui/setState' && m.params) return hydrate(m.params);
-    if (m.structuredContent) return hydrate(m.structuredContent);
-  });
-  try { var match = (location.hash || '').match(/state=([^&]+)/);
-    if (match) hydrate(JSON.parse(atob(decodeURIComponent(match[1])))); } catch (e) {}
-  try { window.parent && window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/ready', id: 1 }, '*'); } catch (e) {}
-})();
-</script>
-</body></html>`;
+// --- Registry ---------------------------------------------------------------
 
-export const AUDIO_PLAYER_HTML = String.raw`<!DOCTYPE html>
-<html><head><meta charset="utf-8"/>
-<style>
-  :root { color-scheme: light dark; }
-  html, body { margin: 0; padding: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { padding: 8px; }
-  .loading { padding: 16px; opacity: 0.6; font-size: 13px; }
-  audio { width: 100%; display: block; }
-  .label { font-size: 12px; opacity: 0.7; margin-bottom: 6px; }
-  .row { margin-bottom: 10px; }
-</style></head>
-<body>
-<div id="app"><div class="loading">Loading audio…</div></div>
-<script>
-(function () {
-  var root = document.getElementById('app');
-  function esc(s) { return String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-  function render(state) {
-    if (!state) return;
-    var tracks = state.tracks || (state.audioUrl ? [{ url: state.audioUrl, label: state.label || state.title }] : []);
-    if (!tracks.length) { root.innerHTML = '<div class="loading">No audio URL.</div>'; return; }
-    var html = '';
-    for (var i = 0; i < tracks.length; i++) {
-      var t = tracks[i] || {}; if (!t.url) continue;
-      html += '<div class="row">' +
-        (t.label ? '<div class="label">' + esc(t.label) + '</div>' : '') +
-        '<audio src="' + esc(t.url) + '" controls preload="metadata"></audio>' +
-      '</div>';
-    }
-    root.innerHTML = html || '<div class="loading">No audio URL.</div>';
-  }
-  function hydrate(data) { if (data) render(data); }
-  try { if (window.openai && window.openai.toolOutput) hydrate(window.openai.toolOutput); } catch (e) {}
-  window.addEventListener('message', function (ev) {
-    var m = ev.data; if (!m || typeof m !== 'object') return;
-    if (m.type === 'tool-output' && m.payload) return hydrate(m.payload);
-    if (m.type === 'mcp.ui.state' && m.payload) return hydrate(m.payload);
-    if (m.method === 'ui/state' && m.params) return hydrate(m.params);
-    if (m.method === 'ui/setState' && m.params) return hydrate(m.params);
-    if (m.structuredContent) return hydrate(m.structuredContent);
-  });
-  try { var match = (location.hash || '').match(/state=([^&]+)/);
-    if (match) hydrate(JSON.parse(atob(decodeURIComponent(match[1])))); } catch (e) {}
-  try { window.parent && window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/ready', id: 1 }, '*'); } catch (e) {}
-})();
-</script>
-</body></html>`;
+/**
+ * Spec-canonical MIME for SEP-1865 UI resources, per the 2026-01-26 stable
+ * spec (corrected from the original `text/html+mcp` proposal after IANA
+ * review — `+mcp` is not a valid structured-suffix). Some hosts still
+ * recognize the legacy form; we ship the canonical one and accept that
+ * out-of-date hosts may need to update.
+ */
+export const UI_MIME_TYPE = "text/html;profile=mcp-app";
 
-export const GALLERY_HTML = String.raw`<!DOCTYPE html>
-<html><head><meta charset="utf-8"/>
-<style>
-  :root { color-scheme: light dark; }
-  html, body { margin: 0; padding: 0; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  #app { padding: 4px; }
-  .loading { padding: 16px; opacity: 0.6; font-size: 13px; }
-  .wrap { display: flex; flex-wrap: wrap; gap: 8px; }
-  .tile { flex: 1 1 calc(33.333% - 8px); min-width: 120px; }
-  .tile img, .tile video { width: 100%; display: block; border-radius: 8px; aspect-ratio: 1 / 1; object-fit: cover; background: #000; }
-  .tile .cap { font-size: 11px; opacity: 0.55; margin-top: 4px; word-break: break-all; }
-</style></head>
-<body>
-<div id="app"><div class="loading">Loading…</div></div>
-<script>
-(function () {
-  var root = document.getElementById('app');
-  function esc(s) { return String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-  function isVideo(url) { return /\.(mp4|webm|mov|m4v|mkv)(\?|$)/i.test(url || ''); }
-  function render(state) {
-    if (!state) return;
-    var items = state.items || state.images || [];
-    if (!items.length) { root.innerHTML = '<div class="loading">No items.</div>'; return; }
-    var html = '<div class="wrap">';
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i] || {}; var url = it.url || ''; if (!url) continue;
-      var cap = esc(it.label || '');
-      var tag = isVideo(url)
-        ? '<video src="' + esc(url) + '" muted playsinline preload="metadata"></video>'
-        : '<img src="' + esc(url) + '" alt="' + cap + '"/>';
-      html += '<div class="tile">' +
-        '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + tag + '</a>' +
-        (cap ? '<div class="cap">' + cap + '</div>' : '') +
-      '</div>';
-    }
-    html += '</div>';
-    root.innerHTML = html;
-  }
-  function hydrate(data) { if (data) render(data); }
-  try { if (window.openai && window.openai.toolOutput) hydrate(window.openai.toolOutput); } catch (e) {}
-  window.addEventListener('message', function (ev) {
-    var m = ev.data; if (!m || typeof m !== 'object') return;
-    if (m.type === 'tool-output' && m.payload) return hydrate(m.payload);
-    if (m.type === 'mcp.ui.state' && m.payload) return hydrate(m.payload);
-    if (m.method === 'ui/state' && m.params) return hydrate(m.params);
-    if (m.method === 'ui/setState' && m.params) return hydrate(m.params);
-    if (m.structuredContent) return hydrate(m.structuredContent);
-  });
-  try { var match = (location.hash || '').match(/state=([^&]+)/);
-    if (match) hydrate(JSON.parse(atob(decodeURIComponent(match[1])))); } catch (e) {}
-  try { window.parent && window.parent.postMessage({ jsonrpc: '2.0', method: 'ui/ready', id: 1 }, '*'); } catch (e) {}
-})();
-</script>
-</body></html>`;
-
-// Registry of all UI resources. Keys are the `ui://` URIs declared on tools
-// via `_meta["ui/resourceUri"]`. Values are the raw HTML served from
-// resources/read with mimeType `text/html+mcp`.
-
-export type UiTemplate =
-  | "image-viewer"
-  | "video-player"
-  | "audio-player"
-  | "gallery";
+/** Single resource URI all media tools point at. */
+export const MEDIA_CARD_URI = "ui://versely/media-card";
 
 interface UiResourceEntry {
-  template: UiTemplate;
   uri: string;
   name: string;
   description: string;
@@ -282,123 +362,92 @@ interface UiResourceEntry {
 
 export const UI_RESOURCES: ReadonlyArray<UiResourceEntry> = [
   {
-    template: "image-viewer",
-    uri: "ui://versely/image-viewer",
-    name: "Versely image viewer",
+    uri: MEDIA_CARD_URI,
+    name: "Versely Media Card",
     description:
-      "Grid viewer for generated images. Hydrates from structuredContent.images = [{url, label?}].",
-    html: IMAGE_VIEWER_HTML,
-  },
-  {
-    template: "video-player",
-    uri: "ui://versely/video-player",
-    name: "Versely video player",
-    description:
-      "Single-video player. Hydrates from structuredContent.videoUrl (+ optional posterUrl, label).",
-    html: VIDEO_PLAYER_HTML,
-  },
-  {
-    template: "audio-player",
-    uri: "ui://versely/audio-player",
-    name: "Versely audio player",
-    description:
-      "Audio playlist. Hydrates from structuredContent.tracks = [{url, label?}] or {audioUrl, label}.",
-    html: AUDIO_PLAYER_HTML,
-  },
-  {
-    template: "gallery",
-    uri: "ui://versely/gallery",
-    name: "Versely mixed-media gallery",
-    description:
-      "Flex-wrap gallery for slideshows / scenes / search results. Hydrates from structuredContent.items = [{url, label?}].",
-    html: GALLERY_HTML,
+      "Branded inline card rendering Versely-generated images, videos, audio, and slideshows. Hydrates from structuredContent { kind, assets, model, prompt, toolName, toolArgs }.",
+    html: MEDIA_CARD_HTML,
   },
 ];
-
-export const UI_MIME_TYPE = "text/html+mcp";
-
-const TEMPLATE_TO_URI: Record<UiTemplate, string> = UI_RESOURCES.reduce(
-  (acc, r) => {
-    acc[r.template] = r.uri;
-    return acc;
-  },
-  {} as Record<UiTemplate, string>,
-);
 
 export function getUiResource(uri: string): UiResourceEntry | undefined {
   return UI_RESOURCES.find((r) => r.uri === uri);
 }
 
-export function uriForTemplate(template: UiTemplate): string {
-  return TEMPLATE_TO_URI[template];
-}
+// --- Tool _meta -------------------------------------------------------------
 
 /**
- * Build the `_meta` object declared on a tool definition. Emits both the spec
- * form (`ui/resourceUri`) and the dot-form compat alias (`ui.resourceUri`) so
- * hosts that haven't migrated to the slash form still pick up the binding.
+ * Build the `_meta` block to attach to a tool definition. Emits the
+ * spec-canonical nested `_meta.ui = { resourceUri, csp, ... }` form **and**
+ * the deprecated flat `ui/resourceUri` key for compatibility with hosts
+ * that still match the old shape.
  */
-export function metaForTemplate(template: UiTemplate): Record<string, unknown> {
-  const uri = uriForTemplate(template);
+export function metaForMediaCard(): Record<string, unknown> {
   return {
-    "ui/resourceUri": uri,
-    "ui.resourceUri": uri,
+    // Spec-canonical (SEP-1865 stable, 2026-01-26).
+    ui: {
+      resourceUri: MEDIA_CARD_URI,
+      // Hosts that respect csp will whitelist the Versely CDN subdomains so
+      // the iframe sandbox doesn't block media loads. claude.ai currently
+      // hardcodes its sandbox CSP (anthropics/claude-ai-mcp#40); these
+      // declarations kick in once that's fixed and on other hosts today.
+      csp: {
+        resourceDomains: [
+          "https://img.versely.studio",
+          "https://videos.versely.studio",
+          "https://audio.versely.studio",
+          "https://user-files.versely.studio",
+          "https://slideshow-images.versely.studio",
+          "https://slideshowvideos.versely.studio",
+          "https://avatars.versely.studio",
+          "https://cdn.versely.studio",
+        ],
+        connectDomains: [],
+        frameDomains: [],
+      },
+      prefersBorder: true,
+      visibility: ["model"],
+    },
+    // Deprecated flat-key form — kept as a compatibility hint for older
+    // host implementations that haven't migrated to the nested object yet.
+    "ui/resourceUri": MEDIA_CARD_URI,
   };
 }
 
-// --- Payload contracts -------------------------------------------------------
-// `structuredContent` shape per template. Each media tool builds one of these
-// from its asset list and the host hydrates the iframe with it.
+// --- Payload contracts ------------------------------------------------------
+
+export type MediaKind = "image" | "video" | "audio" | "gallery";
 
 export interface UiAsset {
   url: string;
   label?: string;
 }
 
-export interface ImageViewerPayload {
-  images: UiAsset[];
-}
-export interface VideoPlayerPayload {
-  videoUrl: string;
-  posterUrl?: string;
-  label?: string;
-}
-export interface AudioPlayerPayload {
-  tracks: UiAsset[];
-}
-export interface GalleryPayload {
-  items: UiAsset[];
-}
-
-export type UiPayload =
-  | { template: "image-viewer"; data: ImageViewerPayload }
-  | { template: "video-player"; data: VideoPlayerPayload }
-  | { template: "audio-player"; data: AudioPlayerPayload }
-  | { template: "gallery"; data: GalleryPayload };
-
 /**
- * Shape an asset list into the template-specific structuredContent payload.
- * Returns `undefined` when there's nothing renderable (caller falls back to
- * a plain JSON result with no iframe).
+ * Shape the `structuredContent` payload the media-card template hydrates from.
+ * `kind` is a discriminator the card uses to pick its render path; `assets`
+ * is normalized across image / video / audio. `toolName` + `toolArgs` enable
+ * the Recreate button to round-trip the same call.
  */
-export function buildUiPayload(
-  template: UiTemplate,
+export interface MediaCardPayload {
+  kind: MediaKind;
+  assets: UiAsset[];
+  model?: string;
+  prompt?: string;
+  aspect_ratio?: string;
+  size?: string;
+  duration_seconds?: number;
+  seed?: number;
+  request_id?: string;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+}
+
+export function buildMediaCardPayload(
+  kind: MediaKind,
   assets: UiAsset[],
+  extra: Omit<MediaCardPayload, "kind" | "assets"> & Record<string, unknown> = {},
 ): Record<string, unknown> | undefined {
   if (assets.length === 0) return undefined;
-  switch (template) {
-    case "image-viewer":
-      return { images: assets } satisfies ImageViewerPayload;
-    case "video-player": {
-      const first = assets[0]!;
-      return {
-        videoUrl: first.url,
-        ...(first.label ? { label: first.label } : {}),
-      } satisfies VideoPlayerPayload;
-    }
-    case "audio-player":
-      return { tracks: assets } satisfies AudioPlayerPayload;
-    case "gallery":
-      return { items: assets } satisfies GalleryPayload;
-  }
+  return { kind, assets, ...extra };
 }

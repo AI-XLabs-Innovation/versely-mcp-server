@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
-import { metaForTemplate } from "../ui/templates.js";
+import { metaForMediaCard } from "../ui/templates.js";
 
 const versely_create_slideshow = defineTool({
   name: "versely_create_slideshow",
   description:
     "Create a slideshow by generating multiple AI images from a prompt (no automation, no overlays).",
-  meta: metaForTemplate("gallery"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       prompt: z.string(),
@@ -18,7 +18,12 @@ const versely_create_slideshow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const data = await ctx.client.post("/api/v1/slideshow/create", input);
-    return mediaResult(data, { template: "gallery" });
+    return mediaResult(data, {
+      kind: "gallery",
+      toolName: "versely_create_slideshow",
+      toolArgs: input,
+      extra: { prompt: input.prompt, model: input.model, aspect_ratio: input.aspect_ratio },
+    });
   },
 });
 
@@ -26,7 +31,7 @@ const versely_create_automated_slideshow = defineTool({
   name: "versely_create_automated_slideshow",
   description:
     "Full automation: AI plans the slideshow, generates the images, and burns text overlays in one request.",
-  meta: metaForTemplate("gallery"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       topic: z.string().describe("Topic / theme for the slideshow."),
@@ -38,20 +43,26 @@ const versely_create_automated_slideshow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const data = await ctx.client.post("/api/v1/slideshow/create-automated", input);
-    return mediaResult(data, { template: "gallery" });
+    return mediaResult(data, {
+      kind: "gallery",
+      toolName: "versely_create_automated_slideshow",
+      toolArgs: input,
+      extra: { prompt: input.topic, model: input.model, aspect_ratio: input.aspect_ratio },
+    });
   },
 });
 
 const versely_get_slideshow = defineTool({
   name: "versely_get_slideshow",
   description: "Get a slideshow by ID, including its images.",
-  meta: metaForTemplate("gallery"),
+  meta: metaForMediaCard(),
   inputSchema: z.object({ slideshow_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.get(
       `/api/v1/slideshow/${encodeURIComponent(input.slideshow_id)}`,
     );
-    return mediaResult(data, { template: "gallery" });
+    // Read-only fetch — no Recreate button (re-fetching doesn't generate).
+    return mediaResult(data, { kind: "gallery" });
   },
 });
 
@@ -85,7 +96,7 @@ const versely_delete_slideshow = defineTool({
 const versely_add_slideshow_images = defineTool({
   name: "versely_add_slideshow_images",
   description: "Generate and append more AI images to an existing slideshow.",
-  meta: metaForTemplate("gallery"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -100,7 +111,12 @@ const versely_add_slideshow_images = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/images`,
       body,
     );
-    return mediaResult(data, { template: "gallery" });
+    return mediaResult(data, {
+      kind: "gallery",
+      toolName: "versely_add_slideshow_images",
+      toolArgs: input,
+      extra: { prompt: input.prompt, model: input.model },
+    });
   },
 });
 
@@ -108,7 +124,7 @@ const versely_add_text_overlay = defineTool({
   name: "versely_add_text_overlay",
   description:
     "Burn text overlays onto a slideshow's images. Pass an array of overlays (one per slide or shared).",
-  meta: metaForTemplate("gallery"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -133,7 +149,11 @@ const versely_add_text_overlay = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/text-overlay`,
       body,
     );
-    return mediaResult(data, { template: "gallery" });
+    return mediaResult(data, {
+      kind: "gallery",
+      toolName: "versely_add_text_overlay",
+      toolArgs: input,
+    });
   },
 });
 
@@ -141,7 +161,7 @@ const versely_slideshow_to_video = defineTool({
   name: "versely_slideshow_to_video",
   description:
     "Compile a slideshow's images (and optional audio) into an MP4 video with transitions (server-side FFmpeg).",
-  meta: metaForTemplate("video-player"),
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -157,7 +177,12 @@ const versely_slideshow_to_video = defineTool({
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/video`,
       body,
     );
-    return mediaResult(data, { template: "video-player" });
+    return mediaResult(data, {
+      kind: "video",
+      toolName: "versely_slideshow_to_video",
+      toolArgs: input,
+      extra: { aspect_ratio: input.aspect_ratio, duration_seconds: input.duration_per_slide_seconds },
+    });
   },
 });
 
