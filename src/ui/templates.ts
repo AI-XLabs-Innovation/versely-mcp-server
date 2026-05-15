@@ -115,9 +115,18 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     width: 100%; height: 100%; display: block;
     object-fit: cover; cursor: zoom-in;
   }
-  .tile.solo img, .tile.solo video { aspect-ratio: var(--ar, auto); object-fit: contain; background: #000; cursor: pointer; }
-  /* Video / single-asset */
-  .player { width: 100%; display: block; background: #000; }
+  /* Single-asset (solo) tiles use a centered, contained image with a cap
+     on height so 1:1 / portrait sources don't dominate the chat. The
+     iframe is up to 720px wide; 480px tall keeps it in a Higgsfield-style
+     viewport while preserving full resolution on click. */
+  .tile.solo { display: flex; align-items: center; justify-content: center; background: #000; max-height: 480px; }
+  .tile.solo img, .tile.solo video {
+    width: auto; height: auto;
+    max-width: 100%; max-height: 480px;
+    display: block; object-fit: contain; cursor: pointer; background: #000;
+  }
+  /* Video / single-asset (when not rendered as a .tile) */
+  .player { width: 100%; max-height: 480px; display: block; background: #000; object-fit: contain; }
   /* Audio rows */
   .audio-list { padding: 8px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
   .audio-row { display: flex; flex-direction: column; gap: 4px; }
