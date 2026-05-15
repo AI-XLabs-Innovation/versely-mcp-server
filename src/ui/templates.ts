@@ -30,6 +30,11 @@
 const MEDIA_CARD_HTML = String.raw`<!doctype html>
 <html><head><meta charset="utf-8"/>
 <meta name="color-scheme" content="light dark"/>
+<!-- Strip Referer so Cloudflare hotlink protection on img/videos/audio
+     .versely.studio doesn't 1011 us when the iframe (claudemcpcontent.com)
+     loads asset URLs. Per-element referrerpolicy on img/video/audio gives
+     belt-and-suspenders coverage. -->
+<meta name="referrer" content="no-referrer"/>
 <style>
   :root {
     color-scheme: light dark;
@@ -242,8 +247,8 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       var label = esc(a.label || '');
       var tileCls = n === 1 ? 'tile solo' : 'tile';
       html += '<div class="' + tileCls + '">' +
-        '<a href="' + url + '" target="_blank" rel="noopener">' +
-          '<img src="' + url + '" alt="' + label + '" loading="lazy"/>' +
+        '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' +
+          '<img src="' + url + '" alt="' + label + '" loading="lazy" referrerpolicy="no-referrer"/>' +
         '</a>' +
       '</div>';
     }
@@ -254,7 +259,7 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   function renderVideo(asset) {
     if (!asset || !asset.url) return '<div class="err">No video.</div>';
     var u = esc(asset.url);
-    return '<video class="player" src="' + u + '" controls playsinline preload="metadata"></video>';
+    return '<video class="player" src="' + u + '" controls playsinline preload="metadata" referrerpolicy="no-referrer"></video>';
   }
 
   function renderAudio(assets) {
@@ -265,7 +270,7 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       var lab = esc(a.label || ('Track ' + (i + 1)));
       html += '<div class="audio-row">' +
         '<div class="audio-label">' + lab + '</div>' +
-        '<audio src="' + esc(a.url) + '" controls preload="metadata"></audio>' +
+        '<audio src="' + esc(a.url) + '" controls preload="metadata" referrerpolicy="no-referrer"></audio>' +
       '</div>';
     }
     html += '</div>';
