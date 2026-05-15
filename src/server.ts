@@ -31,9 +31,26 @@ export function getRegisteredToolCount(): number {
  * so the per-user `vsk_` API key stays scoped to that request.
  */
 export function buildServer(config: Config, client: VerselyClient): Server {
+  // MCP Apps extension capability. claude.ai's initialize advertises
+  // `capabilities.extensions["io.modelcontextprotocol/ui"]`; servers must
+  // echo a matching declaration on the same path or the host treats `ui://`
+  // entries in resources/list as ordinary resources and never calls
+  // resources/read to fetch the iframe HTML. `extensions` is a typed key in
+  // ServerCapabilitiesSchema (Record<string, object>), so the namespaced
+  // sub-key passes through verbatim.
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {}, resources: {} } },
+    {
+      capabilities: {
+        tools: {},
+        resources: {},
+        extensions: {
+          "io.modelcontextprotocol/ui": {
+            mimeTypes: [UI_MIME_TYPE],
+          },
+        },
+      },
+    },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
