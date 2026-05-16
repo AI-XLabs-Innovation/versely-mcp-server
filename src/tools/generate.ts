@@ -282,9 +282,25 @@ const versely_generate_video = defineTool({
   },
 });
 
+// Per-model default voice. Many TTS providers (FAL/RunPod/KIE) reject the
+// submission outright when no voice is supplied (Qwen FAL: "Either 'voice'
+// or 'speaker_voice_embedding_file_url' must be provided"). Filling a
+// sensible default lets the LLM call versely_generate_audio with just
+// model + text. Lowercased canonical name → voice id, sourced from the
+// frontend's hardcoded voice catalogs (ai-speech.tsx).
+const AUDIO_VOICE_DEFAULTS: Record<string, string> = {
+  "qwen 3 tts 1.7b": "Vivian",
+  "qwen 3 tts 0.6b": "Vivian",
+  "grok tts": "eve",
+  "minimax speech": "Wise_Woman",
+  "chatterbox tts": "Aaron",
+  "chatterbox tts turbo": "Aaron",
+};
+
 const versely_generate_audio = defineTool({
   name: "versely_generate_audio",
-  description: "Generate speech / audio via TTS. Default polls until done.",
+  description:
+    "Generate speech / audio via TTS. Default polls until done. Most providers require a voice; if omitted, a sensible default is applied (e.g. 'Vivian' for Qwen, 'eve' for Grok, 'Wise_Woman' for Minimax). Pass voice explicitly to override.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -294,7 +310,12 @@ const versely_generate_audio = defineTool({
           "TTS / audio model — pass either the slug or the canonical name. Call versely_find_models with type='audio' first to discover valid identifiers.",
         ),
       text: z.string(),
-      voice: z.string().optional(),
+      voice: z
+        .string()
+        .optional()
+        .describe(
+          "Voice id for the chosen model. Defaults applied when omitted: Qwen→'Vivian', Grok→'eve', Minimax→'Wise_Woman', Chatterbox→'Aaron'. ElevenLabs / KIE models require a user-supplied valid voice id (no safe default).",
+        ),
       voice_id: z.string().optional(),
       language: z.string().optional(),
       ...AsyncFields,
@@ -303,6 +324,14 @@ const versely_generate_audio = defineTool({
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
     body.model = await resolveCanonicalModel(ctx, "audio", body.model);
+    // Fill in the default voice when LLM didn't pass one. Only kicks in
+    // for models we have a known-good default for; others (ElevenLabs etc.)
+    // surface the provider's own validation error so the LLM/user can
+    // supply a valid voice on retry.
+    if (!body.voice && !body.voice_id) {
+      const fallback = AUDIO_VOICE_DEFAULTS[body.model.toLowerCase()];
+      if (fallback) body.voice = fallback;
+    }
     const submission = await ctx.client.post("/api/v1/generate/audio", body);
     return handleAsync({
       ctx,
