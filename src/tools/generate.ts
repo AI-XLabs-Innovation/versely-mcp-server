@@ -110,12 +110,21 @@ const versely_find_models = defineTool({
       ? [input.type]
       : (["image", "video", "audio", "lipsync"] as const);
 
-    const query: Record<string, string | boolean | undefined> = {};
-    if (input.category) query.category = input.category;
-    if (input.is_featured !== undefined) query.is_featured = input.is_featured;
+    const baseQuery: Record<string, string | boolean | undefined> = {};
+    if (input.category) baseQuery.category = input.category;
+    if (input.is_featured !== undefined) baseQuery.is_featured = input.is_featured;
 
+    // For audio, restrict to models the unified /api/v1/generate/audio
+    // dispatcher actually serves — the catalog also lists per-provider
+    // entries (Cartesia/Inworld/Suno Sounds) that only work through
+    // dedicated routes used by the web app, not through MCP's submit path.
+    // Image/video/lipsync don't have this split, so they get the base query.
     const responses = await Promise.all(
-      types.map((t) => ctx.client.get<ModelsListResponse>(FIND_MODELS_PATHS[t], { query })),
+      types.map((t) => {
+        const query: Record<string, string | boolean | undefined> = { ...baseQuery };
+        if (t === "audio") query.dispatcher_only = "true";
+        return ctx.client.get<ModelsListResponse>(FIND_MODELS_PATHS[t], { query });
+      }),
     );
 
     const merged: BackendModel[] = [];

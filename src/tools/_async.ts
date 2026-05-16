@@ -41,15 +41,20 @@ const REQUEST_ID_KEYS = [
   "id",
 ] as const;
 
-// Containers that wrap the polling handle. Dispatchers vary wildly:
-// fal → `data.taskId`, Kie/GPT-Image-2 → `data[0].taskId`, some adapters
-// → `response.data.taskId`. Drill into all of them.
+// Containers that wrap the polling handle, walked first for priority:
+// fal → data.taskId, Kie/GPT-Image-2 → data[0].taskId, some adapters
+// → response.data.taskId. The audio dispatcher uses a batch shape with
+// `successful: [{data: {requestId, ...}}]` so we also fall back to a
+// general walk through any nested object/array after the priority
+// containers are exhausted. Without that fallback the request_id is lost
+// and async tools degrade to jsonResult instead of the pending media card.
 const REQUEST_ID_CONTAINERS = ["data", "response", "result"] as const;
 
 /**
  * Walk a provider response shape looking for a polling handle. Returns the
- * first canonical-key match found in a depth-first walk through objects,
- * arrays, and the known wrapper containers.
+ * first canonical-key match found in a depth-first walk: canonical keys at
+ * each level first, then `data`/`response`/`result` containers, then any
+ * remaining nested object/array values.
  */
 export function pickRequestId(value: unknown): string | undefined {
   const seen = new WeakSet<object>();
@@ -74,7 +79,18 @@ export function pickRequestId(value: unknown): string | undefined {
       }
     }
     for (const containerKey of REQUEST_ID_CONTAINERS) {
-      const hit = visit(obj[containerKey]);
+      if (containerKey in obj) {
+        const hit = visit(obj[containerKey]);
+        if (hit) return hit;
+      }
+    }
+    // Fall through to all remaining keys. Backend batch shapes wrap the
+    // request_id in dispatcher-specific arrays (e.g. `successful[].data`)
+    // that aren't in REQUEST_ID_CONTAINERS — walk them so the polling
+    // handle still surfaces.
+    for (const k of Object.keys(obj)) {
+      if ((REQUEST_ID_CONTAINERS as readonly string[]).includes(k)) continue;
+      const hit = visit(obj[k]);
       if (hit) return hit;
     }
     return undefined;
