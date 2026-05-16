@@ -56,34 +56,38 @@ interface ProviderMeta {
 
 const PROVIDER_META: Record<VoiceProvider, ProviderMeta> = {
   elevenlabs: {
-    voiceField: "voice_id",
-    models: ["Eleven Labs Speech Turbo", "Eleven Labs Multilingual", "Eleven Labs Voice Change"],
-    blurb: "Full ElevenLabs shared voice library (~5000+ voices).",
+    // KIE's ElevenLabs Speech Turbo / Multilingual endpoint destructures
+    // `voice` from the body (general.controller.ts textToSpeech) — even
+    // though the *value* is an ElevenLabs voice_id, the body *field* is
+    // named `voice`. Passing `voice_id` results in `400: voice is required`.
+    voiceField: "voice",
+    models: ["Eleven Labs Speech Turbo", "Eleven Labs Multilingual"],
+    blurb: "Full ElevenLabs shared voice library (~5000+ voices). The `id` field on each voice is the value to pass as `voice` (NOT the `name`).",
   },
   "elevenlabs-saved": {
-    voiceField: "voice_id",
+    voiceField: "voice",
     models: ["Eleven Labs Speech Turbo", "Eleven Labs Multilingual"],
-    blurb: "Voices the current user has saved/sampled into their bucket.",
+    blurb: "Voices the current user has saved/sampled into their bucket. Pass the voice id (parsed from filename) as `voice`.",
   },
   cartesia: {
     voiceField: "voice_id",
-    models: ["Cartesia"],
-    blurb: "Cartesia public voice library.",
+    models: ["Cartesia (direct endpoint — not yet wired into versely_generate_audio)"],
+    blurb: "Cartesia public voice library. Discovery only — Cartesia TTS is not currently routed through versely_generate_audio.",
   },
   "cartesia-mine": {
     voiceField: "voice_id",
-    models: ["Cartesia"],
-    blurb: "Cartesia voices the current user has cloned.",
+    models: ["Cartesia (direct endpoint — not yet wired into versely_generate_audio)"],
+    blurb: "Cartesia voices the current user has cloned. Discovery only.",
   },
   inworld: {
     voiceField: "voice_id",
-    models: ["Inworld TTS", "Inworld Voice Clone"],
-    blurb: "Inworld voice library.",
+    models: ["Inworld TTS (direct endpoint — not yet wired into versely_generate_audio)"],
+    blurb: "Inworld voice library. Discovery only — Inworld TTS is not currently routed through versely_generate_audio.",
   },
   "inworld-mine": {
     voiceField: "voice_id",
-    models: ["Inworld TTS"],
-    blurb: "Inworld voices the current user has cloned.",
+    models: ["Inworld TTS (direct endpoint — not yet wired into versely_generate_audio)"],
+    blurb: "Inworld voices the current user has cloned. Discovery only.",
   },
   minimax: {
     voiceField: "voice_id",
@@ -636,14 +640,21 @@ const versely_list_voices = defineTool({
   description: [
     "List available TTS voices for any supported provider. Two use cases:",
     "  1. Resolving a voice ID before a TTS call — never ask the user for one;",
-    "     call this with a query/filter, pick an id, pass it to versely_generate_audio.",
+    "     call this with a query/filter, pick a voice, pass its `id` to versely_generate_audio.",
     "  2. Answering 'what voices do you have?' / 'show me british female voices' /",
     "     'what languages does Inworld support?' — call with the matching provider and",
     "     filters, then summarize results for the user.",
     "",
-    "Provider → which audio model(s) it serves:",
+    "CRITICAL — picking a voice from the response:",
+    "  • Pass the voice's `id` field as the value (NOT `name`). e.g. for ElevenLabs",
+    "    'Margot' { id: 'XB0fDUnXU5powFXDhCwa', name: 'Margot' } you pass",
+    "    `voice: 'XB0fDUnXU5powFXDhCwa'` — passing 'Margot' will fail with no taskId.",
+    "  • The response's `voice_field` tells you the body field name to use",
+    "    (`voice` vs `voice_id`). Do not guess.",
+    "",
+    "Provider → audio model(s) it serves + the body field name to pass:",
     ...Object.entries(PROVIDER_META).map(
-      ([k, m]) => `  • ${k} → ${m.models.join(", ")} (pass as \`${m.voiceField}\`)`,
+      ([k, m]) => `  • ${k} → ${m.models.join(", ")} (body field: \`${m.voiceField}\`)`,
     ),
     "",
     "Use `query` for substring search (matches id, name, description, gender, language, accent, tags).",
@@ -722,11 +733,17 @@ const versely_list_voices = defineTool({
     const matched = catalog.voices.filter((v) => matchesFilters(v, filters));
     const page = matched.slice(offset, offset + limit);
 
+    const example =
+      page[0]?.id !== undefined
+        ? `versely_generate_audio({ model: "${meta.models[0]}", text: "...", ${meta.voiceField}: "${page[0].id}" })`
+        : `versely_generate_audio({ model: "${meta.models[0]}", text: "...", ${meta.voiceField}: "<voices[i].id>" })`;
+
     const payload = {
       provider,
       voice_field: meta.voiceField,
       models: meta.models,
       blurb: meta.blurb,
+      usage: `When you pick a voice from this list, pass its \`id\` field (NOT \`name\`) as the \`${meta.voiceField}\` field to versely_generate_audio. Example: ${example}`,
       total_available: catalog.voices.length,
       total_matched: matched.length,
       returned: page.length,
