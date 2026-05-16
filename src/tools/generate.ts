@@ -282,25 +282,124 @@ const versely_generate_video = defineTool({
   },
 });
 
-// Per-model default voice. Many TTS providers (FAL/RunPod/KIE) reject the
-// submission outright when no voice is supplied (Qwen FAL: "Either 'voice'
-// or 'speaker_voice_embedding_file_url' must be provided"). Filling a
-// sensible default lets the LLM call versely_generate_audio with just
-// model + text. Lowercased canonical name → voice id, sourced from the
-// frontend's hardcoded voice catalogs (ai-speech.tsx).
-const AUDIO_VOICE_DEFAULTS: Record<string, string> = {
-  "qwen 3 tts 1.7b": "Vivian",
-  "qwen 3 tts 0.6b": "Vivian",
-  "grok tts": "eve",
-  "minimax speech": "Wise_Woman",
-  "chatterbox tts": "Aaron",
-  "chatterbox tts turbo": "Aaron",
+// Per-model voice catalog — each canonical TTS model declares which body
+// field it expects voices on (`voice` vs `voice_id`), a sensible default
+// for when the LLM omits it, the strict set of valid options for pre-submit
+// validation, and whether to enforce the validation. Sourced from the
+// frontend's hardcoded voice catalogs (content-creation-frontend/app/
+// (main)/ai-speech.tsx). Three jobs at once:
+//   (1) Description embeds the lists so the LLM picks the right voice
+//       for each model and stops cross-pollinating IDs between providers.
+//   (2) Default is filled in when no voice is supplied, so a bare
+//       {model, text} call still works for FAL/RunPod models that reject
+//       voice-less submissions.
+//   (3) Validation rejects unknown voices at the MCP layer with an
+//       informative error listing the valid ones — no wasted credits or
+//       opaque "Task failed." downstream.
+interface AudioModelProfile {
+  voiceField: "voice" | "voice_id";
+  defaultVoice: string;
+  validVoices: readonly string[];
+  /** When true, an unknown voice errors at the MCP layer. When false,
+   *  the voice is passed through to the backend (used for providers like
+   *  Minimax that accept hundreds of voice IDs we can't fully enumerate). */
+  strict: boolean;
+}
+
+const AUDIO_MODEL_PROFILES: Record<string, AudioModelProfile> = {
+  "qwen 3 tts 1.7b": {
+    voiceField: "voice",
+    defaultVoice: "Vivian",
+    validVoices: ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"],
+    strict: true,
+  },
+  "qwen 3 tts 0.6b": {
+    voiceField: "voice",
+    defaultVoice: "Vivian",
+    validVoices: ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"],
+    strict: true,
+  },
+  "grok tts": {
+    voiceField: "voice",
+    defaultVoice: "eve",
+    validVoices: ["eve", "ara", "rex", "sal", "leo"],
+    strict: true,
+  },
+  "chatterbox tts": {
+    voiceField: "voice",
+    defaultVoice: "Aaron",
+    validVoices: [
+      "Aaron", "Abigail", "Anaya", "Andy", "Archer", "Brian", "Chloe", "Dylan",
+      "Emmanuel", "Ethan", "Evelyn", "Gavin", "Gordon", "Ivan", "Laura", "Lucy",
+      "Madison", "Marisol", "Meera", "Walter",
+    ],
+    strict: true,
+  },
+  "chatterbox tts turbo": {
+    voiceField: "voice",
+    defaultVoice: "Aaron",
+    validVoices: [
+      "Aaron", "Abigail", "Anaya", "Andy", "Archer", "Brian", "Chloe", "Dylan",
+      "Emmanuel", "Ethan", "Evelyn", "Gavin", "Gordon", "Ivan", "Laura", "Lucy",
+      "Madison", "Marisol", "Meera", "Walter",
+    ],
+    strict: true,
+  },
+  "minimax speech": {
+    voiceField: "voice_id",
+    defaultVoice: "Wise_Woman",
+    // Minimax has 100+ voice IDs (universal + per-language). We only
+    // enumerate the universal ones for the LLM hint, but pass anything
+    // through unvalidated so language-specific voices like
+    // "English_Aussie_Bloke" still work.
+    validVoices: [
+      "Wise_Woman", "Friendly_Person", "Inspirational_girl", "Deep_Voice_Man",
+      "Calm_Woman", "Casual_Guy", "Lively_Girl", "Patient_Man", "Young_Knight",
+      "Determined_Man", "Lovely_Girl", "Decent_Boy", "Imposing_Manner",
+      "Elegant_Man", "Abbess", "Sweet_Girl_2", "Exuberant_Girl",
+    ],
+    strict: false,
+  },
 };
+
+function lookupAudioProfile(modelName: string): AudioModelProfile | undefined {
+  return AUDIO_MODEL_PROFILES[modelName.toLowerCase()];
+}
+
+function resolveValidVoice(profile: AudioModelProfile, supplied: string): string | undefined {
+  const lower = supplied.toLowerCase();
+  return profile.validVoices.find((v) => v.toLowerCase() === lower);
+}
+
+function buildAudioToolDescription(): string {
+  const lines: string[] = [
+    "Generate speech / audio via TTS. Default polls until done.",
+    "",
+    "Each model requires a voice id from its own catalog — cross-pollinating",
+    "voices between providers (e.g. 'Adam' on Qwen, 'Ethan' on ElevenLabs) is",
+    "the most common cause of failed jobs. When voice is omitted, a safe",
+    "default is filled in. Invalid voices are rejected at the MCP layer with",
+    "a list of valid options.",
+    "",
+    "Per-model voice catalog (use exactly as written, case-sensitive):",
+  ];
+  for (const [model, profile] of Object.entries(AUDIO_MODEL_PROFILES)) {
+    const display = model.replace(/\b\w/g, (c) => c.toUpperCase());
+    const field = profile.voiceField === "voice_id" ? "voice_id" : "voice";
+    const list = profile.validVoices.join(", ");
+    const tail = profile.strict ? "" : " (also supports many language-specific voice IDs not listed)";
+    lines.push(`• ${display} → ${field}: ${list}${tail}`);
+  }
+  lines.push("");
+  lines.push(
+    "ElevenLabs Speech Turbo / Multilingual (KIE): voice is required and must be a valid ElevenLabs voice ID — no safe default exists; pass one explicitly.",
+  );
+  return lines.join("\n");
+}
 
 const versely_generate_audio = defineTool({
   name: "versely_generate_audio",
-  description:
-    "Generate speech / audio via TTS. Default polls until done. Most providers require a voice; if omitted, a sensible default is applied (e.g. 'Vivian' for Qwen, 'eve' for Grok, 'Wise_Woman' for Minimax). Pass voice explicitly to override.",
+  description: buildAudioToolDescription(),
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -314,9 +413,14 @@ const versely_generate_audio = defineTool({
         .string()
         .optional()
         .describe(
-          "Voice id for the chosen model. Defaults applied when omitted: Qwen→'Vivian', Grok→'eve', Minimax→'Wise_Woman', Chatterbox→'Aaron'. ElevenLabs / KIE models require a user-supplied valid voice id (no safe default).",
+          "Voice id for the chosen model. Per-model catalog is in the tool description; passing a voice from a different model's list (e.g. 'Ethan' on Qwen) errors at the MCP layer. Omit to use the model's default.",
         ),
-      voice_id: z.string().optional(),
+      voice_id: z
+        .string()
+        .optional()
+        .describe(
+          "Alternative voice field for models that use voice_id (e.g. Minimax Speech). Treated as equivalent to `voice` by the MCP — pass whichever feels natural.",
+        ),
       language: z.string().optional(),
       ...AsyncFields,
     })
@@ -324,14 +428,45 @@ const versely_generate_audio = defineTool({
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
     body.model = await resolveCanonicalModel(ctx, "audio", body.model);
-    // Fill in the default voice when LLM didn't pass one. Only kicks in
-    // for models we have a known-good default for; others (ElevenLabs etc.)
-    // surface the provider's own validation error so the LLM/user can
-    // supply a valid voice on retry.
-    if (!body.voice && !body.voice_id) {
-      const fallback = AUDIO_VOICE_DEFAULTS[body.model.toLowerCase()];
-      if (fallback) body.voice = fallback;
+
+    const profile = lookupAudioProfile(body.model);
+    if (profile) {
+      // Normalize: callers can pass either `voice` or `voice_id`; we route
+      // the final value into the field name the backend expects for this
+      // model and clear the other one so the dispatcher doesn't see both.
+      const supplied =
+        (typeof body.voice === "string" && body.voice.trim()) ||
+        (typeof body.voice_id === "string" && body.voice_id.trim()) ||
+        "";
+
+      let finalVoice: string;
+      if (!supplied) {
+        finalVoice = profile.defaultVoice;
+      } else if (profile.strict) {
+        const matched = resolveValidVoice(profile, supplied);
+        if (!matched) {
+          throw new Error(
+            `Voice "${supplied}" is not valid for ${body.model}. ` +
+              `Valid voices: ${profile.validVoices.join(", ")}. ` +
+              `Omit voice to use the default ("${profile.defaultVoice}").`,
+          );
+        }
+        finalVoice = matched;
+      } else {
+        // Non-strict (e.g. Minimax): pass through as-is so language-specific
+        // voice IDs not in our enumerated list still work.
+        finalVoice = supplied;
+      }
+
+      if (profile.voiceField === "voice_id") {
+        body.voice_id = finalVoice;
+        delete body.voice;
+      } else {
+        body.voice = finalVoice;
+        delete body.voice_id;
+      }
     }
+
     const submission = await ctx.client.post("/api/v1/generate/audio", body);
     return handleAsync({
       ctx,
