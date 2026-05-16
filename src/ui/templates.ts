@@ -251,7 +251,7 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     catch (e) { return ''; }
   }
   function isVideoUrl(u) { return /^(mp4|mov|webm|m4v|mkv)$/.test(urlExt(u)); }
-  function isAudioUrl(u) { return /^(mp3|wav|m4a|ogg|flac|aac)$/.test(urlExt(u)); }
+  function isAudioUrl(u) { return /^(mp3|wav|m4a|ogg|oga|flac|aac|mpeg|mpga|opus|weba)$/.test(urlExt(u)); }
   function defaultKind(assets) {
     if (!assets || !assets.length) return 'image';
     var kinds = assets.map(function (a) {

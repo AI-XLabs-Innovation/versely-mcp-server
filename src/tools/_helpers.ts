@@ -47,7 +47,14 @@ const IMAGE_EXTS = new Set([
   "avif",
 ]);
 const VIDEO_EXTS = new Set(["mp4", "mov", "webm", "m4v", "mkv"]);
-const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "ogg", "flac", "aac"]);
+// `mpeg` is what the backend's downloadAndUploadToStorage derives from the
+// `audio/mpeg` Content-Type when re-hosting Minimax/RunPod MP3 outputs.
+// Without it in the set, completed TTS jobs return URLs that don't get
+// recognized as audio assets and the iframe stays in pending forever even
+// though the file is fully generated and uploaded.
+const AUDIO_EXTS = new Set([
+  "mp3", "wav", "m4a", "ogg", "oga", "flac", "aac", "mpeg", "mpga", "opus", "weba",
+]);
 
 export type MediaKind = "image" | "video" | "audio";
 
