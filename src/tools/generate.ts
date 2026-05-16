@@ -378,21 +378,30 @@ function buildAudioToolDescription(): string {
     "Each model requires a voice id from its own catalog — cross-pollinating",
     "voices between providers (e.g. 'Adam' on Qwen, 'Ethan' on ElevenLabs) is",
     "the most common cause of failed jobs. When voice is omitted, a safe",
-    "default is filled in. Invalid voices are rejected at the MCP layer with",
-    "a list of valid options.",
+    "default is filled in for models that ship one. Invalid voices are",
+    "rejected at the MCP layer with a list of valid options.",
     "",
-    "Per-model voice catalog (use exactly as written, case-sensitive):",
+    "If you need a voice ID for ANY model — especially ElevenLabs, Cartesia,",
+    "Inworld, or a non-default Minimax voice — call **versely_list_voices**",
+    "first instead of asking the user. It exposes every backend catalog with",
+    "filters (query, language, gender, accent, tags) and tells you exactly",
+    "which body field (`voice` vs `voice_id`) to pass here.",
+    "",
+    "Built-in defaults / quick reference (use exactly as written, case-sensitive):",
   ];
   for (const [model, profile] of Object.entries(AUDIO_MODEL_PROFILES)) {
     const display = model.replace(/\b\w/g, (c) => c.toUpperCase());
     const field = profile.voiceField === "voice_id" ? "voice_id" : "voice";
     const list = profile.validVoices.join(", ");
-    const tail = profile.strict ? "" : " (also supports many language-specific voice IDs not listed)";
+    const tail = profile.strict ? "" : " (also supports many language-specific voice IDs not listed — use versely_list_voices)";
     lines.push(`• ${display} → ${field}: ${list}${tail}`);
   }
   lines.push("");
   lines.push(
-    "ElevenLabs Speech Turbo / Multilingual (KIE): voice is required and must be a valid ElevenLabs voice ID — no safe default exists; pass one explicitly.",
+    "ElevenLabs Speech Turbo / Multilingual / Voice Change (KIE): voice is required and has no default. Call versely_list_voices(provider='elevenlabs', query=...) to pick one — do NOT ask the user.",
+  );
+  lines.push(
+    "Cartesia / Inworld TTS: same — fetch IDs via versely_list_voices.",
   );
   return lines.join("\n");
 }
