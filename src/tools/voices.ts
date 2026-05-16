@@ -20,6 +20,7 @@ import { jsonResult } from "./_helpers.js";
 
 type VoiceProvider =
   | "elevenlabs"
+  | "elevenlabs-library"
   | "elevenlabs-saved"
   | "cartesia"
   | "cartesia-mine"
@@ -56,18 +57,28 @@ interface ProviderMeta {
 
 const PROVIDER_META: Record<VoiceProvider, ProviderMeta> = {
   elevenlabs: {
-    // KIE's ElevenLabs Speech Turbo / Multilingual endpoint destructures
-    // `voice` from the body (general.controller.ts textToSpeech) — even
-    // though the *value* is an ElevenLabs voice_id, the body *field* is
-    // named `voice`. Passing `voice_id` results in `400: voice is required`.
+    // KIE's elevenlabs proxy only accepts a curated 20-voice set, BY NAME
+    // (not voice_id). Passing any other voice_id from the full ElevenLabs
+    // library returns `code: 500, msg: "This voice is not within the range
+    // of allowed options"`. So `id` here is the voice NAME — that's what
+    // you pass as `voice` to versely_generate_audio.
     voiceField: "voice",
     models: ["Eleven Labs Speech Turbo", "Eleven Labs Multilingual"],
-    blurb: "Full ElevenLabs shared voice library (~5000+ voices). The `id` field on each voice is the value to pass as `voice` (NOT the `name`).",
+    blurb: "The 20 voices KIE actually accepts for Eleven Labs Speech Turbo / Multilingual. Pass `id` (which is the voice's name) as the `voice` field — these are the ONLY voices that work for ElevenLabs TTS via Versely.",
+  },
+  "elevenlabs-library": {
+    // The full ElevenLabs shared library (~5000 voices). Discovery only —
+    // KIE rejects every one of these voice_ids. Use this provider to browse
+    // available voices and play preview URLs, but always pick from the
+    // `elevenlabs` provider when actually generating.
+    voiceField: "voice",
+    models: ["(discovery only — not callable via versely_generate_audio; use the `elevenlabs` provider instead)"],
+    blurb: "Full ElevenLabs shared library (~5000 voices). DISCOVERY/PREVIEW ONLY — KIE rejects every voice_id from this library. For TTS use the `elevenlabs` provider (curated 20-voice set).",
   },
   "elevenlabs-saved": {
     voiceField: "voice",
-    models: ["Eleven Labs Speech Turbo", "Eleven Labs Multilingual"],
-    blurb: "Voices the current user has saved/sampled into their bucket. Pass the voice id (parsed from filename) as `voice`.",
+    models: ["(discovery only — voice samples cached in the user bucket)"],
+    blurb: "Voices the current user has previewed/sampled into their bucket. Discovery only — these are cached preview files, not voice IDs callable via versely_generate_audio.",
   },
   cartesia: {
     voiceField: "voice_id",
@@ -122,6 +133,35 @@ const PROVIDER_META: Record<VoiceProvider, ProviderMeta> = {
 };
 
 // --- Static catalogs (mirrored from content-creation-frontend/app/(main)/ai-speech.tsx) ---
+
+// KIE's elevenlabs proxy accepts only the 20 default ElevenLabs voices, by
+// NAME (not voice_id). Verified by probing
+// https://api.kie.ai/api/v1/jobs/createTask against text-to-speech-turbo-2-5
+// — every other voice id / name returns "This voice is not within the range
+// of allowed options". `id` here is the voice name because that's what the
+// LLM must pass through as the `voice` body field.
+const ELEVENLABS_KIE_VOICES: NormalizedVoice[] = [
+  { id: "Aria", name: "Aria", gender: "female", accent: "american", description: "American female, expressive, social media" },
+  { id: "Roger", name: "Roger", gender: "male", accent: "american", description: "American male, confident, narration" },
+  { id: "Sarah", name: "Sarah", gender: "female", accent: "american", description: "American female, soft, news" },
+  { id: "Laura", name: "Laura", gender: "female", accent: "american", description: "American female, upbeat, social media" },
+  { id: "Charlie", name: "Charlie", gender: "male", accent: "australian", description: "Australian male, casual, conversational" },
+  { id: "George", name: "George", gender: "male", accent: "british", description: "British male, warm, narration" },
+  { id: "Callum", name: "Callum", gender: "male", accent: "transatlantic", description: "Transatlantic male, intense, characters" },
+  { id: "River", name: "River", gender: "neutral", accent: "american", description: "American neutral, conversational, social media" },
+  { id: "Liam", name: "Liam", gender: "male", accent: "american", description: "American male, articulate, narration" },
+  { id: "Charlotte", name: "Charlotte", gender: "female", accent: "swedish", description: "Swedish female, seductive, characters" },
+  { id: "Alice", name: "Alice", gender: "female", accent: "british", description: "British female, confident, news" },
+  { id: "Matilda", name: "Matilda", gender: "female", accent: "american", description: "American female, friendly, narration" },
+  { id: "Will", name: "Will", gender: "male", accent: "american", description: "American male, friendly, social media" },
+  { id: "Jessica", name: "Jessica", gender: "female", accent: "american", description: "American female, expressive, conversational" },
+  { id: "Eric", name: "Eric", gender: "male", accent: "american", description: "American male, classy, conversational" },
+  { id: "Chris", name: "Chris", gender: "male", accent: "american", description: "American male, casual, conversational" },
+  { id: "Brian", name: "Brian", gender: "male", accent: "american", description: "American male, deep, narration" },
+  { id: "Daniel", name: "Daniel", gender: "male", accent: "british", description: "British male, authoritative, news" },
+  { id: "Lily", name: "Lily", gender: "female", accent: "british", description: "British female, warm, narration" },
+  { id: "Bill", name: "Bill", gender: "male", accent: "american", description: "American male, trustworthy, narration" },
+];
 
 const QWEN_VOICES: NormalizedVoice[] = [
   { id: "Vivian", name: "Vivian", gender: "female", description: "Female, expressive" },
@@ -423,6 +463,7 @@ const MINIMAX_VOICES: NormalizedVoice[] = (() => {
 })();
 
 const STATIC_CATALOGS: Partial<Record<VoiceProvider, NormalizedVoice[]>> = {
+  elevenlabs: ELEVENLABS_KIE_VOICES,
   qwen: QWEN_VOICES,
   grok: GROK_VOICES,
   suno: SUNO_VOICES,
@@ -461,7 +502,7 @@ async function fetchDynamicCatalog(
   provider: VoiceProvider,
 ): Promise<CachedCatalog> {
   switch (provider) {
-    case "elevenlabs": {
+    case "elevenlabs-library": {
       const data = await ctx.client.get<{
         voices: Array<Record<string, unknown>>;
         categories?: string[];
@@ -664,6 +705,7 @@ const versely_list_voices = defineTool({
   inputSchema: z.object({
     provider: z.enum([
       "elevenlabs",
+      "elevenlabs-library",
       "elevenlabs-saved",
       "cartesia",
       "cartesia-mine",
