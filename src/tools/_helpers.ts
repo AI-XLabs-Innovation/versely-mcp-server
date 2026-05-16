@@ -245,6 +245,60 @@ export async function mediaResult(
   };
 }
 
+// --- Pending mediaResult (iframe self-polls) -------------------------------
+// Long-running async tools (video gen, lipsync, etc.) can't complete inside
+// claude.ai's per-tool execution budget. Instead of blocking, we submit the
+// job and return a "pending" MediaCardPayload that tells the iframe to
+// self-poll a status tool via tools/call. Each poll call is sub-second so
+// the host-side timeout never trips. When the poll returns a completed
+// payload, the iframe swaps in the assets and re-renders in place.
+
+export interface PendingMediaOpts {
+  kind: UiMediaKind;
+  /** request_id / task_id from the submit response. */
+  taskId: string;
+  /** Tool name the iframe will call to check progress. */
+  pollTool: string;
+  /** Args the iframe will pass to pollTool. */
+  pollArgs: Record<string, unknown>;
+  /** ms between polls; defaults to 5000. */
+  intervalMs?: number;
+  /** absolute give-up after this many ms; defaults to 10 min. */
+  timeoutMs?: number;
+  /** original tool name (powers Recreate on the rendered card). */
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  /** Plain-text headline for non-MCP-Apps clients. */
+  summary?: string;
+  /** Echoed display fields (model, prompt, aspect_ratio, ...). */
+  extra?: Record<string, unknown>;
+}
+
+export function pendingMediaResult(opts: PendingMediaOpts): ToolResult {
+  const summary =
+    opts.summary ??
+    `Submission accepted. Task ${opts.taskId} is generating; the inline preview will update when it's ready.`;
+  const structuredContent = {
+    kind: opts.kind,
+    assets: [],
+    status: "pending" as const,
+    task_id: opts.taskId,
+    poll: {
+      tool_name: opts.pollTool,
+      args: opts.pollArgs,
+      interval_ms: opts.intervalMs ?? 5000,
+      timeout_ms: opts.timeoutMs ?? 600_000,
+    },
+    ...(opts.toolName ? { toolName: opts.toolName } : {}),
+    ...(opts.toolArgs ? { toolArgs: opts.toolArgs } : {}),
+    ...(opts.extra ?? {}),
+  };
+  return {
+    content: [{ type: "text", text: summary }],
+    structuredContent,
+  };
+}
+
 export function formatErr(err: unknown): string {
   if (
     err instanceof VerselyApiError ||

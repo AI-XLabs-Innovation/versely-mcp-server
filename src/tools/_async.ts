@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ToolContext, ToolResult } from "./_types.js";
-import { jsonResult, mediaResult } from "./_helpers.js";
+import { jsonResult, mediaResult, pendingMediaResult } from "./_helpers.js";
 import type { MediaKind } from "../ui/templates.js";
 import { pollStatus } from "../poller.js";
 
@@ -109,6 +109,21 @@ export async function handleAsync(args: {
   const requestId = pickRequestId(args.submitResponse);
 
   if (args.mode === "submit" || !requestId) {
+    // When we have a request_id AND know the asset kind, emit a pending
+    // mediaResult so the iframe self-polls versely_get_task_status until
+    // the job completes. This bypasses claude.ai's per-tool execution
+    // timeout that wait-mode hits for long video generations.
+    if (requestId && args.kind) {
+      return pendingMediaResult({
+        kind: args.kind,
+        taskId: requestId,
+        pollTool: "versely_get_task_status",
+        pollArgs: { request_id: requestId },
+        toolName: args.toolName,
+        toolArgs: args.toolArgs,
+        extra: { ...(args.extra ?? {}), request_id: requestId },
+      });
+    }
     return jsonResult({
       mode: args.mode,
       ...(requestId ? { request_id: requestId } : {}),

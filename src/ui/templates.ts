@@ -189,6 +189,50 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     0%, 100% { transform: scale(0.85); opacity: 0.5; }
     50%      { transform: scale(1.2);  opacity: 1; }
   }
+  /* Pending state shown while the iframe polls an async job. Lives inside
+     the .card so the prompt/chips above it stay visible — only the body
+     swaps to this strip while waiting. */
+  .pending {
+    margin: 0 16px 16px;
+    padding: 18px 16px;
+    display: flex; align-items: center; gap: 12px;
+    background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+    color: #ffffff; border-radius: var(--radius-sm);
+  }
+  .pending .spin {
+    width: 18px; height: 18px; flex: 0 0 auto;
+    border-radius: 999px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #ffffff;
+    animation: spin 0.9s linear infinite;
+  }
+  .pending .label { font-size: 13px; font-weight: 500; }
+  .pending .elapsed { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+  .pending .col { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .pending .progress {
+    margin-top: 6px; height: 4px; background: rgba(255,255,255,0.2);
+    border-radius: 999px; overflow: hidden;
+  }
+  .pending .bar {
+    height: 100%; background: #ffffff;
+    transition: width 0.4s ease;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  /* Failed state. */
+  .failed-body {
+    margin: 0 16px 16px;
+    padding: 14px 16px;
+    background: rgba(185, 28, 28, 0.08);
+    border: 1px solid rgba(185, 28, 28, 0.25);
+    color: #b91c1c;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .failed-body { color: #f87171; background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.25); }
+  }
 </style></head>
 <body>
 <div id="root"><div class="card"><div class="placeholder"><span class="dot"></span><div class="col"><span class="tag">Versely Media Card</span><span>Preparing preview…</span></div></div></div></div>
@@ -286,6 +330,35 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     return html;
   }
 
+  function renderPending(s, elapsedMs) {
+    var secs = Math.max(0, Math.round(elapsedMs / 1000));
+    var mm = Math.floor(secs / 60), ss = secs % 60;
+    var time = mm + ':' + (ss < 10 ? '0' + ss : ss);
+    var kindLabel =
+      s.kind === 'video' ? 'video' :
+      s.kind === 'audio' ? 'audio' :
+      s.kind === 'gallery' ? 'media' : 'image';
+    var pct = (typeof s.progress === 'number' && !isNaN(s.progress))
+      ? Math.max(0, Math.min(100, s.progress > 1 ? s.progress : s.progress * 100))
+      : null;
+    var progressHtml = (pct != null)
+      ? '<div class="progress"><div class="bar" data-bar style="width:' + pct.toFixed(0) + '%"></div></div>'
+      : '';
+    return '<div class="pending">' +
+      '<div class="spin"></div>' +
+      '<div class="col">' +
+        '<div class="label">Generating ' + kindLabel + '…</div>' +
+        '<div class="elapsed" data-elapsed>' + esc(time) + ' elapsed</div>' +
+        progressHtml +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderFailed(s) {
+    var msg = s.error ? String(s.error) : 'Generation failed.';
+    return '<div class="failed-body">' + esc(msg) + '</div>';
+  }
+
   function renderActions(s) {
     var canRecreate = !!(s.toolName);
     var html = '<div class="actions">';
@@ -306,7 +379,13 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       ? 'gallery-images' : 'gallery-mixed';
 
     var bodyHtml;
-    if (assets.length === 0) {
+    if (s.status === 'pending') {
+      // Async job in flight — show the polling UI. The poll loop will
+      // re-render when status flips to completed/failed.
+      bodyHtml = renderPending(s, pollElapsedMs());
+    } else if (s.status === 'failed') {
+      bodyHtml = renderFailed(s);
+    } else if (assets.length === 0) {
       bodyHtml = '<div class="loading">No assets returned.</div>';
     } else if (kind === 'video' || (assets.length === 1 && isVideoUrl(assets[0].url))) {
       bodyHtml = renderVideo(assets[0]);
@@ -356,6 +435,121 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     });
   }
 
+  // --- Async-job polling ----------------------------------------------------
+  // When state arrives with status:"pending" + poll instruction, fire a
+  // tools/call to the named status tool every interval_ms. The response
+  // comes back as a JSON-RPC result we match by id. On terminal state
+  // (completed / failed) we stop and re-render. The host's per-tool
+  // execution timeout doesn't apply here — each poll call is a single
+  // sub-second JSON-RPC round-trip.
+  var pollHandle = null;
+  var pollStartTime = 0;
+  var pollPendingId = null;
+  var pollTimeoutHandle = null;
+  var elapsedTickHandle = null;
+
+  function pollElapsedMs() {
+    return pollStartTime ? (Date.now() - pollStartTime) : 0;
+  }
+
+  function stopPolling(reason) {
+    if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+    if (pollTimeoutHandle) { clearTimeout(pollTimeoutHandle); pollTimeoutHandle = null; }
+    if (elapsedTickHandle) { clearInterval(elapsedTickHandle); elapsedTickHandle = null; }
+    console.log('[versely-mcp ui] polling stopped:', reason);
+  }
+
+  function ensurePollingFor(s) {
+    if (!s || s.status !== 'pending' || !s.poll || !s.poll.tool_name) return;
+    if (pollHandle) return; // already running
+    var interval = (s.poll.interval_ms && s.poll.interval_ms > 0) ? s.poll.interval_ms : 5000;
+    var budget = (s.poll.timeout_ms && s.poll.timeout_ms > 0) ? s.poll.timeout_ms : 600000;
+    pollStartTime = Date.now();
+    console.log('[versely-mcp ui] polling started', s.poll.tool_name, 'every', interval, 'ms');
+
+    function tick() {
+      pollPendingId = nextId();
+      send({
+        jsonrpc: '2.0', id: pollPendingId,
+        method: 'tools/call',
+        params: { name: s.poll.tool_name, arguments: s.poll.args || {} },
+      });
+    }
+
+    pollHandle = setInterval(tick, interval);
+    // Update the elapsed timer label every second without re-rendering the
+    // whole card.
+    elapsedTickHandle = setInterval(function () {
+      var el = root.querySelector('[data-elapsed]');
+      if (!el) return;
+      var secs = Math.round(pollElapsedMs() / 1000);
+      var mm = Math.floor(secs / 60), ss = secs % 60;
+      el.textContent = mm + ':' + (ss < 10 ? '0' + ss : ss) + ' elapsed';
+    }, 1000);
+    pollTimeoutHandle = setTimeout(function () {
+      stopPolling('timeout');
+      state = Object.assign({}, state, { status: 'failed', error: 'Generation timed out. The job may still complete in the background — try versely_get_task_status later.' });
+      render();
+      reportSize();
+    }, budget);
+    // Fire one immediate poll so the UI doesn't wait interval_ms for the
+    // first datapoint.
+    tick();
+  }
+
+  function handlePollResponse(result) {
+    if (!result || typeof result !== 'object') return;
+    var sc = result.structuredContent || null;
+    // Some hosts only forward the content array; try to find embedded JSON.
+    if (!sc && Array.isArray(result.content)) {
+      for (var i = 0; i < result.content.length; i++) {
+        var c = result.content[i];
+        if (c && c.type === 'text' && typeof c.text === 'string') {
+          try {
+            var parsed = JSON.parse(c.text);
+            if (parsed && typeof parsed === 'object' && (parsed.status || parsed.assets)) {
+              sc = parsed;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    if (!sc) return;
+
+    var hasAssets = Array.isArray(sc.assets) && sc.assets.length > 0;
+    var status = sc.status;
+    if (status === 'completed' || (!status && hasAssets)) {
+      stopPolling('completed');
+      // Merge new assets/status into the original card state so display
+      // fields (prompt, model, chips) survive.
+      state = Object.assign({}, state, sc, { status: 'completed' });
+      // Drop the poll instruction so render() takes the asset-rendering
+      // branch on the next pass.
+      state.poll = undefined;
+      render();
+      reportSize();
+      return;
+    }
+    if (status === 'failed') {
+      stopPolling('failed');
+      state = Object.assign({}, state, { status: 'failed', error: sc.error || 'Generation failed.' });
+      state.poll = undefined;
+      render();
+      reportSize();
+      return;
+    }
+    // Still pending — update progress in-place if provided.
+    if (typeof sc.progress === 'number') {
+      var bar = root.querySelector('[data-bar]');
+      var pct = sc.progress > 1 ? sc.progress : sc.progress * 100;
+      pct = Math.max(0, Math.min(100, pct));
+      if (bar) bar.style.width = pct.toFixed(0) + '%';
+      // Also remember for future renders.
+      if (state) state.progress = sc.progress;
+    }
+  }
+
   // Track the two halves of host-delivered state separately. The host sends
   // tool-input and tool-result as independent notifications, sometimes in
   // either order, so we merge as each arrives.
@@ -372,6 +566,9 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     state = s;
     render();
     reportSize();
+    // Kick off iframe-side polling if this is an async-job pending payload.
+    // No-op when status is undefined (legacy completed payloads, image gen).
+    ensurePollingFor(state);
   }
 
   // Report iframe content size so the host can grow the chat-bubble iframe
@@ -447,6 +644,20 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     // Response to our ui/initialize: ack with ui/notifications/initialized.
     if (m.result && m.id != null && initRequestId != null && m.id === initRequestId) {
       ackInitialized();
+      return;
+    }
+
+    // Response to a tools/call we issued for async-job polling.
+    if ((m.result || m.error) && m.id != null && pollPendingId != null && m.id === pollPendingId) {
+      pollPendingId = null;
+      if (m.error) {
+        // Treat tool-call errors during polling as a transient hiccup —
+        // the next tick will retry. Only stop if it persists past the
+        // overall timeout (handled by pollTimeoutHandle).
+        console.warn('[versely-mcp ui] poll error', m.error);
+        return;
+      }
+      handlePollResponse(m.result);
       return;
     }
 
@@ -594,9 +805,25 @@ export function metaForMediaCard(): Record<string, unknown> {
 
 export type MediaKind = "image" | "video" | "audio" | "gallery";
 
+export type MediaStatus = "pending" | "completed" | "failed";
+
 export interface UiAsset {
   url: string;
   label?: string;
+}
+
+/**
+ * Instruction the iframe follows to self-poll an async job. The iframe sends
+ * a `tools/call` JSON-RPC to the host every `interval_ms` until either the
+ * status flips to `completed`/`failed` or `timeout_ms` elapses. Bypasses
+ * claude.ai's per-tool execution budget — each individual poll call is
+ * sub-second so it never trips the host-side timeout that wait-mode hits.
+ */
+export interface PollInstruction {
+  tool_name: string;
+  args: Record<string, unknown>;
+  interval_ms?: number;
+  timeout_ms?: number;
 }
 
 /**
@@ -604,10 +831,21 @@ export interface UiAsset {
  * `kind` is a discriminator the card uses to pick its render path; `assets`
  * is normalized across image / video / audio. `toolName` + `toolArgs` enable
  * the Recreate button to round-trip the same call.
+ *
+ * Async tools emit a pending variant: `{kind, assets:[], status:"pending",
+ * poll:{...}}`. The iframe then self-polls until the same payload comes back
+ * with `status:"completed"` and assets filled in. Tools that finish
+ * synchronously can leave `status` undefined — the card treats no-status as
+ * completed for backward compatibility with the image-gen path.
  */
 export interface MediaCardPayload {
   kind: MediaKind;
   assets: UiAsset[];
+  status?: MediaStatus;
+  poll?: PollInstruction;
+  task_id?: string;
+  progress?: number;
+  error?: string;
   model?: string;
   prompt?: string;
   aspect_ratio?: string;
@@ -624,6 +862,8 @@ export function buildMediaCardPayload(
   assets: UiAsset[],
   extra: Omit<MediaCardPayload, "kind" | "assets"> & Record<string, unknown> = {},
 ): Record<string, unknown> | undefined {
-  if (assets.length === 0) return undefined;
+  // Pending payloads legitimately carry no assets yet — the iframe will
+  // poll and fill them in. Drop the empty-assets short-circuit in that case.
+  if (assets.length === 0 && extra.status !== "pending") return undefined;
   return { kind, assets, ...extra };
 }
