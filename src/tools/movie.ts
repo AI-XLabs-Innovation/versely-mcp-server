@@ -236,34 +236,92 @@ function movieResultFromPayload(
 
 // ─── Tools ───────────────────────────────────────────────────────────────────
 
+// Backend's SceneGenerationType (movie.service.ts). Mirrored 1:1 here so the
+// MCP doesn't have to translate values — passing through verbatim keeps the
+// contract obvious for the LLM and avoids the bug class where the wrapper
+// drops/renames fields and backend rejects with `undefined`.
+const SCENE_GENERATION_TYPES = [
+  "text_to_video",
+  "image_to_video",
+  "first_last_frame",
+  "previous_scene_image_to_video",
+  "previous_scene_first_last_frame",
+] as const;
+
 const SceneInputSchema = z
   .object({
-    prompt: z.string().describe("Scene prompt (will be expanded if expand_scene is true)."),
-    type: z
-      .enum(["text-to-video", "image-to-video", "frame-to-frame"])
-      .optional(),
-    image_url: z.string().url().optional(),
-    end_image_url: z.string().url().optional(),
-    duration_seconds: z.number().positive().optional(),
-    model: z.string().optional(),
-    chain_from_previous: z
-      .boolean()
+    generation_type: z
+      .enum(SCENE_GENERATION_TYPES)
+      .default("text_to_video")
+      .describe(
+        "Required by backend. `text_to_video` (prompt only), `image_to_video` (image_url + prompt), `first_last_frame` (first_frame_url + last_frame_url + prompt), `previous_scene_image_to_video` (uses previous scene's last frame as image; cannot be the FIRST scene), `previous_scene_first_last_frame` (uses previous scene's last frame as the start frame + optional custom last_frame_url; cannot be the FIRST scene).",
+      ),
+    model: z
+      .string()
+      .describe(
+        "Video model name (call versely_find_models with type='video' first to get valid options, e.g. 'VEO 3.1', 'Kling 2.5 Turbo', 'Sora 2 T2V').",
+      ),
+    prompt: z
+      .string()
       .optional()
-      .describe("If true, use the previous scene's last frame as this scene's image_url."),
+      .describe(
+        "Scene text prompt. Required for text_to_video; recommended for all other types so the model has direction.",
+      ),
+    image_url: z
+      .string()
+      .url()
+      .optional()
+      .describe("Required for image_to_video."),
+    first_frame_url: z
+      .string()
+      .url()
+      .optional()
+      .describe("Required for first_last_frame. Optional for previous_scene_first_last_frame (defaults to the previous scene's last frame)."),
+    last_frame_url: z
+      .string()
+      .url()
+      .optional()
+      .describe("Required for first_last_frame. Optional for previous_scene_first_last_frame."),
+    duration: z
+      .number()
+      .positive()
+      .optional()
+      .describe("Scene length in seconds (default 5)."),
+    aspect_ratio: z
+      .string()
+      .optional()
+      .describe("Overrides the movie-level aspect_ratio for this scene."),
+    previous_scene_order: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("1-based order of the scene this one chains from (for previous_scene_* types). Defaults to the immediately preceding scene."),
   })
   .passthrough();
 
 const versely_create_movie = defineTool({
   name: "versely_create_movie",
   description:
-    "Create a multi-scene movie project. Scenes are stored but NOT generated yet — call versely_generate_movie_scenes to start. Returns a blueprint card so the user can preview the plan before generation.",
+    "Create a multi-scene movie project. Scenes are stored but NOT generated yet — call versely_generate_movie_scenes to start. Returns a blueprint card so the user can preview the plan before generation.\n\nField names match the backend exactly (generation_type, duration, first_frame_url, last_frame_url) — pass them through verbatim. The five generation_type values give full access to chained-scene movies where each scene picks up from the previous one's last frame.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
       title: z.string(),
       description: z.string().optional(),
-      aspect_ratio: z.string().optional(),
-      default_model: z.string().optional(),
+      aspect_ratio: z
+        .string()
+        .optional()
+        .describe("Default aspect ratio for all scenes (e.g. '16:9', '9:16', '1:1'). Individual scenes can override."),
+      transition_type: z
+        .enum(["concat", "fade", "dissolve", "wipe"])
+        .optional()
+        .describe("Transition between scenes when the movie is auto-combined. Default 'concat' (hard cut)."),
+      transition_duration: z
+        .number()
+        .nonnegative()
+        .optional()
+        .describe("Transition length in seconds (default 0.5 for fade/dissolve/wipe; ignored for concat)."),
       scenes: z.array(SceneInputSchema).min(1),
     })
     .passthrough(),
@@ -469,19 +527,22 @@ const versely_combine_movie = defineTool({
 const versely_add_movie_scene = defineTool({
   name: "versely_add_movie_scene",
   description:
-    "Add a new scene to an existing movie (appended at the end by default). The scene starts as 'pending' and won't generate until you call versely_generate_movie_scenes again — calling generate will pick up only scenes that haven't been generated yet.",
+    "Add a new scene to an existing movie (appended at the end by default). The scene starts as 'pending' and won't generate until you call versely_generate_movie_scenes again — calling generate will pick up only scenes that haven't been generated yet. Field names match the backend exactly: generation_type, duration, first_frame_url, last_frame_url.",
   inputSchema: z
     .object({
       movie_id: z.string(),
-      prompt: z.string(),
-      type: z
-        .enum(["text-to-video", "image-to-video", "frame-to-frame"])
-        .optional(),
-      image_url: z.string().url().optional(),
-      end_image_url: z.string().url().optional(),
-      duration_seconds: z.number().positive().optional(),
-      model: z.string().optional(),
-      chain_from_previous: z.boolean().optional(),
+      generation_type: z
+        .enum(SCENE_GENERATION_TYPES)
+        .default("text_to_video")
+        .describe("Same five values as versely_create_movie scenes."),
+      model: z.string().describe("Video model (call versely_find_models with type='video' first)."),
+      prompt: z.string().optional(),
+      image_url: z.string().url().optional().describe("Required for image_to_video."),
+      first_frame_url: z.string().url().optional().describe("Required for first_last_frame."),
+      last_frame_url: z.string().url().optional().describe("Required for first_last_frame."),
+      duration: z.number().positive().optional().describe("Scene length in seconds (default 5)."),
+      aspect_ratio: z.string().optional(),
+      previous_scene_order: z.number().int().positive().optional(),
     })
     .passthrough(),
   handler: async (input, ctx) => {
@@ -497,19 +558,18 @@ const versely_add_movie_scene = defineTool({
 const versely_update_movie_scene = defineTool({
   name: "versely_update_movie_scene",
   description:
-    "Update a single scene's prompt / model / type / image_url / etc. Allowed only before the scene has been generated, or after a failure (use this to fix the prompt and then re-generate). Pass only the fields you want to change.",
+    "Update a single scene's fields (prompt, model, generation_type, image_url, etc.). Allowed only before the scene has been generated, or after a failure (use this to fix the prompt and then re-generate). Pass only the fields you want to change. Field names match the backend exactly.",
   inputSchema: z
     .object({
       scene_id: z.string(),
       prompt: z.string().optional(),
-      type: z
-        .enum(["text-to-video", "image-to-video", "frame-to-frame"])
-        .optional(),
-      image_url: z.string().url().optional(),
-      end_image_url: z.string().url().optional(),
-      duration_seconds: z.number().positive().optional(),
+      generation_type: z.enum(SCENE_GENERATION_TYPES).optional(),
       model: z.string().optional(),
-      scene_order: z.number().int().nonnegative().optional(),
+      image_url: z.string().url().optional(),
+      first_frame_url: z.string().url().optional(),
+      last_frame_url: z.string().url().optional(),
+      duration: z.number().positive().optional(),
+      aspect_ratio: z.string().optional(),
     })
     .passthrough(),
   handler: async (input, ctx) => {
