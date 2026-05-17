@@ -199,12 +199,26 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
     color: #ffffff; border-radius: var(--radius-sm);
   }
+  .pending {
+    /* Override the inherited flex from .pending-row so the thumb strip
+       wraps under the header row instead of squishing alongside it. */
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pending .pending-row { display: flex; align-items: flex-start; gap: 12px; }
   .pending .spin {
     width: 18px; height: 18px; flex: 0 0 auto;
     border-radius: 999px;
     border: 2px solid rgba(255,255,255,0.3);
     border-top-color: #ffffff;
     animation: spin 0.9s linear infinite;
+    margin-top: 2px;
+  }
+  /* Static dot for the blueprint/planning state — no work in flight, no spin. */
+  .pending .planning-dot {
+    width: 10px; height: 10px; flex: 0 0 auto;
+    border-radius: 999px; background: rgba(255,255,255,0.85);
+    margin-top: 5px; margin-left: 4px; margin-right: 4px;
   }
   .pending .label { font-size: 13px; font-weight: 500; }
   .pending .elapsed { font-size: 11px; opacity: 0.8; margin-top: 2px; }
@@ -216,6 +230,27 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   .pending .bar {
     height: 100%; background: #ffffff;
     transition: width 0.4s ease;
+  }
+  /* Multi-scene movies: thumbnail strip below the spinner, scenes pop in
+     as they complete. Capped height so a 10-scene movie doesn't blow up
+     the iframe. */
+  .pending .pending-thumbs {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;
+  }
+  .pending .pending-thumb {
+    width: 96px; max-width: 30%;
+    display: flex; flex-direction: column; gap: 4px;
+    border-radius: 6px; overflow: hidden;
+    background: rgba(255,255,255,0.08);
+  }
+  .pending .pending-thumb video,
+  .pending .pending-thumb img {
+    width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block;
+    background: rgba(0,0,0,0.2);
+  }
+  .pending .pending-thumb span {
+    font-size: 10px; opacity: 0.85; padding: 0 4px 4px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
   }
   @keyframes spin {
     to { transform: rotate(360deg); }
@@ -334,23 +369,77 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     var secs = Math.max(0, Math.round(elapsedMs / 1000));
     var mm = Math.floor(secs / 60), ss = secs % 60;
     var time = mm + ':' + (ss < 10 ? '0' + ss : ss);
-    var kindLabel =
-      s.kind === 'video' ? 'video' :
-      s.kind === 'audio' ? 'audio' :
-      s.kind === 'gallery' ? 'media' : 'image';
+
+    // Movie pending payloads carry scene-count fields. When present, use them
+    // to render a more useful headline ("Movie: 2 of 5 scenes ready") and an
+    // optional thumbnail strip of completed scenes so the user sees progress
+    // accumulate. Falls back to the generic "Generating <kind>…" otherwise.
+    var isMovie = (typeof s.scenes_total === 'number' && s.scenes_total > 0);
+    var headline;
+    if (isMovie) {
+      var done = (typeof s.scenes_completed === 'number') ? s.scenes_completed : 0;
+      var totalScenes = s.scenes_total;
+      var phase = s.phase || '';
+      if (phase === 'planning') {
+        headline = (s.title ? esc(s.title) + ' — ' : '') + 'planned ' + totalScenes + ' scene' + (totalScenes === 1 ? '' : 's') + ' (not yet generating)';
+      } else if (phase === 'combining') {
+        headline = (s.title ? esc(s.title) + ' — ' : '') + 'all scenes ready, combining…';
+      } else {
+        headline = (s.title ? esc(s.title) + ' — ' : '') + done + ' of ' + totalScenes + ' scene' + (totalScenes === 1 ? '' : 's') + ' ready';
+      }
+    } else {
+      var kindLabel =
+        s.kind === 'video' ? 'video' :
+        s.kind === 'audio' ? 'audio' :
+        s.kind === 'gallery' ? 'media' : 'image';
+      headline = 'Generating ' + kindLabel + '…';
+    }
+
     var pct = (typeof s.progress === 'number' && !isNaN(s.progress))
       ? Math.max(0, Math.min(100, s.progress > 1 ? s.progress : s.progress * 100))
       : null;
     var progressHtml = (pct != null)
       ? '<div class="progress"><div class="bar" data-bar style="width:' + pct.toFixed(0) + '%"></div></div>'
       : '';
+
+    // Thumbnail strip for any scenes that have already completed. Lets the
+    // user see the movie build up scene by scene without having to wait for
+    // the final combined video.
+    var thumbsHtml = '';
+    if (isMovie) {
+      var assets = Array.isArray(s.assets) ? s.assets.filter(function (a) { return a && a.url; }) : [];
+      if (assets.length > 0) {
+        thumbsHtml += '<div class="pending-thumbs" data-pending-thumbs>';
+        for (var i = 0; i < assets.length; i++) {
+          var a = assets[i];
+          var label = a.label ? esc(a.label) : '';
+          if (isVideoUrl(a.url)) {
+            thumbsHtml += '<div class="pending-thumb"><video src="' + esc(a.url) + '" muted playsinline preload="metadata" referrerpolicy="no-referrer"></video><span>' + label + '</span></div>';
+          } else if (!isAudioUrl(a.url)) {
+            thumbsHtml += '<div class="pending-thumb"><img src="' + esc(a.url) + '" alt="' + label + '" referrerpolicy="no-referrer"><span>' + label + '</span></div>';
+          }
+        }
+        thumbsHtml += '</div>';
+      }
+    }
+
+    // Blueprint state (movie created, not yet generating) shouldn't spin or
+    // show "elapsed" — there's no work in flight. Render a static info row.
+    var isPlanning = isMovie && s.phase === 'planning';
+    var spinHtml = isPlanning ? '<div class="planning-dot"></div>' : '<div class="spin"></div>';
+    var elapsedHtml = isPlanning ? '' : '<div class="elapsed" data-elapsed>' + esc(time) + ' elapsed</div>';
+    var barHtml = isPlanning ? '' : progressHtml;
+
     return '<div class="pending">' +
-      '<div class="spin"></div>' +
-      '<div class="col">' +
-        '<div class="label">Generating ' + kindLabel + '…</div>' +
-        '<div class="elapsed" data-elapsed>' + esc(time) + ' elapsed</div>' +
-        progressHtml +
+      '<div class="pending-row">' +
+        spinHtml +
+        '<div class="col">' +
+          '<div class="label">' + headline + '</div>' +
+          elapsedHtml +
+          barHtml +
+        '</div>' +
       '</div>' +
+      thumbsHtml +
     '</div>';
   }
 
@@ -539,14 +628,43 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       reportSize();
       return;
     }
-    // Still pending — update progress in-place if provided.
-    if (typeof sc.progress === 'number') {
+    // Still pending — merge fresh fields into state. For movies, new scenes
+    // that completed since the last poll arrive as a growing assets array
+    // (the translator returns ALL completed scenes each poll). Re-render
+    // when the asset count changed so newly-finished scenes pop into the
+    // thumbnail strip without remounting the spinner.
+    var prevAssetCount = (state && Array.isArray(state.assets)) ? state.assets.length : 0;
+    var newAssetCount = Array.isArray(sc.assets) ? sc.assets.length : 0;
+    var prevScenesCompleted = (state && typeof state.scenes_completed === 'number') ? state.scenes_completed : null;
+    var sceneCountChanged =
+      (typeof sc.scenes_completed === 'number') &&
+      prevScenesCompleted !== null &&
+      sc.scenes_completed !== prevScenesCompleted;
+    var assetsGrew = newAssetCount > prevAssetCount;
+
+    if (state) {
+      // Merge — don't overwrite host-provided fields (toolName, toolArgs,
+      // poll) that aren't part of the poll response.
+      var merged = Object.assign({}, state);
+      var mergeable = ['assets', 'progress', 'phase', 'scenes_total', 'scenes_completed',
+                       'scenes_failed', 'scenes_generating', 'scenes_pending', 'title'];
+      for (var i = 0; i < mergeable.length; i++) {
+        var k = mergeable[i];
+        if (k in sc) merged[k] = sc[k];
+      }
+      state = merged;
+    }
+
+    if (assetsGrew || sceneCountChanged) {
+      // Full re-render picks up new thumbnails + updated headline.
+      render();
+      reportSize();
+    } else if (typeof sc.progress === 'number') {
+      // No new scenes — cheaper in-place progress-bar update.
       var bar = root.querySelector('[data-bar]');
       var pct = sc.progress > 1 ? sc.progress : sc.progress * 100;
       pct = Math.max(0, Math.min(100, pct));
       if (bar) bar.style.width = pct.toFixed(0) + '%';
-      // Also remember for future renders.
-      if (state) state.progress = sc.progress;
     }
   }
 

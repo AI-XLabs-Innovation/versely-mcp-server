@@ -398,10 +398,10 @@ function buildAudioToolDescription(): string {
   }
   lines.push("");
   lines.push(
-    "ElevenLabs Speech Turbo / Multilingual / Voice Change (KIE): voice is required and has no default. Call versely_list_voices(provider='elevenlabs', query=...) to pick one — do NOT ask the user.",
+    "Eleven Labs Speech Turbo / Multilingual / Voice Change: voice is required and has no default. Call versely_list_voices(provider='elevenlabs', query=...) to pick one — do NOT ask the user.",
   );
   lines.push(
-    "Cartesia / Inworld TTS: same — fetch IDs via versely_list_voices.",
+    "Cartesia and Inworld TTS: same — fetch IDs via versely_list_voices.",
   );
   return lines.join("\n");
 }
