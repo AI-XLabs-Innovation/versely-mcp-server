@@ -5,8 +5,9 @@
 
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult, mediaResult } from "./_helpers.js";
+import { jsonResult } from "./_helpers.js";
 import { metaForMediaCard } from "../ui/templates.js";
+import { workflowRunToCardPayload } from "./_workflowRun.js";
 
 // --- Templates ---------------------------------------------------------------
 
@@ -22,7 +23,12 @@ const versely_create_video_workflow_template = defineTool({
       description: z.string().optional(),
       icon: z.string().optional().describe("Icon name; defaults to 'film-outline'."),
       aspect_ratio: z.string().optional().describe("e.g. '9:16' (default), '1:1', '16:9'."),
-      style_preamble: z.string().optional(),
+      style_preamble: z
+        .string()
+        .optional()
+        .describe(
+          "Prepended to every scene's prompt at run time. Use to lock visual style across the whole template (e.g. 'warm 35mm film grain, soft natural light, shallow depth of field'). Note: video_workflow_templates do not store a `voice_preamble` — that field is exclusive to user_workflows (the generic /workflows surface).",
+        ),
       characters: z
         .record(z.unknown())
         .optional()
@@ -92,7 +98,12 @@ const versely_update_video_workflow_template = defineTool({
       description: z.string().optional(),
       icon: z.string().optional(),
       aspect_ratio: z.string().optional(),
-      style_preamble: z.string().optional(),
+      style_preamble: z
+        .string()
+        .optional()
+        .describe(
+          "Prepended to every scene's prompt at run time. Use to lock visual style across the template.",
+        ),
       characters: z.record(z.unknown()).optional(),
       default_params: z.record(z.unknown()).optional(),
       scenes: z.array(z.unknown()).optional(),
@@ -129,7 +140,8 @@ const versely_delete_video_workflow_template = defineTool({
 const versely_start_video_workflow_run = defineTool({
   name: "versely_start_video_workflow_run",
   description:
-    "Start a new video-workflow run from a template. Returns {run_id, total_scenes, first_scene}; poll versely_get_video_workflow_run to track per-scene progress.",
+    "Start a new video-workflow run from a template. Returns a pending media card immediately and the iframe self-polls versely_get_video_workflow_run every 5s — scenes pop into the card as they complete, the backend auto-combines them when all are done, and the final video appears in place. No manual combine call needed in the happy path.",
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       template_id: z.string().describe("Source template UUID."),
@@ -145,8 +157,40 @@ const versely_start_video_workflow_run = defineTool({
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const data = await ctx.client.post("/api/v1/video-workflows/runs", input);
-    return jsonResult(data);
+    const submission = await ctx.client.post<{
+      success?: boolean;
+      run_id?: string;
+      total_scenes?: number;
+      first_scene?: unknown;
+    }>("/api/v1/video-workflows/runs", input);
+
+    const runId = submission?.run_id;
+    if (typeof runId !== "string" || !runId) {
+      return jsonResult({ ...submission, hint: "Run submitted but no run_id surfaced." });
+    }
+
+    // Fetch fresh state so the initial card matches reality (the backend may
+    // have already dispatched scene 1 before we hit the status endpoint).
+    let initialStatus: unknown = null;
+    try {
+      initialStatus = await ctx.client.get(
+        `/api/v1/video-workflows/runs/${encodeURIComponent(runId)}`,
+      );
+    } catch {
+      /* fall through to minimal pending card */
+    }
+
+    return workflowRunToCardPayload(
+      initialStatus ?? { run: { total_scenes: submission?.total_scenes, status: "queued" } },
+      {
+        runId,
+        toolName: "versely_start_video_workflow_run",
+        toolArgs: input,
+        pollTool: "versely_get_video_workflow_run",
+        pollArgKey: "run_id",
+        includePoll: true,
+      },
+    );
   },
 });
 
@@ -208,7 +252,8 @@ const versely_list_video_workflow_runs = defineTool({
 
 const versely_get_video_workflow_run = defineTool({
   name: "versely_get_video_workflow_run",
-  description: "Fetch a video-workflow run's status, including per-scene progress.",
+  description:
+    "Fetch a video-workflow run's status, including per-scene progress. Response is translated into a MediaCardPayload (pending / completed / failed) so the iframe poll loop can update the card in place — this is the tool the iframe self-polls during a run.",
   meta: metaForMediaCard(),
   inputSchema: z.object({
     run_id: z.string().describe("Run UUID."),
@@ -217,13 +262,21 @@ const versely_get_video_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    return mediaResult(data, { kind: "gallery" });
+    return workflowRunToCardPayload(data, {
+      runId: input.run_id,
+      toolName: "versely_get_video_workflow_run",
+      toolArgs: { run_id: input.run_id },
+      pollTool: "versely_get_video_workflow_run",
+      pollArgKey: "run_id",
+    });
   },
 });
 
 const versely_cancel_video_workflow_run = defineTool({
   name: "versely_cancel_video_workflow_run",
-  description: "Cancel an in-progress video-workflow run.",
+  description:
+    "Cancel an in-progress video-workflow run. Marks the run as 'cancelled' so the iframe poll loop stops; keeps any scenes that already completed.",
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       run_id: z.string().describe("Run UUID."),
@@ -232,50 +285,107 @@ const versely_cancel_video_workflow_run = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const { run_id, ...body } = input;
-    const data = await ctx.client.post(
+    await ctx.client.post(
       `/api/v1/video-workflows/runs/${encodeURIComponent(run_id)}/cancel`,
       body,
     );
-    return jsonResult(data);
+    // Cancel endpoint returns only `{success, message}` — fetch the fresh
+    // run so the iframe sees a `status: cancelled` translated to a terminal
+    // failed-style card and stops polling.
+    let fresh: unknown = null;
+    try {
+      fresh = await ctx.client.get(
+        `/api/v1/video-workflows/runs/${encodeURIComponent(run_id)}`,
+      );
+    } catch {
+      /* if the fetch fails, fall back to a minimal cancelled card */
+    }
+    return workflowRunToCardPayload(
+      fresh ?? { run: { status: "cancelled" } },
+      {
+        runId: run_id,
+        toolName: "versely_cancel_video_workflow_run",
+        toolArgs: input,
+        pollTool: "versely_get_video_workflow_run",
+        pollArgKey: "run_id",
+      },
+    );
   },
 });
 
 const versely_combine_video_workflow_run = defineTool({
   name: "versely_combine_video_workflow_run",
   description:
-    "Finalize a completed video-workflow run by combining its rendered scenes into a single output video.",
+    "Manually (re)combine a video-workflow run's rendered scenes into a final video. **You usually don't need to call this** — the backend auto-combines when all scenes complete. Use this only when (a) auto-combine errored, (b) you want a different transition or audio, or (c) some scenes failed and you want to combine just the successful ones.\n\nReturns a pending media card; combine runs server-side and the iframe poll loop picks up the final_video_url when it lands.",
   meta: metaForMediaCard(),
   inputSchema: z.object({
     run_id: z.string().describe("Run UUID (all scenes must be complete)."),
   }),
   handler: async (input, ctx) => {
-    const data = await ctx.client.post(
+    // Default to fire-and-forget (no `wait=true`) so big FFmpeg merges don't
+    // trip claude.ai's per-tool execution timeout. Iframe polls until the
+    // backend sets final_video_url.
+    await ctx.client.post(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}/combine`,
     );
-    return mediaResult(data, {
-      kind: "video",
-      toolName: "versely_combine_video_workflow_run",
-      toolArgs: { run_id: input.run_id },
-    });
+    let fresh: unknown = null;
+    try {
+      fresh = await ctx.client.get(
+        `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}`,
+      );
+    } catch {
+      /* fall through to minimal pending card */
+    }
+    return workflowRunToCardPayload(
+      fresh ?? { run: { status: "combining" } },
+      {
+        runId: input.run_id,
+        toolName: "versely_combine_video_workflow_run",
+        toolArgs: { run_id: input.run_id },
+        pollTool: "versely_get_video_workflow_run",
+        pollArgKey: "run_id",
+        includePoll: true,
+      },
+    );
   },
 });
 
 const versely_retry_video_workflow_scene = defineTool({
   name: "versely_retry_video_workflow_scene",
-  description: "Retry a single failed scene within a video-workflow run, identified by its scene order.",
+  description:
+    "Retry a single failed scene within a video-workflow run, identified by its scene order. The backend resets that scene plus any downstream scenes that depended on it and re-dispatches them. Returns a pending media card; the iframe polls until the retried scenes finish (and auto-combine fires).",
+  meta: metaForMediaCard(),
   inputSchema: z.object({
     run_id: z.string().describe("Run UUID."),
     scene_order: z
       .number()
       .int()
-      .min(0)
-      .describe("Zero-based scene index within the run."),
+      .min(1)
+      .describe("1-based scene index within the run (matches scene_order from versely_get_video_workflow_run)."),
   }),
   handler: async (input, ctx) => {
-    const data = await ctx.client.post(
+    await ctx.client.post(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}/scenes/${input.scene_order}/retry`,
     );
-    return jsonResult(data);
+    let fresh: unknown = null;
+    try {
+      fresh = await ctx.client.get(
+        `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}`,
+      );
+    } catch {
+      /* fall through */
+    }
+    return workflowRunToCardPayload(
+      fresh ?? { run: { status: "running" } },
+      {
+        runId: input.run_id,
+        toolName: "versely_retry_video_workflow_scene",
+        toolArgs: input,
+        pollTool: "versely_get_video_workflow_run",
+        pollArgKey: "run_id",
+        includePoll: true,
+      },
+    );
   },
 });
 

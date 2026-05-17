@@ -10,8 +10,9 @@
 
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
-import { jsonResult, mediaResult } from "./_helpers.js";
+import { jsonResult } from "./_helpers.js";
 import { metaForMediaCard } from "../ui/templates.js";
+import { workflowRunToCardPayload } from "./_workflowRun.js";
 
 const Empty = z.object({});
 
@@ -33,6 +34,75 @@ const MediaAsset = z.object({
   url: z.string().url(),
   type: z.enum(["image", "video"]),
 });
+
+// Backend's asset_map entry (controllers/workflow.controller.ts:20, validated 33-62):
+//   Record<string, { asset_id: string; asset_type: string; name: string }>
+// All three fields are required — backend rejects missing asset_type / name.
+const AssetMapEntry = z.object({
+  asset_id: z
+    .string()
+    .min(1)
+    .describe("UUID of an existing workflow_asset (from versely_create_workflow_asset / versely_list_workflow_assets)."),
+  asset_type: z
+    .string()
+    .min(1)
+    .describe("Category of the asset (e.g. 'character', 'product', 'brand_kit'). Must match the asset's own asset_type."),
+  name: z
+    .string()
+    .min(1)
+    .describe("Human-readable label for this asset slot (e.g. 'Main character')."),
+});
+
+// Backend's VerselyScene (controllers/workflow.controller.ts:21, validated 64-120).
+// Scene workflows (asset_map + scenes) are the modern path; backend chains them
+// through Nano Banana 2 image gen → Vidu Q3 / VEO 3.1 Fast video gen.
+const UserWorkflowScene = z
+  .object({
+    order: z
+      .number()
+      .int()
+      .min(1)
+      .describe("1-based position in the scene sequence. Must be unique across scenes."),
+    name: z.string().optional().describe("Optional human label for the scene (e.g. 'Hook')."),
+    img_prompt: z
+      .string()
+      .min(1)
+      .describe("Prompt the image generator sees. style_preamble (if set on the workflow) is auto-prepended at run time."),
+    video_prompt: z
+      .string()
+      .min(1)
+      .describe("Prompt the image-to-video model sees. Sora / VEO / Seedance render dialogue from this prompt directly."),
+    reference_image_keys: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "List of asset_map keys to use as character / product references for this scene. Every entry MUST exist in asset_map or the backend rejects the save. If omitted on a workflow that has any assets, the backend auto-injects every asset_map key to keep character identity stable.",
+      ),
+    voiceover: z
+      .string()
+      .optional()
+      .describe(
+        "Spoken-line block. Appended to video_prompt as a 'Dialogue:' section at run time. voice_preamble (if set on the workflow) is prepended as 'Voice direction:' to lock narrator persona across scenes.",
+      ),
+    duration: z
+      .number()
+      .optional()
+      .describe(
+        "Per-scene clip duration in seconds. VEO 3.1 Fast I2V is locked to 8s server-side regardless; other models honor this if positive.",
+      ),
+    max_retries: z
+      .number()
+      .int()
+      .optional()
+      .describe("Override the default per-scene retry budget."),
+    chain_from_previous: z
+      .boolean()
+      .optional()
+      .describe(
+        "Opt-in: when true on scene N (N>=2), the backend switches that scene to previous_scene_image_to_video for tight narrative continuation. Most multi-scene runs should leave this false and rely on asset_map for character consistency.",
+      ),
+  })
+  .passthrough();
 
 // --- Run-status taxonomy ------------------------------------------------------
 // Backends use slightly different enum values across run tables, so we group
@@ -137,7 +207,7 @@ async function fetchRunsForWorkflow(
 const versely_create_workflow = defineTool({
   name: "versely_create_workflow",
   description:
-    "Create a new user workflow. Provide either `steps` (legacy multi-step mode) or `scenes` (newer scene-graph mode) — at least one must be populated.",
+    "Create a new user workflow. Provide either `steps` (legacy multi-step mode) or `scenes` (newer scene-graph mode) — at least one must be populated.\n\n**Scene-graph prerequisite chain:**\n1. Create reusable assets first with `versely_create_workflow_asset` (one per character / product / brand kit). OR call `versely_prepare_workflow_assets` to do steps 1 + 2 in a single call.\n2. Reference them in `asset_map` as `{ \"<key>\": { asset_id, asset_type, name } }` — the key is the slot name scenes will use.\n3. In each scene, list the slot keys you want in `reference_image_keys`. Every key MUST exist in `asset_map` (backend rejects unknown keys with a 400). If omitted, the backend auto-injects ALL asset_map keys for that scene so character identity stays stable.\n\nFor multi-scene runs, also set `style_preamble` + `voice_preamble` so visual style and narrator persona stay consistent across independently-rendered scenes.",
   inputSchema: z
     .object({
       name: z.string().min(1).describe("Display name (required)."),
@@ -151,26 +221,36 @@ const versely_create_workflow = defineTool({
         .array(z.unknown())
         .optional()
         .describe(
-          "Legacy mode: ordered array of step objects (each with action/inputs).",
+          "Legacy mode: ordered array of step objects (each with action/inputs). Mutually exclusive with `scenes` in practice.",
         ),
       asset_map: z
-        .record(z.unknown())
+        .record(AssetMapEntry)
         .optional()
         .describe(
-          "Map of asset key → asset reference, used by `scenes[].reference_image_keys`.",
+          "Scene-graph mode: map of asset slot key → { asset_id, asset_type, name }. The key is what scenes reference in `reference_image_keys`. All three fields are required per entry (backend rejects missing asset_type / name with a 400). Example: { \"main_character\": { asset_id: \"...uuid...\", asset_type: \"character\", name: \"Main character\" } }.",
         ),
       scenes: z
-        .array(z.unknown())
+        .array(UserWorkflowScene)
         .optional()
         .describe(
-          "Scene-graph mode: array of scenes with prompts, model selections, references.",
+          "Scene-graph mode: ordered scenes. Each scene needs `order` (1-based, unique), `img_prompt`, `video_prompt`. Optional: `reference_image_keys` (must all exist in asset_map), `voiceover`, `duration`, `chain_from_previous`. Scenes auto-sort by `order` on save.",
         ),
       aspect_ratio: z
         .string()
         .optional()
         .describe("e.g. '9:16' (default), '1:1', '16:9'."),
-      style_preamble: z.string().optional(),
-      voice_preamble: z.string().optional(),
+      style_preamble: z
+        .string()
+        .optional()
+        .describe(
+          "Prepended to every scene's image prompt at run time. Use to lock visual style across the whole workflow (e.g. 'warm 35mm film grain, soft natural light, shallow depth of field'). Cheap insurance against scene-to-scene style drift when scenes are rendered independently.",
+        ),
+      voice_preamble: z
+        .string()
+        .optional()
+        .describe(
+          "Prepended to every scene's voiceover as a 'Voice direction:' header at run time. Use to lock narrator persona / tone / pacing across scenes (e.g. 'calm female narrator, mid-30s, conversational pacing, slight smile'). Only applies to scenes that have a `voiceover` field — has no effect otherwise.",
+        ),
     })
     .passthrough(),
   handler: async (input, ctx) => {
@@ -206,7 +286,7 @@ const versely_get_workflow = defineTool({
 const versely_update_workflow = defineTool({
   name: "versely_update_workflow",
   description:
-    "Patch core workflow fields (name, description, icon, prompt, steps, scenes, asset_map, aspect_ratio, preambles). Only fields you provide are updated. If you touch scenes or asset_map, the backend revalidates them as a pair against the current row.",
+    "Patch core workflow fields (name, description, icon, prompt, steps, scenes, asset_map, aspect_ratio, preambles). Only fields you provide are updated. **If you touch scenes or asset_map, send them as a pair** — the backend revalidates `scenes[].reference_image_keys` against `asset_map`, so updating only one side can fail if keys drift.",
   inputSchema: z
     .object({
       workflow_id: z.string().describe("Workflow UUID."),
@@ -215,11 +295,31 @@ const versely_update_workflow = defineTool({
       icon: z.string().optional(),
       prompt: z.string().optional(),
       steps: z.array(z.unknown()).optional(),
-      asset_map: z.record(z.unknown()).optional(),
-      scenes: z.array(z.unknown()).optional(),
+      asset_map: z
+        .record(AssetMapEntry)
+        .optional()
+        .describe(
+          "Same shape as versely_create_workflow: Record<slot_key, { asset_id, asset_type, name }>. Send alongside `scenes` if you're changing referenced keys.",
+        ),
+      scenes: z
+        .array(UserWorkflowScene)
+        .optional()
+        .describe(
+          "Same shape as versely_create_workflow scenes. Send alongside `asset_map` if you're changing referenced keys.",
+        ),
       aspect_ratio: z.string().optional(),
-      style_preamble: z.string().optional(),
-      voice_preamble: z.string().optional(),
+      style_preamble: z
+        .string()
+        .optional()
+        .describe(
+          "Prepended to every scene's image prompt at run time. Use to lock visual style across the workflow.",
+        ),
+      voice_preamble: z
+        .string()
+        .optional()
+        .describe(
+          "Prepended to every scene's voiceover as a 'Voice direction:' header. Locks narrator persona; only applies when scenes have a `voiceover` field.",
+        ),
     })
     .passthrough(),
   handler: async (input, ctx) => {
@@ -380,7 +480,8 @@ const versely_update_workflow_assets = defineTool({
 const versely_run_workflow = defineTool({
   name: "versely_run_workflow",
   description:
-    "Execute a workflow now (or schedule for `scheduled_at`). Returns a run_id immediately; poll versely_get_workflow_run to track progress — manual runs do not stream output via REST.",
+    "Execute a workflow now (or schedule for `scheduled_at`). Returns a pending media card immediately and the iframe self-polls versely_get_workflow_run every 5s — scenes pop into the card as they complete, the backend auto-combines when all are done, and the final video appears in place.\n\nFor scheduled runs (`scheduled_at` set), the card is still pending but won't make progress until the scheduled time.",
+  meta: metaForMediaCard(),
   inputSchema: z
     .object({
       workflow_id: z.string().describe("Workflow UUID."),
@@ -394,11 +495,46 @@ const versely_run_workflow = defineTool({
     .passthrough(),
   handler: async (input, ctx) => {
     const { workflow_id, ...body } = input;
-    const data = await ctx.client.post(
-      `/api/v1/workflows/${encodeURIComponent(workflow_id)}/run`,
-      body,
-    );
-    return jsonResult(data);
+    const submission = await ctx.client.post<{
+      success?: boolean;
+      mode?: "scenes" | "steps";
+      run_id?: string;
+      task_id?: string;
+      total_scenes?: number;
+      poll_url?: string;
+    }>(`/api/v1/workflows/${encodeURIComponent(workflow_id)}/run`, body);
+
+    const runId =
+      submission?.run_id ??
+      submission?.task_id ??
+      // Last-ditch: walk the response for any *_id.
+      (typeof submission === "object" && submission
+        ? Object.values(submission).find((v) => typeof v === "string" && v.length > 8)
+        : undefined);
+
+    if (typeof runId !== "string" || !runId) {
+      // Submit succeeded structurally but we couldn't find a poll handle.
+      // Surface the raw response so the LLM has something to act on.
+      return jsonResult({ ...submission, hint: "Run submitted but no run_id surfaced from the response. Inspect manually." });
+    }
+
+    // Fetch fresh status so the initial card reflects whatever state the run
+    // is in (queued, already running, or — for scheduled runs — pending).
+    let initialStatus: unknown = null;
+    try {
+      initialStatus = await ctx.client.get(`/api/v1/workflows/runs/${encodeURIComponent(runId)}`);
+    } catch {
+      /* fall through to minimal pending card */
+    }
+
+    return workflowRunToCardPayload(initialStatus ?? { mode: submission?.mode ?? "scenes", run: {} }, {
+      runId,
+      toolName: "versely_run_workflow",
+      toolArgs: { workflow_id, ...(body.scheduled_at ? { scheduled_at: body.scheduled_at } : {}) },
+      pollTool: "versely_get_workflow_run",
+      pollArgKey: "run_id",
+      includePoll: true,
+    });
   },
 });
 
@@ -454,7 +590,7 @@ const versely_list_workflow_runs = defineTool({
 const versely_get_workflow_run = defineTool({
   name: "versely_get_workflow_run",
   description:
-    "Fetch a single workflow run by its run/task ID. Unified across scenes-mode and steps-mode runs.",
+    "Fetch a single workflow run by its run/task ID. Unified across scenes-mode and steps-mode runs. Response is translated into a MediaCardPayload (pending / completed / failed) so the iframe poll loop can update the card in place — this is the tool the iframe self-polls during a run.",
   meta: metaForMediaCard(),
   inputSchema: z.object({
     run_id: z
@@ -465,7 +601,15 @@ const versely_get_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    return mediaResult(data, { kind: "gallery" });
+    // No `includePoll` — by the time the iframe calls this, it's already in
+    // its polling loop. Re-emitting the poll instruction is redundant.
+    return workflowRunToCardPayload(data, {
+      runId: input.run_id,
+      toolName: "versely_get_workflow_run",
+      toolArgs: { run_id: input.run_id },
+      pollTool: "versely_get_workflow_run",
+      pollArgKey: "run_id",
+    });
   },
 });
 
@@ -818,6 +962,122 @@ const versely_delete_workflow_asset = defineTool({
   },
 });
 
+// --- Convenience: prepare assets + asset_map in one call ---------------------
+// One-shot helper that creates a batch of workflow_assets and returns an
+// `asset_map` ready to drop into versely_create_workflow / versely_update_workflow.
+// Replaces the boilerplate of: N x versely_create_workflow_asset + manually
+// stitching {asset_id, asset_type, name} into a Record by hand.
+
+const PrepareAssetSpec = z.object({
+  key: z
+    .string()
+    .min(1)
+    .describe("Slot key the scenes will reference in `reference_image_keys` (e.g. 'main_character', 'product')."),
+  name: z.string().min(1).describe("Display name for the asset (e.g. 'Main character — Sarah')."),
+  asset_type: z
+    .string()
+    .min(1)
+    .describe("Category: 'character' | 'product' | 'brand_kit' | etc. Used by the backend to group assets in the asset gallery."),
+  image_urls: z
+    .array(z.string().url())
+    .min(1)
+    .describe("Reference image URLs. At least one required — Nano Banana 2 uses these to lock identity across scenes."),
+  description: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+const versely_prepare_workflow_assets = defineTool({
+  name: "versely_prepare_workflow_assets",
+  description:
+    "Batch-create reusable workflow assets and return a ready-to-use `asset_map`. Saves you the N round-trips of calling versely_create_workflow_asset once per asset, plus the manual stitching of {asset_id, asset_type, name} into a Record.\n\nUsage:\n1. Call this with one entry per asset slot you want (each entry needs `key`, `name`, `asset_type`, `image_urls`).\n2. Take the returned `asset_map` and pass it verbatim to versely_create_workflow / versely_update_workflow.\n3. Reference the keys you chose in `scenes[].reference_image_keys`.\n\nFail-fast: if any asset fails to create, the call stops and returns the assets it has already created so far in `created` plus the error in `failed_at_index`. The successful assets are real — they exist in the user's library and can be deleted or reused via versely_list_workflow_assets if needed.",
+  inputSchema: z
+    .object({
+      assets: z
+        .array(PrepareAssetSpec)
+        .min(1)
+        .describe("One entry per asset slot. Order is preserved in the response."),
+      workflow_id: z
+        .string()
+        .optional()
+        .describe(
+          "Optional: bind all created assets to a specific workflow. Omit to make them user-global (reusable across workflows).",
+        ),
+    })
+    .passthrough(),
+  handler: async (input, ctx) => {
+    type CreatedAsset = {
+      key: string;
+      asset_id: string;
+      asset_type: string;
+      name: string;
+    };
+    const created: CreatedAsset[] = [];
+    const assetMap: Record<string, { asset_id: string; asset_type: string; name: string }> = {};
+
+    // Detect duplicate keys before any HTTP calls so we don't half-create assets.
+    const seenKeys = new Set<string>();
+    for (const spec of input.assets) {
+      if (seenKeys.has(spec.key)) {
+        return jsonResult({
+          success: false,
+          error: `Duplicate asset key "${spec.key}". Each slot key must be unique within asset_map.`,
+          created: [],
+          asset_map: {},
+        });
+      }
+      seenKeys.add(spec.key);
+    }
+
+    for (let i = 0; i < input.assets.length; i++) {
+      const spec = input.assets[i]!;
+      const body: Record<string, unknown> = {
+        asset_type: spec.asset_type,
+        name: spec.name,
+        reference_images: spec.image_urls.map((url) => ({ url })),
+      };
+      if (spec.description) body.description = spec.description;
+      if (spec.metadata) body.metadata = spec.metadata;
+      if (input.workflow_id) body.workflow_id = input.workflow_id;
+
+      try {
+        const res = await ctx.client.post<{ success?: boolean; asset?: { id: string } }>(
+          "/api/v1/workflow-assets",
+          body,
+        );
+        const assetId = res?.asset?.id;
+        if (typeof assetId !== "string" || !assetId) {
+          return jsonResult({
+            success: false,
+            error: `Asset at index ${i} (key="${spec.key}") was created without an id.`,
+            failed_at_index: i,
+            created,
+            asset_map: assetMap,
+          });
+        }
+        const entry = { asset_id: assetId, asset_type: spec.asset_type, name: spec.name };
+        assetMap[spec.key] = entry;
+        created.push({ key: spec.key, ...entry });
+      } catch (err) {
+        return jsonResult({
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          failed_at_index: i,
+          failed_key: spec.key,
+          created,
+          asset_map: assetMap,
+        });
+      }
+    }
+
+    return jsonResult({
+      success: true,
+      created,
+      asset_map: assetMap,
+      hint: "Pass `asset_map` directly to versely_create_workflow. Reference these keys in scenes[].reference_image_keys.",
+    });
+  },
+});
+
 export const workflowTools: Tool[] = [
   versely_create_workflow,
   versely_list_workflows,
@@ -843,4 +1103,5 @@ export const workflowTools: Tool[] = [
   versely_update_workflow_asset,
   versely_add_workflow_asset_images,
   versely_delete_workflow_asset,
+  versely_prepare_workflow_assets,
 ];
