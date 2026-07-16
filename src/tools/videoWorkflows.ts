@@ -1,200 +1,24 @@
-// Video workflow templates and runs.
+// Video workflow RUN control.
 //
-// Distinct from the generic /workflows resource — this is a scene-graph-based
-// multi-step video pipeline with its own template + run state machine.
+// The video_workflow_templates surface is deliberately NOT exposed over MCP —
+// template CRUD and starting a run from a template live in the app only.
+//
+// These run tools stay, and are not redundant: /workflows and /video-workflows
+// are two blueprint stores feeding ONE run engine. A scenes-mode user workflow
+// started with versely_run_workflow instantiates a `video_workflow_runs` row,
+// exactly like a template-started run does — and cancel / combine / retry-scene
+// exist ONLY on this surface. Drop them and a scene run started from
+// /workflows becomes impossible to cancel, recombine or repair.
+//
+// Reads are a superset on the other side (versely_get_workflow_run falls back
+// to background_tasks for legacy steps-mode runs); these two readers are the
+// video-run-native path and back the iframe poll loop.
 
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult } from "./_helpers.js";
 import { metaForMediaCard } from "../ui/templates.js";
 import { workflowRunToCardPayload } from "./_workflowRun.js";
-
-// --- Templates ---------------------------------------------------------------
-
-const versely_create_video_workflow_template = defineTool({
-  name: "versely_create_video_workflow_template",
-  description:
-    "Create a new video-workflow template (multi-scene video blueprint). Slug + name are required; scenes is validated by the backend.",
-  inputSchema: z
-    .object({
-      slug: z.string().describe("Unique template slug (kebab-case)."),
-      name: z.string().describe("Display name."),
-      version: z.number().int().min(1).optional().describe("Defaults to 1."),
-      description: z.string().optional(),
-      icon: z.string().optional().describe("Icon name; defaults to 'film-outline'."),
-      aspect_ratio: z.string().optional().describe("e.g. '9:16' (default), '1:1', '16:9'."),
-      style_preamble: z
-        .string()
-        .optional()
-        .describe(
-          "Prepended to every scene's prompt at run time. Use to lock visual style across the whole template (e.g. 'warm 35mm film grain, soft natural light, shallow depth of field'). Note: video_workflow_templates do not store a `voice_preamble` — that field is exclusive to user_workflows (the generic /workflows surface).",
-        ),
-      characters: z
-        .record(z.unknown())
-        .optional()
-        .describe("Map of character key → character definition."),
-      default_params: z
-        .record(z.unknown())
-        .optional()
-        .describe("Default values for params at run time."),
-      scenes: z
-        .array(z.unknown())
-        .describe("Ordered scenes (prompts, model selections, references)."),
-      is_public: z
-        .boolean()
-        .optional()
-        .describe("Make this template visible to other users (defaults to false)."),
-    })
-    .passthrough(),
-  handler: async (input, ctx) => {
-    const data = await ctx.client.post("/api/v1/video-workflows/templates", input);
-    return jsonResult(data);
-  },
-});
-
-const versely_list_video_workflow_templates = defineTool({
-  name: "versely_list_video_workflow_templates",
-  description:
-    "List video-workflow templates. By default returns public templates plus the user's own; pass mine=true to filter to user-owned only.",
-  inputSchema: z.object({
-    mine: z.boolean().optional().describe("Only return templates created by the current user."),
-    limit: z.number().int().min(1).max(50).optional().describe("Default 20, max 50."),
-    offset: z.number().int().min(0).optional(),
-  }),
-  handler: async (input, ctx) => {
-    const data = await ctx.client.get("/api/v1/video-workflows/templates", {
-      query: {
-        mine: input.mine === true ? "true" : undefined,
-        limit: input.limit,
-        offset: input.offset,
-      },
-    });
-    return jsonResult(data);
-  },
-});
-
-const versely_get_video_workflow_template = defineTool({
-  name: "versely_get_video_workflow_template",
-  description: "Fetch a single video-workflow template by ID.",
-  inputSchema: z.object({
-    template_id: z.string().describe("Template UUID."),
-  }),
-  handler: async (input, ctx) => {
-    const data = await ctx.client.get(
-      `/api/v1/video-workflows/templates/${encodeURIComponent(input.template_id)}`,
-    );
-    return jsonResult(data);
-  },
-});
-
-const versely_update_video_workflow_template = defineTool({
-  name: "versely_update_video_workflow_template",
-  description:
-    "Patch a video-workflow template's mutable fields. Only fields you provide are updated.",
-  inputSchema: z
-    .object({
-      template_id: z.string().describe("Template UUID."),
-      name: z.string().optional(),
-      description: z.string().optional(),
-      icon: z.string().optional(),
-      aspect_ratio: z.string().optional(),
-      style_preamble: z
-        .string()
-        .optional()
-        .describe(
-          "Prepended to every scene's prompt at run time. Use to lock visual style across the template.",
-        ),
-      characters: z.record(z.unknown()).optional(),
-      default_params: z.record(z.unknown()).optional(),
-      scenes: z.array(z.unknown()).optional(),
-      is_public: z.boolean().optional(),
-      // `version` was declared here but the controller never destructures it, so
-      // it was accepted and silently dropped. Removed rather than left as a lie —
-      // template versioning isn't settable through this endpoint.
-    })
-    .passthrough(),
-  handler: async (input, ctx) => {
-    const { template_id, ...body } = input;
-    const data = await ctx.client.patch(
-      `/api/v1/video-workflows/templates/${encodeURIComponent(template_id)}`,
-      body,
-    );
-    return jsonResult(data);
-  },
-});
-
-const versely_delete_video_workflow_template = defineTool({
-  name: "versely_delete_video_workflow_template",
-  description: "Delete a video-workflow template by ID.",
-  inputSchema: z.object({
-    template_id: z.string().describe("Template UUID."),
-  }),
-  handler: async (input, ctx) => {
-    const data = await ctx.client.delete(
-      `/api/v1/video-workflows/templates/${encodeURIComponent(input.template_id)}`,
-    );
-    return jsonResult(data);
-  },
-});
-
-// --- Runs --------------------------------------------------------------------
-
-const versely_start_video_workflow_run = defineTool({
-  name: "versely_start_video_workflow_run",
-  description:
-    "Start a new video-workflow run from a template. Returns a pending media card immediately and the iframe self-polls versely_get_video_workflow_run every 5s — scenes pop into the card as they complete, the backend auto-combines them when all are done, and the final video appears in place. No manual combine call needed in the happy path.",
-  meta: metaForMediaCard(),
-  inputSchema: z
-    .object({
-      template_id: z.string().describe("Source template UUID."),
-      title: z.string().optional().describe("Display title for the run."),
-      params: z
-        .record(z.unknown())
-        .optional()
-        .describe("Per-run param values that override the template's default_params."),
-      aspect_ratio: z
-        .string()
-        .optional()
-        .describe("Override the template's aspect_ratio for this run."),
-    })
-    .passthrough(),
-  handler: async (input, ctx) => {
-    const submission = await ctx.client.post<{
-      success?: boolean;
-      run_id?: string;
-      total_scenes?: number;
-      first_scene?: unknown;
-    }>("/api/v1/video-workflows/runs", input);
-
-    const runId = submission?.run_id;
-    if (typeof runId !== "string" || !runId) {
-      return jsonResult({ ...submission, hint: "Run submitted but no run_id surfaced." });
-    }
-
-    // Fetch fresh state so the initial card matches reality (the backend may
-    // have already dispatched scene 1 before we hit the status endpoint).
-    let initialStatus: unknown = null;
-    try {
-      initialStatus = await ctx.client.get(
-        `/api/v1/video-workflows/runs/${encodeURIComponent(runId)}`,
-      );
-    } catch {
-      /* fall through to minimal pending card */
-    }
-
-    return workflowRunToCardPayload(
-      initialStatus ?? { run: { total_scenes: submission?.total_scenes, status: "queued" } },
-      {
-        runId,
-        toolName: "versely_start_video_workflow_run",
-        toolArgs: input,
-        pollTool: "versely_get_video_workflow_run",
-        pollArgKey: "run_id",
-        includePoll: true,
-      },
-    );
-  },
-});
 
 const versely_list_video_workflow_runs = defineTool({
   name: "versely_list_video_workflow_runs",
@@ -422,12 +246,6 @@ const versely_retry_video_workflow_scene = defineTool({
 });
 
 export const videoWorkflowTools: Tool[] = [
-  versely_create_video_workflow_template,
-  versely_list_video_workflow_templates,
-  versely_get_video_workflow_template,
-  versely_update_video_workflow_template,
-  versely_delete_video_workflow_template,
-  versely_start_video_workflow_run,
   versely_list_video_workflow_runs,
   versely_get_video_workflow_run,
   versely_cancel_video_workflow_run,
