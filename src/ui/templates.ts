@@ -115,6 +115,9 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     width: 100%; height: 100%; display: block;
     object-fit: cover; cursor: zoom-in;
   }
+  /* Mixed galleries can put an audio asset in a tile; give it the tile width
+     rather than leaving it at the UA's intrinsic size. */
+  .tile audio { width: 100%; display: block; align-self: center; }
   /* Single-asset (solo) tiles use a centered, contained image with a cap
      on height so 1:1 / portrait sources don't dominate the chat. The
      iframe is up to 720px wide; 480px tall keeps it in a Higgsfield-style
@@ -334,11 +337,21 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       var url = esc(a.url || '');
       var label = esc(a.label || '');
       var tileCls = n === 1 ? 'tile solo' : 'tile';
-      html += '<div class="' + tileCls + '">' +
-        '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' +
+      // This grid is also the landing spot for 'gallery-mixed' (multiple assets
+      // of differing kinds), so a tile is not necessarily an image. Rendering a
+      // video or audio URL into <img> yields a silently broken tile — pick the
+      // element per asset instead.
+      var inner;
+      if (isVideoUrl(a.url)) {
+        inner = '<video src="' + url + '" controls playsinline preload="metadata" referrerpolicy="no-referrer"></video>';
+      } else if (isAudioUrl(a.url)) {
+        inner = '<audio src="' + url + '" controls preload="metadata"></audio>';
+      } else {
+        inner = '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' +
           '<img src="' + url + '" alt="' + label + '" loading="lazy" referrerpolicy="no-referrer"/>' +
-        '</a>' +
-      '</div>';
+        '</a>';
+      }
+      html += '<div class="' + tileCls + '">' + inner + '</div>';
     }
     html += '</div>';
     return html;
@@ -610,9 +623,16 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     var status = sc.status;
     if (status === 'completed' || (!status && hasAssets)) {
       stopPolling('completed');
+      // The generating tool set the kind from what it ASKED for, which is
+      // authoritative. The poll response only knows what came back, and can
+      // re-derive a different kind (e.g. a video plus its poster thumbnail
+      // infers as a mixed gallery and would then render in the image grid).
+      // Keep the original unless the card never had one.
+      var originalKind = state && state.kind;
       // Merge new assets/status into the original card state so display
       // fields (prompt, model, chips) survive.
       state = Object.assign({}, state, sc, { status: 'completed' });
+      if (originalKind) state.kind = originalKind;
       // Drop the poll instruction so render() takes the asset-rendering
       // branch on the next pass.
       state.poll = undefined;

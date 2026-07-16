@@ -2,7 +2,91 @@ import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult, extractMediaAssets } from "./_helpers.js";
 import { pollStatus } from "../poller.js";
-import { metaForMediaCard } from "../ui/templates.js";
+import {
+  metaForMediaCard,
+  buildMediaCardPayload,
+  type MediaKind,
+} from "../ui/templates.js";
+import type { ToolResult } from "./_types.js";
+
+/**
+ * The status endpoint reports which generation table the record came from as
+ * `type` ("images" | "videos" | "audios" | "music"). That is authoritative —
+ * far better than re-deriving the kind from asset URLs, which guesses off a
+ * file extension and silently mis-renders when a URL is extensionless, signed,
+ * or accompanied by a poster thumbnail (a video + its thumbnail infers as a
+ * mixed "gallery" and lands in the image grid, where a video renders as a
+ * broken <img>).
+ */
+function kindFromStatusType(data: unknown): MediaKind | undefined {
+  const t = (data as Record<string, unknown> | null)?.type;
+  if (typeof t !== "string") return undefined;
+  switch (t.toLowerCase()) {
+    case "images":
+    case "image":
+      return "image";
+    case "videos":
+    case "video":
+      return "video";
+    case "audios":
+    case "audio":
+    case "music":
+      return "audio";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Build a completed card straight from the status payload.
+ *
+ * mediaResult classifies assets by URL EXTENSION and returns plain JSON when it
+ * recognises none — which, in submit mode, leaves the iframe polling a card that
+ * can never resolve (it waits for `assets`/`status` that never arrive). That has
+ * bitten before: TTS outputs re-hosted with an `audio/mpeg` content-type produced
+ * `.mpeg` URLs that weren't in the extension set, and the card hung despite the
+ * file being fully generated.
+ *
+ * The status endpoint already tells us both things authoritatively — `type` (the
+ * source table) and `result_urls` — so when extension-sniffing comes up empty we
+ * can still render the right card. Scoped deliberately to result_urls: applying a
+ * kind hint to a blind payload walk would misclassify non-media URLs.
+ */
+function cardFromStatusPayload(
+  data: unknown,
+  requestId: string,
+): ToolResult | null {
+  const kind = kindFromStatusType(data);
+  if (!kind) return null;
+  const obj = (data ?? {}) as Record<string, unknown>;
+  const raw = Array.isArray(obj.result_urls)
+    ? obj.result_urls
+    : typeof obj.result_url === "string"
+      ? [obj.result_url]
+      : [];
+  const urls = raw.filter((u): u is string => typeof u === "string" && !!u.trim());
+  if (urls.length === 0) return null;
+
+  const structuredContent = buildMediaCardPayload(
+    kind,
+    urls.map((url) => ({ url })),
+    {
+      task_id: requestId,
+      status: "completed",
+      ...(typeof obj.model === "string" ? { model: obj.model } : {}),
+    },
+  );
+  if (!structuredContent) return null;
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Task ${requestId} completed — ${urls.length} ${kind} asset${urls.length === 1 ? "" : "s"}: ${urls.join(", ")}`,
+      },
+    ],
+    structuredContent,
+  };
+}
 
 /**
  * Coerce a backend status payload to a discrete state. The backend's status
@@ -47,12 +131,24 @@ const versely_get_task_status = defineTool({
     const state = classifyStatus(data);
 
     if (state === "completed") {
-      // mediaResult will walk for asset URLs and build the completed payload.
-      // The iframe poll loop merges this back into the original card state.
-      return mediaResult(
+      // mediaResult walks for asset URLs and builds the completed payload; the
+      // iframe poll loop merges this back over the original card state, so the
+      // kind we set here is the one the finished card renders with. Take it from
+      // the backend's `type` rather than letting mediaResult infer from URLs.
+      const kind = kindFromStatusType(data);
+      const res = await mediaResult(
         { request_id: input.request_id, outcome: "completed", data },
-        { extra: { task_id: input.request_id, status: "completed" } },
+        {
+          ...(kind ? { kind } : {}),
+          extra: { task_id: input.request_id, status: "completed" },
+        },
       );
+      // No structuredContent means mediaResult recognised no assets by extension
+      // and fell back to plain JSON — which would leave the iframe polling
+      // forever. Rebuild from the status payload's own type + result_urls.
+      return res.structuredContent
+        ? res
+        : (cardFromStatusPayload(data, input.request_id) ?? res);
     }
 
     if (state === "failed") {
@@ -127,7 +223,18 @@ const versely_wait_for_task = defineTool({
     // normalized (slim text + structuredContent) regardless of which provider
     // serviced the underlying generation. Failed / aborted outcomes stay as
     // raw JSON since there's no asset to render.
-    return outcome.kind === "completed" ? mediaResult(payload) : jsonResult(payload);
+    if (outcome.kind !== "completed") return jsonResult(payload);
+    // Same as get_task_status: prefer the backend's authoritative `type` over
+    // inferring the render path from asset URLs. This is the tool submit-mode
+    // callers land on, so it decides what the finished card looks like.
+    const kind = kindFromStatusType(outcome.data);
+    const res = await mediaResult(payload, {
+      ...(kind ? { kind } : {}),
+      extra: { task_id: input.request_id, status: "completed" },
+    });
+    return res.structuredContent
+      ? res
+      : (cardFromStatusPayload(outcome.data, input.request_id) ?? res);
   },
 });
 
