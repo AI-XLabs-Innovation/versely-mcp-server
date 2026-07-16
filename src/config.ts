@@ -32,7 +32,12 @@ export function loadConfig(): Config {
     );
   }
 
-  const defaultPollTimeoutMs = parsePositiveInt("VERSELY_DEFAULT_POLL_TIMEOUT_MS", 180_000);
+  // 70s, not the 180s this used to default to. Blocking polls run through a
+  // Cloudflare proxy that severs any request at ~100s, and the client reports
+  // that as "unable to reach the server" — so a 180s budget could never be
+  // spent, it just guaranteed a confusing failure for any job over 100s.
+  // pollStatus clamps to MAX_BLOCKING_POLL_MS regardless of what's set here.
+  const defaultPollTimeoutMs = parsePositiveInt("VERSELY_DEFAULT_POLL_TIMEOUT_MS", 70_000);
   const defaultPollIntervalMs = parsePositiveInt("VERSELY_DEFAULT_POLL_INTERVAL_MS", 3_000);
   if (defaultPollIntervalMs > defaultPollTimeoutMs) {
     throw new VerselyConfigError(

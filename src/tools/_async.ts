@@ -20,7 +20,7 @@ export const ModeSchema = z
   .enum(["wait", "submit"])
   .default("submit")
   .describe(
-    "'submit' (default) returns the request_id immediately — poll it with versely_wait_for_task (blocks until done) or versely_get_task_status (single check). 'wait' holds this tool call open until the job finishes; only use it for jobs you expect to be quick, since a long one can exceed the host's tool timeout and strand a generation you've already been charged for.",
+    "'submit' (default) returns the request_id immediately — check it with versely_get_task_status, and check again if it's still pending. 'wait' holds this tool call open while polling, but for at most ~70s: past that the proxy in front of this server cuts the connection and the caller sees 'unable to reach the server' rather than a result. Only use 'wait' for jobs you expect to finish inside a minute; anything longer (video especially) should submit and poll.",
   );
 
 export const AsyncFields = {
@@ -165,6 +165,34 @@ export async function handleAsync(args: {
     intervalMs: args.pollIntervalMs ?? args.ctx.config.defaultPollIntervalMs,
     signal: args.ctx.signal,
   });
+
+  // mode:'wait' ran out of blocking budget before the job finished. The job is
+  // still running, so degrade to exactly what submit mode would have returned:
+  // a pending card that self-polls, plus a request_id. Falling through to an
+  // error here would strand a generation the user has already paid for.
+  if (outcome.kind === "timeout") {
+    if (args.kind) {
+      return pendingMediaResult({
+        kind: args.kind,
+        taskId: requestId,
+        pollTool: "versely_get_task_status",
+        pollArgs: { request_id: requestId },
+        toolName: args.toolName,
+        toolArgs: args.toolArgs,
+        extra: { ...(args.extra ?? {}), request_id: requestId },
+      });
+    }
+    return jsonResult({
+      mode: "wait",
+      request_id: requestId,
+      outcome: "still_running",
+      waited_ms: outcome.waitedMs,
+      last_status: outcome.lastState ?? "pending",
+      hint:
+        `Still running after ${Math.round(outcome.waitedMs / 1000)}s — not a failure, and not cancelled. ` +
+        `Call versely_get_task_status with request_id "${requestId}" to collect it. Do not resubmit.`,
+    });
+  }
 
   const payload = {
     mode: "wait" as const,

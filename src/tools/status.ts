@@ -191,7 +191,11 @@ const versely_get_task_status = defineTool({
 const versely_wait_for_task = defineTool({
   name: "versely_wait_for_task",
   description:
-    "Block and poll a request_id until it reaches a terminal state (completed/failed) or the timeout elapses.",
+    "Block and poll a request_id until it finishes — but for at most ~70 seconds, " +
+    "regardless of what poll_timeout_ms says. If the job is still running when that " +
+    "budget runs out this returns status 'still_running' (NOT an error, and the job is " +
+    "unaffected). For anything slower than about a minute — video especially — prefer " +
+    "calling versely_get_task_status a few times instead of blocking here.",
   inputSchema: z.object({
     request_id: z.string().describe("The request_id / task_id to wait on."),
     poll_timeout_ms: z
@@ -199,7 +203,11 @@ const versely_wait_for_task = defineTool({
       .int()
       .positive()
       .optional()
-      .describe("Override default poll timeout in ms."),
+      .describe(
+        "Requested poll timeout in ms. CLAMPED to ~70s — a longer block is severed by " +
+          "the proxy in front of this server and surfaces as 'unable to reach the server', " +
+          "so a bigger number here buys nothing.",
+      ),
     poll_interval_ms: z
       .number()
       .int()
@@ -213,6 +221,29 @@ const versely_wait_for_task = defineTool({
       intervalMs: input.poll_interval_ms ?? ctx.config.defaultPollIntervalMs,
       signal: ctx.signal,
     });
+    // Budget exhausted with the job still going. Hand back the request_id and a
+    // clear next step instead of an error — the generation is alive and paid for.
+    if (outcome.kind === "timeout") {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Task ${input.request_id} is STILL RUNNING after ${Math.round(outcome.waitedMs / 1000)}s ` +
+              `(status: "${outcome.lastState ?? "pending"}") — this is not a failure and the job was not ` +
+              `cancelled. Waiting longer in one call is not possible. Call versely_get_task_status with ` +
+              `request_id="${input.request_id}" again in a little while to collect the result. ` +
+              `Do not resubmit — that would charge for a second generation.`,
+          },
+        ],
+        structuredContent: {
+          status: "pending",
+          task_id: input.request_id,
+          waited_ms: outcome.waitedMs,
+        },
+      };
+    }
+
     const payload = {
       request_id: input.request_id,
       outcome: outcome.kind,

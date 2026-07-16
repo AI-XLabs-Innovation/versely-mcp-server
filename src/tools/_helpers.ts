@@ -292,13 +292,19 @@ export function pendingMediaResult(opts: PendingMediaOpts): ToolResult {
     opts.pollArgs && typeof opts.pollArgs === "object"
       ? Object.keys(opts.pollArgs as Record<string, unknown>)[0]
       : undefined;
+  // Points at the SINGLE-CHECK tool, never the blocking one. versely_wait_for_task
+  // holds the HTTP request open, and the proxy in front of this server severs
+  // anything past ~100s — which the client renders as "Unable to reach
+  // versely-mcp", i.e. a slow video makes the whole MCP look down, and each
+  // retry costs another 100s. Repeated fast checks never trip that.
   const summary =
     opts.summary ??
     `Submission accepted — task ${opts.taskId} is generating and is NOT finished yet. ` +
-      `If an inline preview is shown it will update on its own. Otherwise, to get the ` +
-      `finished asset call versely_wait_for_task with ${pollArgKey ?? "request_id"}="${opts.taskId}" ` +
-      `(blocks until done), or ${opts.pollTool} for a single status check. ` +
-      `Do not describe this as complete until a poll returns a result URL.`;
+      `If an inline preview is shown it will update on its own. Otherwise call ` +
+      `${opts.pollTool} with ${pollArgKey ?? "request_id"}="${opts.taskId}" to check on it, ` +
+      `and call it again if it is still pending — video can take several minutes. ` +
+      `Do not describe this as complete until a poll returns a result URL, and do not ` +
+      `resubmit — the job is already running and already charged.`;
   const structuredContent = {
     kind: opts.kind,
     assets: [],
