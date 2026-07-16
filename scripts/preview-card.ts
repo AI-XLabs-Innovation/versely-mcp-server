@@ -134,9 +134,19 @@ function build(): string {
   window.__PREVIEW_DEFAULT__ = ${json(defaultKey)};
   window.__PREVIEW_CAP__ = ${json(Number(cap))};
   window.openai = { toolOutput: window.__PREVIEW_PAYLOADS__[window.__PREVIEW_DEFAULT__] };
-  // The card posts JSON-RPC to window.parent. Standalone, parent === self, so
-  // the messages would loop back into its own handler. Swallow them.
+
+  // The card posts JSON-RPC up to window.parent. Standalone, parent === self,
+  // so its own requests (ui/initialize, tools/call, size reports) echo straight
+  // back into its handler. Swallow those in the capture phase, before the card
+  // sees them.
+  //
+  // But the toolbar SIMULATES the host, and a host notification is also
+  // JSON-RPC — so a blanket "drop anything with .jsonrpc" ate the sample
+  // switcher's tool-result too, and the dropdown silently did nothing. Only
+  // card-originated traffic should be dropped, so host-simulated messages carry
+  // __previewHost and are let through.
   window.addEventListener('message', function (e) {
+    if (e.data && e.data.__previewHost) return;
     if (e.data && e.data.jsonrpc) e.stopImmediatePropagation();
   }, true);
 </script>`;
@@ -174,26 +184,19 @@ function build(): string {
   #devbar input[type=range] { width: 200px; accent-color: #7c3aed; }
   #devbar select { background: #1c1c20; color: #e7e7ea; border: 1px solid #35353b; border-radius: 6px; padding: 3px 6px; }
   #devbar .hint { color: #6b6b74; }
-  /* Push the real card below the toolbar and give it the host's frame width. */
-  #previewframe { padding: 96px 0 40px; display: flex; justify-content: center; }
-  #previewwrap { width: 720px; max-width: 100%; }
+  /* Push the real card clear of the toolbar and give #root the host's frame
+     width. Styling #root in place is deliberate: the template owns it and
+     re-renders with root.innerHTML on every state change, so anything that
+     MOVES the card out of #root gets orphaned on the next render (the card
+     reappears inside #root while the moved copy lingers — two cards). Never
+     reparent the card; only style around it. */
+  body { padding: 96px 0 40px; }
+  #root { width: 720px; max-width: 100%; margin: 0 auto; }
 </style>
 <script>
   // PREVIEW ONLY — drives the toolbar. None of this ships.
   (function () {
-    var card = document.querySelector('.card') || document.body.firstElementChild;
-    // Wrap the real card so we can constrain its width like the host does.
-    var frame = document.createElement('div'); frame.id = 'previewframe';
-    var wrap = document.createElement('div'); wrap.id = 'previewwrap';
-    frame.appendChild(wrap);
-    document.body.appendChild(frame);
-    function adopt() {
-      var c = document.querySelector('#previewwrap > .card') ? null : document.querySelector('.card');
-      if (c && c.parentElement !== wrap) wrap.appendChild(c);
-    }
-    adopt();
-    new MutationObserver(adopt).observe(document.body, { childList: true, subtree: true });
-
+    var root = document.getElementById('root');
     var override = document.createElement('style');
     document.head.appendChild(override);
     var capEl = document.getElementById('cap');
@@ -214,33 +217,75 @@ function build(): string {
     }
     function applyW() {
       wVal.textContent = wEl.value + 'px';
-      wrap.style.width = wEl.value + 'px';
+      root.style.width = wEl.value + 'px';
       measure();
     }
     function measure() {
-      requestAnimationFrame(function () {
-        var c = wrap.querySelector('.card');
-        var m = wrap.querySelector('.tile.solo img, .tile.solo video, .player, .grid');
+      {
+        var c = root.querySelector('.card');
+        // Prefer the real media element over its wrapper. A selector LIST
+        // returns the first match in DOCUMENT order, not list order — and a solo
+        // tile is nested inside a .grid, so putting .grid in the same list
+        // silently matched the wrapper <div> and the painted-size branch (which
+        // needs an <img>) never ran. Two queries, explicit precedence.
+        var m = root.querySelector('.tile.solo img, .tile.solo video, .player') ||
+                root.querySelector('.grid');
+        // The media element spans the full tile width and letterboxes via
+        // object-fit: contain, so its box is NOT the visible picture. Report the
+        // painted rect too, or the readout misleads you into thinking the card
+        // is wider than what you can actually see.
+        var painted = null;
+        // naturalWidth is 0 until the image decodes, and a fresh render swaps in
+        // a new <img> — so a measure fired straight after a sample switch would
+        // silently drop the painted size. Re-measure once it lands.
+        if (m && m.tagName === 'IMG' && !m.complete) {
+          m.addEventListener('load', measure, { once: true });
+        }
+        if (m && m.tagName === 'IMG' && m.naturalWidth) {
+          var box = m.getBoundingClientRect();
+          var scale = Math.min(box.width / m.naturalWidth, box.height / m.naturalHeight);
+          painted = Math.round(m.naturalWidth * scale) + '×' + Math.round(m.naturalHeight * scale);
+        }
         sizeEl.textContent = c
           ? 'rendered: card ' + Math.round(c.getBoundingClientRect().width) + '×' +
             Math.round(c.getBoundingClientRect().height) + 'px' +
-            (m ? '  ·  media ' + Math.round(m.getBoundingClientRect().width) + '×' +
-                 Math.round(m.getBoundingClientRect().height) + 'px' : '')
+            (m ? '  ·  media box ' + Math.round(m.getBoundingClientRect().width) + '×' +
+                 Math.round(m.getBoundingClientRect().height) + 'px' : '') +
+            (painted ? '  ·  visible image ' + painted + 'px' : '')
           : 'rendered: —';
-      });
+      }
     }
     capEl.addEventListener('input', applyCap);
     wEl.addEventListener('input', applyW);
+
+    // Re-measure whenever the card actually re-renders. The template rebuilds
+    // #root.innerHTML on every state change, and a fixed setTimeout after the
+    // switch was a guess at when that lands — it fired against the OUTGOING
+    // card, so the readout stayed one sample behind (a 718x718 gallery still
+    // reporting the previous 718x360 solo tile). Observing the mutation is the
+    // only thing that's actually correlated with the render.
+    // No debounce guard here. A render emits more than one mutation (the swap,
+    // then the decoded image settling its box), and swallowing the later ones
+    // left the readout a sample behind on exactly those transitions. measure()
+    // is cheap and writes only into #devbar — which is outside #root, so it
+    // cannot retrigger this observer.
+    // measure() runs synchronously rather than inside requestAnimationFrame:
+    // rAF is throttled in background/headless contexts, which starved the
+    // readout entirely. Layout is already current when the observer fires, and
+    // the image's own load hook (inside measure) covers the not-yet-decoded case.
+    new MutationObserver(measure).observe(root, { childList: true, subtree: true });
     document.getElementById('kind').addEventListener('change', function (e) {
       var p = window.__PREVIEW_PAYLOADS__[e.target.value];
       // Re-hydrate through the same postMessage shape the real host uses, so we
       // exercise the template's actual render path rather than a special case.
+      // __previewHost marks this as host-simulated so the shim lets it through.
       window.postMessage({
+        __previewHost: true,
         jsonrpc: '2.0',
         method: 'ui/notifications/tool-result',
         params: { structuredContent: p, content: [] },
       }, '*');
-      setTimeout(measure, 60);
+      // No setTimeout here — the MutationObserver above fires on the re-render.
     });
     applyCap(); applyW();
     setTimeout(measure, 200);
