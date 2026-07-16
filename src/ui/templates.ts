@@ -120,16 +120,20 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   .tile audio { width: 100%; display: block; align-self: center; }
   /* Single-asset (solo) tiles use a centered, contained image with a cap
      on height so 1:1 / portrait sources don't dominate the chat. The
-     iframe is up to 720px wide; 480px tall keeps it in a Higgsfield-style
-     viewport while preserving full resolution on click. */
-  .tile.solo { display: flex; align-items: center; justify-content: center; background: #000; max-height: 480px; }
+     iframe is up to 720px wide, so anything taller than ~4:3 hits this cap
+     rather than the width — it is the knob that decides how much vertical
+     space a card claims. Full resolution is still one click away.
+     Keep the three values below in sync: the wrapper and the media share a
+     cap so a portrait source letterboxes inside the frame instead of
+     overflowing it. */
+  .tile.solo { display: flex; align-items: center; justify-content: center; background: #000; max-height: 360px; }
   .tile.solo img, .tile.solo video {
     width: auto; height: auto;
-    max-width: 100%; max-height: 480px;
+    max-width: 100%; max-height: 360px;
     display: block; object-fit: contain; cursor: pointer; background: #000;
   }
   /* Video / single-asset (when not rendered as a .tile) */
-  .player { width: 100%; max-height: 480px; display: block; background: #000; object-fit: contain; }
+  .player { width: 100%; max-height: 360px; display: block; background: #000; object-fit: contain; }
   /* Audio rows */
   .audio-list { padding: 8px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
   .audio-row { display: flex; flex-direction: column; gap: 4px; }
