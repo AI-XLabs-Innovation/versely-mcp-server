@@ -538,6 +538,15 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   var pollPendingId = null;
   var pollTimeoutHandle = null;
   var elapsedTickHandle = null;
+  // Consecutive tools/call failures. A poll error used to be treated as always
+  // transient, which is only true when the bridge itself is healthy. When the
+  // host CANNOT service tools/call at all — claude.ai reports "Client server
+  // capabilities not available" — every tick fails identically, and retrying at
+  // interval_ms for the whole timeout_ms budget means 120 failed calls, each one
+  // surfacing to the user as "Unable to reach versely-mcp". The card looked like
+  // the server was down when the server was fine.
+  var pollErrorStreak = 0;
+  var POLL_ERROR_LIMIT = 3;
 
   function pollElapsedMs() {
     return pollStartTime ? (Date.now() - pollStartTime) : 0;
@@ -606,7 +615,26 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
         }
       }
     }
-    if (!sc) return;
+    if (!sc) {
+      // A tool result we can't read state from. If it's flagged isError, the
+      // status tool is telling us something went wrong — stop rather than spin
+      // (an unreadable error every interval_ms is the same visible spam as a
+      // transport failure). Anything else, wait for the next tick.
+      if (result.isError) {
+        stopPolling('poll-returned-error');
+        var msg = '';
+        if (Array.isArray(result.content)) {
+          for (var j = 0; j < result.content.length; j++) {
+            if (result.content[j] && result.content[j].type === 'text') { msg = result.content[j].text; break; }
+          }
+        }
+        state = Object.assign({}, state, { status: 'failed', error: msg || 'Generation failed.' });
+        state.poll = undefined;
+        render();
+        reportSize();
+      }
+      return;
+    }
 
     var hasAssets = Array.isArray(sc.assets) && sc.assets.length > 0;
     var status = sc.status;
@@ -778,12 +806,31 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     if ((m.result || m.error) && m.id != null && pollPendingId != null && m.id === pollPendingId) {
       pollPendingId = null;
       if (m.error) {
-        // Treat tool-call errors during polling as a transient hiccup —
-        // the next tick will retry. Only stop if it persists past the
-        // overall timeout (handled by pollTimeoutHandle).
-        console.warn('[versely-mcp ui] poll error', m.error);
+        // A few failures really are transient (a dropped tick, a blip), so
+        // tolerate a short streak. Beyond that the bridge is broken, not busy —
+        // retrying just emits another visible error every interval and can never
+        // succeed. Give up and say so; the generation itself is unaffected and
+        // is still retrievable via the status tool.
+        pollErrorStreak++;
+        console.warn('[versely-mcp ui] poll error ' + pollErrorStreak + '/' + POLL_ERROR_LIMIT, m.error);
+        if (pollErrorStreak >= POLL_ERROR_LIMIT) {
+          stopPolling('poll-bridge-unavailable');
+          var pollArgs = (state && state.poll && state.poll.args) || {};
+          var pollId = pollArgs.request_id || pollArgs.run_id || pollArgs.project_id ||
+            (state && state.task_id) || '';
+          state = Object.assign({}, state, {
+            status: 'failed',
+            error: 'Live preview updates are unavailable in this chat, so this card ' +
+              'cannot refresh itself. The generation is still running normally — ' +
+              'ask for the status of ' + (pollId || 'this task') + ' to collect the result.',
+          });
+          state.poll = undefined;
+          render();
+          reportSize();
+        }
         return;
       }
+      pollErrorStreak = 0;
       handlePollResponse(m.result);
       return;
     }
