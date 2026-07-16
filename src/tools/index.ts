@@ -11,6 +11,7 @@ import { workflowTools } from "./workflows.js";
 import { videoWorkflowTools } from "./videoWorkflows.js";
 import { debugTools } from "./debug.js";
 import { voiceTools } from "./voices.js";
+import { dubbingTools } from "./dubbing.js";
 
 export const allTools: Tool[] = [
   ...userTools,
@@ -24,5 +25,6 @@ export const allTools: Tool[] = [
   ...workflowTools,
   ...videoWorkflowTools,
   ...voiceTools,
+  ...dubbingTools,
   ...debugTools,
 ];

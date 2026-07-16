@@ -262,10 +262,122 @@ const versely_audio_isolation = defineTool({
   },
 });
 
+/**
+ * Caption Studio — POST /features/add-captions (fal veed/subtitles).
+ *
+ * Distinct from the two /ugc caption tools, which is worth keeping straight:
+ *   - versely_add_captions            → one static line of text, no transcription
+ *   - versely_add_timestamped_captions → burns caption timings YOU supply
+ *   - versely_add_auto_captions (this) → TRANSCRIBES the audio itself and renders
+ *     it in one of 30 designed presets
+ * This is the only one that turns speech into captions on its own.
+ */
+
+// Mirrors VEED_DYNAMIC_PRESET_IDS / VEED_BASIC_PRESET_IDS in the backend's
+// caption.service.ts. Dynamic presets animate per-word and bill at 2x
+// ($0.20/min vs $0.10/min), which is why the two groups stay labelled here
+// rather than being flattened into one anonymous enum.
+const DYNAMIC_PRESETS = [
+  "glass", "whisper", "glide2", "fusion", "glide", "terminal", "handwritten",
+  "backdrop", "backdrop2",
+] as const;
+const BASIC_PRESETS = [
+  "simple", "plain", "beans", "corpo", "boo", "shadeplay", "casper", "capri",
+  "lowkey", "vinta", "diego", "ali", "slay", "kitty", "hustle", "karl",
+  "sprout", "flex", "mint", "rizz", "vegas",
+] as const;
+
+const versely_add_auto_captions = defineTool({
+  name: "versely_add_auto_captions",
+  description:
+    "Caption Studio — automatically transcribe a video's speech and burn in styled captions. " +
+    "Unlike versely_add_captions (one fixed line) and versely_add_timestamped_captions (you supply " +
+    "the timings), this transcribes the audio itself. Can also translate the captions into another " +
+    "language, or render a caption track you already have as SRT.",
+  meta: metaForMediaCard(),
+  inputSchema: z
+    .object({
+      video_url: z.string().url().describe("The video to caption."),
+      preset: z
+        .enum([...DYNAMIC_PRESETS, ...BASIC_PRESETS])
+        .describe(
+          `Caption design. Required. Animated word-by-word presets (billed at 2x): ${DYNAMIC_PRESETS.join(", ")}. ` +
+            `Standard presets: ${BASIC_PRESETS.join(", ")}. 'glass' is a good default for social video.`,
+        ),
+      language: z
+        .string()
+        .optional()
+        .describe(
+          "Language of the SPOKEN audio, as a locale tag like 'en-US', 'es-ES' or 'hi-IN' — " +
+            "note the region is required here, unlike translation_language. Omit to auto-detect.",
+        ),
+      translation_language: z
+        .string()
+        .optional()
+        .describe(
+          "Translate the captions into this language, e.g. 'es' or 'pt-BR'. The spoken audio is " +
+            "unchanged — only the subtitles are translated. To translate the actual speech, use " +
+            "versely_create_dub instead.",
+        ),
+      vocabulary: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Up to 50 proper nouns, brand names or jargon to bias the transcription toward. " +
+            "Use this when a name is being misheard.",
+        ),
+      srt_content: z
+        .string()
+        .optional()
+        .describe("Render this SRT instead of transcribing. Skips speech recognition entirely."),
+      srt_file_url: z.string().url().optional().describe("Same as srt_content, but fetched from a URL."),
+      position: z
+        .enum(["top", "center", "bottom"])
+        .optional()
+        .describe("Caption placement."),
+      shadow: z.enum(["none", "min", "mid", "max"]).optional().describe("Drop-shadow strength."),
+      font: z.string().optional().describe("Font family override."),
+      weight: z
+        .number()
+        .int()
+        .min(100)
+        .max(900)
+        .optional()
+        .describe("Font weight, 100–900 in steps of 100."),
+      color: z
+        .string()
+        .regex(/^#([0-9A-Fa-f]{3}){1,2}$/, "Must be a hex colour like '#fff' or '#ffffff'.")
+        .optional()
+        .describe("Text colour. Hex only — named colours are rejected."),
+      ...AsyncFields,
+    })
+    .passthrough(),
+  handler: async (input, ctx) => {
+    const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    // See versely_colorize_photo: this handler reads req.body.user_id and 400s
+    // without it. /features now mounts enforceUserId, which injects the authed
+    // id and 403s on a mismatch — passing the real id keeps both paths happy.
+    body.user_id = await ctx.client.getCurrentUserId();
+    const submission = await ctx.client.post("/api/v1/features/add-captions", body);
+    return handleAsync({
+      ctx,
+      submitResponse: submission,
+      mode: mode as AsyncMode,
+      pollTimeoutMs: poll_timeout_ms,
+      pollIntervalMs: poll_interval_ms,
+      kind: "video",
+      toolName: "versely_add_auto_captions",
+      toolArgs: body,
+      extra: { preset: input.preset },
+    });
+  },
+});
+
 export const featuresTools: Tool[] = [
   versely_extract_frames,
   versely_merge_videos,
   versely_generate_prompt,
   versely_colorize_photo,
   versely_audio_isolation,
+  versely_add_auto_captions,
 ];

@@ -135,8 +135,8 @@ const versely_add_timestamped_captions = defineTool({
   description:
     "Burn CALLER-SUPPLIED timestamped captions onto a video (Reels-style). " +
     "**This does NOT transcribe** — you must provide the `captions` array yourself, with explicit " +
-    "start/end times. If you need automatic transcription from the video's audio, that is a different " +
-    "endpoint (/captions/auto) which this MCP does not currently expose.",
+    "start/end times. To transcribe the video's audio automatically instead, use " +
+    "versely_add_auto_captions (Caption Studio), which also offers 30 designed presets.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
