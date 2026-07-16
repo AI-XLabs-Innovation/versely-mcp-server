@@ -72,7 +72,16 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     border-radius: var(--radius);
     overflow: hidden;
     display: flex; flex-direction: column;
-    max-width: 100%;
+    /* border-box so max-width below is the card's REAL outer width. Under the
+       default content-box the 1px border sits outside the cap and the card
+       renders 2px wider than the number says. */
+    box-sizing: border-box;
+    /* Cap the card's own width rather than letting it fill the host frame.
+       reportSize() measures .card and reports this as the iframe width, so the
+       host is told to shrink with us. A plain max-width (not a fixed width)
+       keeps it responsive: on a viewport narrower than the cap the card is
+       still 100% of what's available. */
+    max-width: 440px;
     /* Defensive: if neither state nor placeholder fills the card, keep a
        visible minimum so iframe sandboxes that ignore size-changed don't
        collapse us to 0. */
@@ -120,20 +129,20 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   .tile audio { width: 100%; display: block; align-self: center; }
   /* Single-asset (solo) tiles use a centered, contained image with a cap
      on height so 1:1 / portrait sources don't dominate the chat. The
-     iframe is up to 720px wide, so anything taller than ~4:3 hits this cap
+     card is capped at 440px wide, so anything taller than ~4:3 hits this cap
      rather than the width — it is the knob that decides how much vertical
      space a card claims. Full resolution is still one click away.
      Keep the three values below in sync: the wrapper and the media share a
      cap so a portrait source letterboxes inside the frame instead of
      overflowing it. */
-  .tile.solo { display: flex; align-items: center; justify-content: center; background: #000; max-height: 360px; }
+  .tile.solo { display: flex; align-items: center; justify-content: center; background: #000; max-height: 340px; }
   .tile.solo img, .tile.solo video {
     width: auto; height: auto;
-    max-width: 100%; max-height: 360px;
+    max-width: 100%; max-height: 340px;
     display: block; object-fit: contain; cursor: pointer; background: #000;
   }
   /* Video / single-asset (when not rendered as a .tile) */
-  .player { width: 100%; max-height: 360px; display: block; background: #000; object-fit: contain; }
+  .player { width: 100%; max-height: 340px; display: block; background: #000; object-fit: contain; }
   /* Audio rows */
   .audio-list { padding: 8px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
   .audio-row { display: flex; flex-direction: column; gap: 4px; }
