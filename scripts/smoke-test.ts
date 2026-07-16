@@ -140,11 +140,39 @@ async function run(): Promise<void> {
     "versely_list_scheduled_workflows",
     "versely_create_workflow_asset",
     "versely_add_workflow_asset_images",
-    "versely_create_video_workflow_template",
-    "versely_start_video_workflow_run",
+    // Dubbing Studio. get_dub is the polling target — create_dub's card points
+    // at it, and nothing else can see a dubbing project (they live in
+    // dubbing_projects, not the user_* tables versely_wait_for_task reads).
+    "versely_create_dub",
+    "versely_get_dub",
+    // Caption Studio — the only caption tool that transcribes on its own.
+    "versely_add_auto_captions",
+    // Video-workflow RUN control stays exposed even though the template surface
+    // isn't: /workflows and /video-workflows feed ONE run engine, so a
+    // scenes-mode workflow started via versely_run_workflow produces a
+    // video_workflow_runs row — and cancel / combine / retry-scene exist only
+    // here. Losing these would leave those runs unrecoverable.
+    "versely_get_video_workflow_run",
+    "versely_cancel_video_workflow_run",
     "versely_combine_video_workflow_run",
+    "versely_retry_video_workflow_scene",
   ]) {
     assert(`tool present: ${required}`, names.includes(required));
+  }
+
+  // Template authoring is deliberately app-only. Asserted as ABSENT so the
+  // decision is enforced rather than just documented — and so re-adding it is
+  // a conscious act that fails here first.
+  for (const removed of [
+    "versely_create_video_workflow_template",
+    "versely_list_video_workflow_templates",
+    "versely_get_video_workflow_template",
+    "versely_update_video_workflow_template",
+    "versely_delete_video_workflow_template",
+    // Requires a template_id, so it cannot function without the tools above.
+    "versely_start_video_workflow_run",
+  ]) {
+    assert(`tool NOT exposed: ${removed}`, !names.includes(removed));
   }
 
   // -------- find_models schema sanity --------
