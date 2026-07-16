@@ -263,7 +263,7 @@ const versely_find_models = defineTool({
 const versely_generate_image = defineTool({
   name: "versely_generate_image",
   description:
-    "Generate one or more images (text-to-image, image-to-image, editing) using a chosen model. Default polls until done.",
+    "Generate one or more images (text-to-image, image-to-image, editing) using a chosen model. Returns a request_id immediately (submit mode) — poll it with versely_wait_for_task to get the finished asset.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -336,7 +336,7 @@ const versely_generate_image = defineTool({
 const versely_generate_video = defineTool({
   name: "versely_generate_video",
   description:
-    "Generate a video (text-to-video, image-to-video, frame-to-frame) using a chosen model. Default polls until done.",
+    "Generate a video (text-to-video, image-to-video, frame-to-frame) using a chosen model. Returns a request_id immediately (submit mode) — poll it with versely_wait_for_task to get the finished asset.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -515,7 +515,7 @@ function resolveValidVoice(profile: AudioModelProfile, supplied: string): string
 
 function buildAudioToolDescription(): string {
   const lines: string[] = [
-    "Generate speech / audio via TTS. Default polls until done.",
+    "Generate speech / audio via TTS. Returns a request_id immediately (submit mode) — poll it with versely_wait_for_task to get the finished asset.",
     "",
     "Each model requires a voice id from its own catalog — cross-pollinating",
     "voices between providers (e.g. 'Adam' on Qwen, 'Ethan' on ElevenLabs) is",

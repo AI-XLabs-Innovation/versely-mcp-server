@@ -282,9 +282,23 @@ export interface PendingMediaOpts {
 }
 
 export function pendingMediaResult(opts: PendingMediaOpts): ToolResult {
+  // The polling handle lives in `structuredContent`, which the host's iframe reads
+  // but the MODEL never sees. On a host that renders the card, the preview updates
+  // itself; on one that doesn't, the model is the only thing that can advance this.
+  // So the text has to carry the request_id AND name the tool to poll with —
+  // otherwise "is generating" reads as terminal and the caller reports success for
+  // a job that has not finished.
+  const pollArgKey =
+    opts.pollArgs && typeof opts.pollArgs === "object"
+      ? Object.keys(opts.pollArgs as Record<string, unknown>)[0]
+      : undefined;
   const summary =
     opts.summary ??
-    `Submission accepted. Task ${opts.taskId} is generating; the inline preview will update when it's ready.`;
+    `Submission accepted — task ${opts.taskId} is generating and is NOT finished yet. ` +
+      `If an inline preview is shown it will update on its own. Otherwise, to get the ` +
+      `finished asset call versely_wait_for_task with ${pollArgKey ?? "request_id"}="${opts.taskId}" ` +
+      `(blocks until done), or ${opts.pollTool} for a single status check. ` +
+      `Do not describe this as complete until a poll returns a result URL.`;
   const structuredContent = {
     kind: opts.kind,
     assets: [],

@@ -6,11 +6,21 @@ import { pollStatus } from "../poller.js";
 
 export type AsyncMode = "wait" | "submit";
 
+/**
+ * Default is 'submit'.
+ *
+ * 'wait' holds the tool call open while polling the provider, and media
+ * generation routinely outruns the host's per-tool execution timeout (video in
+ * particular). When that fires, the work is NOT cancelled — the generation
+ * completes server-side and is charged — but the caller gets a timeout error and
+ * loses the request_id, so the result is stranded and effectively paid for twice
+ * if retried. Submitting and polling separately never strands anything.
+ */
 export const ModeSchema = z
   .enum(["wait", "submit"])
-  .default("wait")
+  .default("submit")
   .describe(
-    "'wait' (default) blocks and polls until completion; 'submit' returns the request_id immediately so the caller can poll later via versely_get_task_status.",
+    "'submit' (default) returns the request_id immediately — poll it with versely_wait_for_task (blocks until done) or versely_get_task_status (single check). 'wait' holds this tool call open until the job finishes; only use it for jobs you expect to be quick, since a long one can exceed the host's tool timeout and strand a generation you've already been charged for.",
   );
 
 export const AsyncFields = {
