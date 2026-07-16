@@ -5,8 +5,8 @@
 //
 // One template covers every Versely media-producing tool. The card detects
 // asset kind (image / video / audio / mixed) from `structuredContent.kind`
-// and renders accordingly. Buttons (Recreate, etc.) round-trip through the
-// host via `tools/call` JSON-RPC over postMessage.
+// and renders accordingly. The card is display-only — it issues `tools/call`
+// solely to poll its own status while a job is pending.
 //
 // Protocol (host ↔ iframe over `postMessage`):
 //   Host → iframe (notifications):
@@ -15,7 +15,7 @@
 //     `ui/notifications/tool-cancelled` — { reason }
 //   Iframe → host (requests):
 //     `ui/initialize`               — handshake, declares display modes
-//     `tools/call`                  — invoke a server tool (Recreate, etc.)
+//     `tools/call`                  — poll a status tool while pending
 //     `ui/notifications/size-changed` — report iframe content size
 //
 // Fallbacks: also accepts `window.openai.{toolInput,toolOutput}` and a
@@ -154,19 +154,9 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     padding: 12px 16px 14px;
     border-top: 1px solid var(--card-border);
   }
-  .actions { display: flex; gap: 8px; flex: 1; }
-  .btn {
-    appearance: none; border: 1px solid var(--card-border);
-    background: var(--card); color: var(--fg);
-    padding: 6px 12px; border-radius: var(--radius-sm);
-    font-size: 12px; font-weight: 500;
-    cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
-    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
-  }
-  .btn:hover { background: var(--chip-bg); }
-  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-  .btn[disabled] { opacity: 0.5; cursor: default; }
+  /* .actions / .btn rules lived here — the Recreate button was their only
+     user. The footer now carries the brand alone; .toggle (prompt expand) is
+     styled separately above. */
   .brand {
     margin-left: auto;
     font-size: 11px; color: var(--muted);
@@ -475,14 +465,12 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
   }
 
   function renderActions(s) {
-    var canRecreate = !!(s.toolName);
-    var html = '<div class="actions">';
-    html += '<button class="btn primary" data-recreate' + (canRecreate ? '' : ' disabled') + '>' +
-      '<span aria-hidden="true">↻</span>Recreate</button>';
-    html += '</div>';
+    // The Recreate button lived here. structuredContent still carries
+    // toolName / toolArgs — they're the label source below, and the payload
+    // contract is shared with hosts that read structuredContent directly, so
+    // they stay.
     var toolLabel = s.toolName ? s.toolName.replace(/^versely_/, '') : 'media';
-    html += '<span class="brand"><span class="brand-dot"></span>Versely · ' + esc(toolLabel) + '</span>';
-    return html;
+    return '<span class="brand"><span class="brand-dot"></span>Versely · ' + esc(toolLabel) + '</span>';
   }
 
   function render() {
@@ -523,14 +511,6 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
     if (toggle && prompt) {
       toggle.addEventListener('click', function () { prompt.classList.toggle('expanded'); });
     }
-    var recreate = root.querySelector('[data-recreate]');
-    if (recreate && s.toolName) {
-      recreate.addEventListener('click', function () {
-        recreate.disabled = true;
-        recreate.innerHTML = '<span aria-hidden="true">…</span>Working…';
-        callTool(s.toolName, s.toolArgs || {});
-      });
-    }
   }
 
   function nextId() { return Date.now() * 1000 + Math.floor(Math.random() * 1000); }
@@ -542,13 +522,9 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       console.warn('[versely-mcp ui] send failed', e);
     }
   }
-  function callTool(name, args) {
-    send({
-      jsonrpc: '2.0', id: nextId(),
-      method: 'tools/call',
-      params: { name: name, arguments: args || {} },
-    });
-  }
+  // (callTool lived here — the Recreate button was its only caller. The poll
+  // loop below builds its own tools/call because it has to retain the request
+  // id to match the response.)
 
   // --- Async-job polling ----------------------------------------------------
   // When state arrives with status:"pending" + poll instruction, fire a
@@ -822,8 +798,10 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
       return recomputeState();
     }
     if (m.method === 'ui/notifications/tool-cancelled') {
-      var btn = document.querySelector('[data-recreate]');
-      if (btn) { btn.disabled = false; btn.innerHTML = '<span aria-hidden="true">↻</span>Recreate'; }
+      // Only ever re-enabled the Recreate button, which no longer exists.
+      // Kept as an explicit no-op so the spec method stays handled rather
+      // than falling through to the structuredContent catch-all below, which
+      // would misread a cancellation as new state.
       return;
     }
 
@@ -980,8 +958,9 @@ export interface PollInstruction {
 /**
  * Shape the `structuredContent` payload the media-card template hydrates from.
  * `kind` is a discriminator the card uses to pick its render path; `assets`
- * is normalized across image / video / audio. `toolName` + `toolArgs` enable
- * the Recreate button to round-trip the same call.
+ * is normalized across image / video / audio. `toolName` labels the card's
+ * footer; it and `toolArgs` are also part of the payload contract for hosts
+ * that read structuredContent directly, so both are still emitted.
  *
  * Async tools emit a pending variant: `{kind, assets:[], status:"pending",
  * poll:{...}}`. The iframe then self-polls until the same payload comes back
