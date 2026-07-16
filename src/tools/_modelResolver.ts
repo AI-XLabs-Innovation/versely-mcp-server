@@ -24,12 +24,13 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface CatalogEntry {
   fetchedAt: number;
-  bySlugLower: Map<string, string>;  // lowercased slug → canonical name
-  byNameLower: Map<string, string>;  // lowercased name → canonical name
+  bySlugLower: Map<string, string>;         // lowercased slug → canonical name
+  byNameLower: Map<string, string>;         // lowercased name → canonical name
+  byDisplayNameLower: Map<string, string>;  // lowercased display_name → canonical name
 }
 
 interface CatalogResponse {
-  data?: { models?: Array<{ slug?: string; name?: string }> };
+  data?: { models?: Array<{ slug?: string; name?: string; display_name?: string }> };
 }
 
 const catalogCache = new Map<string, CatalogEntry>();
@@ -43,11 +44,24 @@ async function loadCatalog(ctx: ToolContext, type: ResolvableType): Promise<Cata
   const models = res?.data?.models ?? [];
   const bySlugLower = new Map<string, string>();
   const byNameLower = new Map<string, string>();
+  const byDisplayNameLower = new Map<string, string>();
   for (const m of models) {
     if (m.slug && m.name) bySlugLower.set(m.slug.toLowerCase(), m.name);
     if (m.name) byNameLower.set(m.name.toLowerCase(), m.name);
+    // ai_models.name is the immutable dispatch key; display_name is the label a
+    // human actually sees and can diverge from it (models are renamed via
+    // display_name only). Someone passing the visible label would otherwise fall
+    // through unresolved and hit "Model not supported".
+    if (m.display_name && m.name) {
+      byDisplayNameLower.set(m.display_name.toLowerCase(), m.name);
+    }
   }
-  const entry: CatalogEntry = { fetchedAt: Date.now(), bySlugLower, byNameLower };
+  const entry: CatalogEntry = {
+    fetchedAt: Date.now(),
+    bySlugLower,
+    byNameLower,
+    byDisplayNameLower,
+  };
   catalogCache.set(key, entry);
   return entry;
 }
@@ -82,10 +96,13 @@ export async function resolveCanonicalModel(
   try {
     const catalog = await loadCatalog(ctx, type);
     const lower = modelInput.toLowerCase();
+    // Canonical name wins, then slug, then the human-facing display_name.
     const byName = catalog.byNameLower.get(lower);
     if (byName) return byName;
     const bySlug = catalog.bySlugLower.get(lower);
     if (bySlug) return bySlug;
+    const byDisplay = catalog.byDisplayNameLower.get(lower);
+    if (byDisplay) return byDisplay;
     return modelInput;
   } catch {
     return modelInput;

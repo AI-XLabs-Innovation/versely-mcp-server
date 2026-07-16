@@ -17,10 +17,16 @@ const versely_list_models = defineTool({
     provider: z
       .string()
       .optional()
-      .describe("Filter by provider slug (e.g. 'fal', 'kie', 'runpod', 'replicate', 'suno')."),
+      .describe(
+        "Filter by the catalog's `provider` value, matched exactly server-side. This is the model's brand/vendor as stored on the row (what versely_find_models reports as `provider`) — NOT the routing backend ('fal' / 'kie' / 'runpod'), which is chosen server-side and is not filterable. If unsure, omit this and filter the results yourself; a wrong value silently returns zero models.",
+      ),
   }),
   handler: async (input, ctx) => {
-    let path = "/api/v1/generate/models";
+    // 'all' used to hit /generate/models, which sits behind userCreditsMiddleware:
+    // a zero-credit user got a 403 merely for LISTING models, and it burned the
+    // cost-sensitive rate limit (30/min). /ai-models/ is the same catalog, public,
+    // and on the generous public limiter.
+    let path = "/api/v1/ai-models/";
     switch (input.type) {
       case "image":
         path = "/api/v1/ai-models/images";
@@ -45,13 +51,32 @@ const versely_list_models = defineTool({
 interface BackendModel {
   slug?: string;
   name?: string;
+  /** User-facing label. `name` stays the immutable dispatch key. */
+  display_name?: string;
   provider?: string;
   content_type?: string;
   categories?: string[];
+  /** Raw DB column — quoted at the APP rate. See creditNote() below. */
   credits?: number;
   is_featured?: boolean;
   is_premium?: boolean;
   requires_image?: boolean;
+  released_at?: string;
+  /** Reference-input support (reference_image_urls / _video_urls / _audio_urls). */
+  reference_config?: Record<string, unknown> | null;
+  max_reference?: number | null;
+  /** Video/lipsync only — attached from constants/videoInputModels. */
+  accepts_video_input?: boolean;
+  requires_video_input?: boolean;
+  video_input_field?: string | null;
+  max_video_inputs?: number | null;
+  /** Per-model discount (KIE per-model + blanket RunPod), resolved server-side. */
+  is_discounted?: boolean;
+  discount_percent?: number | null;
+  discounted_credits?: number | null;
+  /** Resolution/duration-tiered pricing, incl. minCredits/maxCredits. */
+  price_matrix?: Record<string, unknown> | null;
+  best_rank_overall?: number | null;
 }
 
 interface ModelsListResponse {
@@ -68,12 +93,21 @@ const FIND_MODELS_PATHS: Record<"image" | "video" | "audio" | "lipsync", string>
 const versely_find_models = defineTool({
   name: "versely_find_models",
   description:
-    "Discover AI model slugs for image / video / audio / lipsync generation. Returns a slim shape (slug, name, provider, categories, credits, featured/premium flags). ALWAYS call this first to find the exact slug before invoking versely_generate_image / versely_generate_video / versely_generate_audio / versely_generate_lipsync — model slugs change frequently and guessing leads to 'Model not supported' errors. Filter by name substring (q), media type, provider, category, or featured/premium flags.",
+    "Discover AI models for image / video / audio / lipsync generation. ALWAYS call this before versely_generate_image / _video / _audio / _lipsync — guessing leads to 'Model not supported'.\n\n" +
+    "Pass the returned `name` (or `slug`) to the generate tools. `display_name`, when present, is only a human label — the dispatcher does not accept it.\n\n" +
+    "`credits` is indicative RELATIVE cost, not the amount you'll be charged — see credits_note in the response. Models with `min_credits`/`max_credits` are priced per resolution/duration.\n\n" +
+    "Feature models (upscale, background removal, colorization) and unsupported-surface models (storyboard, inpainting) are excluded by default — they have dedicated tools (versely_upscale_image / versely_upscale_video / versely_remove_background / versely_colorize_photo) and would fail here. Set include_feature_models to see them.",
   inputSchema: z.object({
     type: z
       .enum(["image", "video", "audio", "lipsync"])
       .optional()
       .describe("Filter by media type. If omitted, searches across all four types."),
+    include_feature_models: z
+      .boolean()
+      .optional()
+      .describe(
+        "Include upscale / background-removal / colorization / storyboard / inpaint models, which are hidden by default. They are not callable via the generate tools.",
+      ),
     q: z
       .string()
       .optional()
@@ -90,7 +124,7 @@ const versely_find_models = defineTool({
       .string()
       .optional()
       .describe(
-        "Filter by category. Valid values per type: image → 'text-to-image', 'image-to-image', 'edit-image'; video → 'text-to-video', 'image-to-video', 'edit-video'; audio → 'text-to-audio', 'voice-clone', 'audio-to-audio', 'audio-to-text'; lipsync → 'text-to-lipsync', 'image-to-lipsync', 'audio-to-lipsync', 'video-to-lipsync'.",
+        "Filter by category. Valid values per type: image → 'text-to-image', 'image-to-image', 'edit-image'; video → 'text-to-video', 'image-to-video', 'edit-video', 'reference-to-video', 'extend-video', 'motion-control', 'audio-to-video'; audio → 'text-to-audio', 'voice-clone', 'audio-to-audio', 'audio-to-text'; lipsync → 'text-to-lipsync', 'image-to-lipsync', 'audio-to-lipsync', 'video-to-lipsync'.",
       ),
     is_featured: z.boolean().optional().describe("Only return featured models."),
     is_premium: z
@@ -123,6 +157,10 @@ const versely_find_models = defineTool({
       types.map((t) => {
         const query: Record<string, string | boolean | undefined> = { ...baseQuery };
         if (t === "audio") query.dispatcher_only = "true";
+        // image/video/lipsync have no dispatcher_only support, but ?pickable=true
+        // drops the rows the generate dispatcher can't serve (upscale, bg-removal,
+        // colorization, storyboard, inpaint) — each of which has its own tool.
+        if (t !== "audio" && !input.include_feature_models) query.pickable = "true";
         return ctx.client.get<ModelsListResponse>(FIND_MODELS_PATHS[t], { query });
       }),
     );
@@ -156,22 +194,67 @@ const versely_find_models = defineTool({
     });
 
     const limit = input.limit ?? 30;
-    const slim = filtered.slice(0, limit).map((m) => ({
-      slug: m.slug,
-      name: m.name,
-      type: m.content_type,
-      provider: m.provider,
-      categories: m.categories ?? [],
-      credits: m.credits,
-      is_featured: Boolean(m.is_featured),
-      is_premium: Boolean(m.is_premium),
-      requires_image: Boolean(m.requires_image),
-    }));
+    const slim = filtered.slice(0, limit).map((m) => {
+      const pm = (m.price_matrix ?? {}) as Record<string, unknown>;
+      const minCredits = typeof pm.minCredits === "number" ? pm.minCredits : undefined;
+      const maxCredits = typeof pm.maxCredits === "number" ? pm.maxCredits : undefined;
+      const refCfg = m.reference_config ?? undefined;
+      return {
+        slug: m.slug,
+        // `name` is the dispatch key — always pass THIS to the generate tools.
+        name: m.name,
+        // display_name is the human label; it can differ from name and is not
+        // accepted by the dispatcher.
+        ...(m.display_name && m.display_name !== m.name
+          ? { display_name: m.display_name }
+          : {}),
+        type: m.content_type,
+        provider: m.provider,
+        categories: m.categories ?? [],
+        credits: m.credits,
+        ...(minCredits !== undefined ? { min_credits: minCredits } : {}),
+        ...(maxCredits !== undefined ? { max_credits: maxCredits } : {}),
+        ...(m.is_discounted
+          ? {
+              is_discounted: true,
+              discount_percent: m.discount_percent ?? undefined,
+              discounted_credits: m.discounted_credits ?? undefined,
+            }
+          : {}),
+        is_featured: Boolean(m.is_featured),
+        is_premium: Boolean(m.is_premium),
+        requires_image: Boolean(m.requires_image),
+        ...(m.released_at ? { released_at: m.released_at } : {}),
+        ...(typeof m.best_rank_overall === "number"
+          ? { rank: m.best_rank_overall }
+          : {}),
+        // Reference inputs: pass reference_image_urls / reference_video_urls /
+        // reference_audio_urls to the generate tools when a model declares support.
+        ...(refCfg ? { reference_config: refCfg } : {}),
+        ...(typeof m.max_reference === "number" ? { max_reference: m.max_reference } : {}),
+        ...(m.accepts_video_input
+          ? {
+              accepts_video_input: true,
+              requires_video_input: Boolean(m.requires_video_input),
+              video_input_field: m.video_input_field ?? undefined,
+              max_video_inputs: m.max_video_inputs ?? undefined,
+            }
+          : {}),
+      };
+    });
 
     return jsonResult({
       total: filtered.length,
       returned: slim.length,
       truncated: filtered.length > slim.length,
+      // The catalog's `credits` column is stored at the APP rate (20 credits/USD).
+      // API-key callers — i.e. everyone reaching this MCP — are billed at
+      // CREDITS_PER_USD_API (10/USD), because only routes wrapped in
+      // setCreditContext price in the caller's context and the catalog endpoints
+      // are not. So the numbers here are indicative ordering, not the amount that
+      // will actually be deducted. Say so rather than quoting them as fact.
+      credits_note:
+        "`credits` / `min_credits` / `max_credits` come from the catalog and are quoted at the app rate. API-key usage is billed at a different rate, so treat these as RELATIVE cost only. For an exact quote, POST /api/v1/ai-models/calculate-credits, which prices in the caller's own credit context.",
       models: slim,
     });
   },

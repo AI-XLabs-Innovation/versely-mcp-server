@@ -317,14 +317,45 @@ const versely_list_workflows = defineTool({
 
 const versely_get_workflow = defineTool({
   name: "versely_get_workflow",
-  description: "Fetch a single workflow by ID.",
+  description:
+    "Fetch a single workflow by ID (definition, scenes, asset_map, schedule state). " +
+    "The web-canvas graph (`node_ui`) is summarised out by default — it can run to hundreds of nodes " +
+    "with run media painted onto it, and is not needed to read or edit a workflow. " +
+    "Pass include_node_ui only if you specifically need the canvas layout. " +
+    "For run health/history, versely_summarize_workflow is cheaper.",
   inputSchema: z.object({
     workflow_id: z.string().describe("Workflow UUID."),
+    include_node_ui: z
+      .boolean()
+      .optional()
+      .describe("Return the full canvas graph instead of a summary. Large — off by default."),
   }),
   handler: async (input, ctx) => {
-    const data = await ctx.client.get(
+    const data = await ctx.client.get<{ workflow?: Record<string, unknown> }>(
       `/api/v1/workflows/${encodeURIComponent(input.workflow_id)}`,
     );
+
+    // getWorkflow lazily materialises node_ui and overlays the latest run's media
+    // onto it (backend caps it at 500 nodes / 1500 edges). Returning that verbatim
+    // dumped a large, undocumented blob into the model's context on every call.
+    const wf = data?.workflow;
+    if (!input.include_node_ui && wf && wf.node_ui && typeof wf.node_ui === "object") {
+      const graph = wf.node_ui as { nodes?: unknown[]; edges?: unknown[] };
+      const nodes = Array.isArray(graph.nodes) ? graph.nodes.length : 0;
+      const edges = Array.isArray(graph.edges) ? graph.edges.length : 0;
+      return jsonResult({
+        ...data,
+        workflow: {
+          ...wf,
+          node_ui: {
+            omitted: true,
+            nodes,
+            edges,
+            note: "Canvas graph omitted to save context. Call versely_get_workflow with include_node_ui: true to fetch it.",
+          },
+        },
+      });
+    }
     return jsonResult(data);
   },
 });
@@ -423,7 +454,12 @@ const versely_export_workflow = defineTool({
 const versely_update_workflow_mode = defineTool({
   name: "versely_update_workflow_mode",
   description:
-    "Switch a workflow between manual and auto modes. Auto mode requires a 5-field cron expression and at least one scene; auto_post fields enable automatic publishing on each run.",
+    "Switch a workflow between manual and auto modes. auto_post fields enable automatic publishing on each run.\n\n" +
+    "**mode='auto' has three hard preconditions, all enforced with a 400:**\n" +
+    "1. `schedule_cron` — a 5-field cron expression.\n" +
+    "2. The workflow must have at least one scene (scene workflows only; a steps-only workflow cannot go auto).\n" +
+    "3. A theme anchor — the workflow needs a non-empty `description`, OR you must pass `series_premise` (either on this call or already stored). Without one, the generator has nothing to vary each run.\n\n" +
+    "Check the workflow with versely_get_workflow first if you're unsure it has scenes and a description.",
   inputSchema: z
     .object({
       workflow_id: z.string().describe("Workflow UUID."),
@@ -435,7 +471,12 @@ const versely_update_workflow_mode = defineTool({
         .optional()
         .describe("Required when mode='auto'. 5-field cron (minute hour dom month dow)."),
       schedule_label: z.string().optional(),
-      series_premise: z.string().optional(),
+      series_premise: z
+        .string()
+        .optional()
+        .describe(
+          "Theme anchor for recurring runs. Required for mode='auto' unless the workflow already has a non-empty description.",
+        ),
       auto_post: z.boolean().optional(),
       auto_post_platforms: z
         .array(z.string())
@@ -562,7 +603,10 @@ const versely_update_workflow_assets = defineTool({
 const versely_run_workflow = defineTool({
   name: "versely_run_workflow",
   description:
-    "Execute a workflow now (or schedule for `scheduled_at`). Returns a pending media card immediately and the iframe self-polls versely_get_workflow_run every 5s — scenes pop into the card as they complete, the backend auto-combines when all are done, and the final video appears in place.\n\nFor scheduled runs (`scheduled_at` set), the card is still pending but won't make progress until the scheduled time.",
+    "Execute a workflow now. Returns a pending media card immediately and the iframe self-polls versely_get_workflow_run every 5s — scenes pop into the card as they complete, the backend auto-combines when all are done, and the final video appears in place.\n\n" +
+    "**Two things this cannot do:**\n" +
+    "• Canvas workflows (`workflow_kind: 'canvas'`) have no server-side scenes or steps and are rejected — they must be run from the web canvas.\n" +
+    "• `scheduled_at` only works on legacy STEPS workflows. Scene workflows reject it; use versely_update_workflow_mode with a cron to schedule those.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -571,12 +615,40 @@ const versely_run_workflow = defineTool({
         .string()
         .optional()
         .describe(
-          "ISO-8601 timestamp. If supplied, the run is queued for that future time instead of starting immediately.",
+          "ISO-8601 timestamp. STEPS workflows only — scene workflows 400 on this. To schedule a scene workflow, use versely_update_workflow_mode (cron) instead.",
         ),
     })
     .passthrough(),
   handler: async (input, ctx) => {
     const { workflow_id, ...body } = input;
+
+    // Pre-empt the two 400s the backend raises here, so the model gets an
+    // actionable message (and a route forward) instead of a raw API error.
+    // Best-effort: if the lookup fails, fall through and let the backend answer.
+    if (body.scheduled_at) {
+      try {
+        const wf = await ctx.client.get<{
+          workflow?: { workflow_kind?: string; scenes?: unknown[] };
+        }>(`/api/v1/workflows/${encodeURIComponent(workflow_id)}`);
+        const w = wf?.workflow;
+        if (w?.workflow_kind === "canvas") {
+          throw new Error(
+            "This is a canvas workflow — it has no scenes or steps to run server-side. Open it in the web canvas and run it from there.",
+          );
+        }
+        if (Array.isArray(w?.scenes) && w.scenes.length > 0) {
+          throw new Error(
+            "scheduled_at is not supported for scene workflows. Run it now by omitting scheduled_at, or schedule recurring runs with versely_update_workflow_mode (mode: 'auto' + schedule_cron).",
+          );
+        }
+      } catch (err) {
+        // Only re-throw our own guidance; a failed lookup shouldn't block the run.
+        if (err instanceof Error && /canvas workflow|scheduled_at is not supported/.test(err.message)) {
+          throw err;
+        }
+      }
+    }
+
     const submission = await ctx.client.post<{
       success?: boolean;
       mode?: "scenes" | "steps";

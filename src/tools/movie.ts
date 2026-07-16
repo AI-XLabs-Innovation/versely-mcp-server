@@ -32,8 +32,20 @@ interface MovieSceneDTO {
   generation_type?: string;
   model?: string;
   video_url?: string | null;
+  /** Only /movie/:id/status aliases the column to `error`. */
   error?: string | null;
+  /** GET /movie/:id returns raw scene rows, which carry `error_message`. */
+  error_message?: string | null;
   duration?: number;
+}
+
+/**
+ * Per-scene failure reason, whichever shape the endpoint used.
+ * /status aliases error_message → error; /movie/:id returns the raw row.
+ * Reading only `error` silently lost the reason on the get_movie path.
+ */
+function sceneError(s: MovieSceneDTO): string | null | undefined {
+  return s.error ?? s.error_message;
 }
 
 interface MovieStatusData {
@@ -184,7 +196,7 @@ function movieResultFromPayload(
   const allTerminal = pending === 0 && generating === 0;
   if (status === "failed" || (allTerminal && failed > 0 && completed === 0)) {
     const firstError =
-      orderedScenes.find((s) => s.error)?.error?.toString() ||
+      orderedScenes.map(sceneError).find((e) => e)?.toString() ||
       `Movie generation failed (${failed} of ${total} scene${total === 1 ? "" : "s"} failed).`;
     return {
       content: [{ type: "text", text: `${title} failed: ${firstError}` }],

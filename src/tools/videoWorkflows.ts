@@ -108,7 +108,9 @@ const versely_update_video_workflow_template = defineTool({
       default_params: z.record(z.unknown()).optional(),
       scenes: z.array(z.unknown()).optional(),
       is_public: z.boolean().optional(),
-      version: z.number().int().min(1).optional(),
+      // `version` was declared here but the controller never destructures it, so
+      // it was accepted and silently dropped. Removed rather than left as a lie —
+      // template versioning isn't settable through this endpoint.
     })
     .passthrough(),
   handler: async (input, ctx) => {
@@ -213,7 +215,16 @@ const versely_list_video_workflow_runs = defineTool({
       .string()
       .optional()
       .describe("ISO-8601 timestamp. Only return runs created at or before this time."),
-    limit: z.number().int().min(1).max(100).optional(),
+    // Backend caps at 50 (Math.min(limit, 50)); advertising 100 meant a caller
+    // asking for 100 silently got 50 — and the since/until filters below then ran
+    // over that truncated page, quietly under-reporting.
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Page size (default 20, server caps at 50)."),
     offset: z.number().int().min(0).optional(),
   }),
   handler: async (input, ctx) => {
@@ -245,6 +256,17 @@ const versely_list_video_workflow_runs = defineTool({
     return jsonResult({
       total: res?.total ?? runs.length,
       total_returned: filtered.length,
+      // since/until are applied client-side to the fetched page only. Say so, and
+      // say how much was actually scanned, so a partial answer never reads as complete.
+      ...(input.since || input.until
+        ? {
+            filtered_client_side: {
+              scanned: runs.length,
+              matched: filtered.length,
+              note: "since/until were applied to this page only — page further with offset to scan older runs.",
+            },
+          }
+        : {}),
       runs: filtered,
     });
   },
@@ -325,9 +347,19 @@ const versely_combine_video_workflow_run = defineTool({
     // Default to fire-and-forget (no `wait=true`) so big FFmpeg merges don't
     // trip claude.ai's per-tool execution timeout. Iframe polls until the
     // backend sets final_video_url.
-    await ctx.client.post(
-      `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}/combine`,
-    );
+    //
+    // A run that's already combining returns 409. That's the single likeliest
+    // case for calling this twice, and an unwrapped POST turned it into a raw
+    // error instead of the pending card the caller wanted — the merge IS running,
+    // so falling through to poll is the correct outcome. Other errors still throw.
+    try {
+      await ctx.client.post(
+        `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}/combine`,
+      );
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (status !== 409) throw err;
+    }
     let fresh: unknown = null;
     try {
       fresh = await ctx.client.get(
