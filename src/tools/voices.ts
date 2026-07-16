@@ -107,13 +107,22 @@ const PROVIDER_META: Record<VoiceProvider, ProviderMeta> = {
   },
   gemini: {
     voiceField: "voice",
-    models: ["Gemini Flash TTS", "Gemini Flash Lite TTS", "Gemini Pro TTS"],
-    blurb: "Gemini TTS prebuilt voices (30 voices, single + multi-speaker).",
+    // Only "Gemini 3.1 Flash TTS" exists in the dispatcher's audio roster. The
+    // old names ("Gemini Flash TTS" / "Flash Lite" / "Pro TTS") are catalog-only
+    // labels — passing them to versely_generate_audio 400s "Model not supported".
+    models: ["Gemini 3.1 Flash TTS"],
+    blurb: "Gemini TTS prebuilt voices (30 voices). Callable via versely_generate_audio with model 'Gemini 3.1 Flash TTS'.",
   },
   suno: {
     voiceField: "voice",
-    models: ["Suno Sounds V5", "Suno Sounds V5.5"],
-    blurb: "Suno Sounds TTS voices.",
+    // Suno has no TTS voice concept in this backend — "Suno Sounds V5/V5.5" are
+    // absent from every provider's audio roster, and the six SUNO_VOICES below
+    // exist nowhere server-side. Discovery only; do not hand these to the LLM
+    // as callable TTS models.
+    models: [
+      "(discovery only — Suno has no TTS voices; use versely_generate_music for music, or another provider for speech)",
+    ],
+    blurb: "Legacy Suno voice labels. NOT callable via versely_generate_audio — no Suno TTS model exists.",
   },
   qwen: {
     voiceField: "voice",
@@ -128,7 +137,7 @@ const PROVIDER_META: Record<VoiceProvider, ProviderMeta> = {
   chatterbox: {
     voiceField: "voice",
     models: ["Chatterbox TTS", "Chatterbox TTS Turbo"],
-    blurb: "Chatterbox built-in TTS voices (RunPod).",
+    blurb: "Chatterbox built-in TTS voices (served via fal).",
   },
 };
 
@@ -537,7 +546,9 @@ async function fetchDynamicCatalog(
       const data = await ctx.client.get<{
         voices: Array<{ name: string; url: string; size?: number; mimetype?: string }>;
         count?: number;
-      }>("/bucket/eleven-labs-voices");
+        // The API router is mounted at /api/v1 — this was the only call site in the
+        // MCP missing the prefix, so it 404'd on every request.
+      }>("/api/v1/bucket/eleven-labs-voices");
       const voices: NormalizedVoice[] = (data.voices ?? []).map((v) => ({
         // These are cached audio sample files — the file name typically
         // encodes a voice identifier the user has previously sampled.

@@ -183,11 +183,36 @@ interface RunSummary {
   final_video_url?: string | null;
 }
 
+/** Server-side cap on GET /workflows (limit is Math.min(limit ?? 20, 50)). */
+const WORKFLOW_PAGE_MAX = 50;
+
+/**
+ * Fetch EVERY workflow, paging until exhausted.
+ *
+ * GET /workflows defaults to limit=20 and hard-caps at 50, and returns a `total`.
+ * This helper used to send no query at all, so the fan-out tools below silently
+ * scanned only the 20 most-recently-updated workflows while reporting
+ * `workflows_scanned` as though the sweep were complete.
+ */
 async function fetchWorkflows(
   ctx: import("./_types.js").ToolContext,
 ): Promise<WorkflowSummary[]> {
-  const res = await ctx.client.get<{ workflows?: WorkflowSummary[] }>("/api/v1/workflows");
-  return res?.workflows ?? [];
+  const all: WorkflowSummary[] = [];
+  let offset = 0;
+  for (;;) {
+    const res = await ctx.client.get<{ workflows?: WorkflowSummary[]; total?: number }>(
+      "/api/v1/workflows",
+      { query: { limit: WORKFLOW_PAGE_MAX, offset } },
+    );
+    const page = res?.workflows ?? [];
+    all.push(...page);
+    const total = typeof res?.total === "number" ? res.total : undefined;
+    offset += page.length;
+    if (page.length < WORKFLOW_PAGE_MAX) break;
+    if (total !== undefined && all.length >= total) break;
+    if (page.length === 0) break;
+  }
+  return all;
 }
 
 async function fetchRunsForWorkflow(
@@ -261,10 +286,31 @@ const versely_create_workflow = defineTool({
 
 const versely_list_workflows = defineTool({
   name: "versely_list_workflows",
-  description: "List all workflows owned by the authenticated user.",
-  inputSchema: Empty,
-  handler: async (_input, ctx) => {
-    const data = await ctx.client.get("/api/v1/workflows");
+  description:
+    "List workflows owned by the authenticated user, newest-updated first. Returns `total` alongside the page — page with `limit`/`offset` if `total` exceeds what you received.",
+  inputSchema: z
+    .object({
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(WORKFLOW_PAGE_MAX)
+        .optional()
+        .describe(`Page size (default 20, server caps at ${WORKFLOW_PAGE_MAX}).`),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("How many to skip (default 0)."),
+    })
+    .passthrough(),
+  handler: async (input, ctx) => {
+    // Previously sent no query, so the backend's limit=20 default silently truncated
+    // a list this tool described as "all workflows".
+    const data = await ctx.client.get("/api/v1/workflows", {
+      query: { limit: input.limit, offset: input.offset },
+    });
     return jsonResult(data);
   },
 });
@@ -437,12 +483,48 @@ const versely_update_workflow_dates = defineTool({
     .object({
       workflow_id: z.string().describe("Workflow UUID."),
       scheduled_dates: z
-        .array(z.string())
-        .describe("ISO-8601 timestamps for each scheduled run."),
+        .array(
+          z.union([
+            z
+              .object({
+                date: z
+                  .string()
+                  .regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD")
+                  .describe("Calendar day, YYYY-MM-DD."),
+                time: z
+                  .string()
+                  .regex(/^\d{2}:\d{2}$/, "time must be HH:MM")
+                  .optional()
+                  .describe("Time of day, HH:MM (24h)."),
+                event_label: z.string().optional().describe("Optional label for the run."),
+              })
+              .passthrough(),
+            z
+              .string()
+              .describe("Deprecated: a bare date/ISO string — split into { date, time } for you."),
+          ]),
+        )
+        .describe(
+          "Entries are OBJECTS: { date: 'YYYY-MM-DD', time?: 'HH:MM', event_label?: string }. A bare string is accepted and converted.",
+        ),
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { workflow_id, ...body } = input;
+    const { workflow_id, scheduled_dates, ...rest } = input;
+    // The backend reads `entry.date` per item and regex-checks it, so an array of
+    // plain strings yielded `undefined` → 400 "Invalid date format". Normalise any
+    // legacy string entries (ISO timestamps or bare dates) into the object shape.
+    const normalized = (scheduled_dates as Array<unknown>).map((entry) => {
+      if (typeof entry !== "string") return entry;
+      const m = entry.match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}))?/);
+      if (!m) {
+        throw new Error(
+          `scheduled_dates entry ${JSON.stringify(entry)} is not a recognisable date. Use { date: "YYYY-MM-DD", time?: "HH:MM" }.`,
+        );
+      }
+      return m[2] ? { date: m[1], time: m[2] } : { date: m[1] };
+    });
+    const body = { ...rest, scheduled_dates: normalized };
     const data = await ctx.client.patch(
       `/api/v1/workflows/${encodeURIComponent(workflow_id)}/dates`,
       body,

@@ -497,13 +497,11 @@ const versely_generate_movie_scenes = defineTool({
 const versely_combine_movie = defineTool({
   name: "versely_combine_movie",
   description:
-    "Manually (re)combine a movie's scene videos into a final video with server-side FFmpeg. **You usually don't need to call this** — the backend auto-combines when all scenes complete. Use this only when (a) auto-combine failed, (b) you want a different transition or audio track, or (c) some scenes failed and you want to combine just the successful ones.",
+    "Manually (re)combine a movie's scene videos into a final video with server-side FFmpeg. **You usually don't need to call this** — the backend auto-combines when all scenes complete. Use this only when (a) auto-combine failed, or (b) some scenes failed and you want to combine just the successful ones. The transition comes from the movie's stored transition_type and cannot be overridden here; there is no audio-track parameter.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
       movie_id: z.string(),
-      transition: z.string().optional().describe("e.g. 'concat', 'crossfade'"),
-      audio_url: z.string().url().optional(),
     })
     .passthrough(),
   handler: async (input, ctx) => {

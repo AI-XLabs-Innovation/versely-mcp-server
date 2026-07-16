@@ -191,18 +191,30 @@ const versely_generate_image = defineTool({
         ),
       prompt: z.string().describe("Text prompt describing the desired image."),
       negative_prompt: z.string().optional(),
+      num_images: z
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe("Number of images to generate (default 1). Each image is charged separately."),
       n: z
         .number()
         .int()
         .min(1)
         .max(8)
         .optional()
-        .describe("Number of images to generate."),
+        .describe("Deprecated alias for num_images — prefer num_images."),
       aspect_ratio: z
         .string()
         .optional()
         .describe("e.g. '1:1', '16:9', '9:16', '4:3'."),
-      size: z.string().optional().describe("Explicit dimensions, e.g. '1024x1024'."),
+      resolution: z
+        .string()
+        .optional()
+        .describe(
+          "Resolution tier for resolution-priced models (e.g. '1K', '2K', '4K' for GPT Image 2 / Nano Banana Pro). Higher tiers cost more credits. Note: '1:1' cannot use 4K, and aspect_ratio 'auto' is limited to 1K.",
+        ),
       image_urls: z
         .array(z.string().url())
         .optional()
@@ -212,8 +224,11 @@ const versely_generate_image = defineTool({
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    const { mode, poll_timeout_ms, poll_interval_ms, n, ...body } = input;
     body.model = await resolveCanonicalModel(ctx, "image", body.model);
+    // Backend counts images with `num_images` (chat.controller / general.controller);
+    // a bare `n` is read nowhere and silently yielded exactly one image.
+    if (body.num_images === undefined && n !== undefined) body.num_images = n;
     const submission = await ctx.client.post("/api/v1/generate/image", body);
     return handleAsync({
       ctx,
@@ -224,7 +239,13 @@ const versely_generate_image = defineTool({
       kind: "image",
       toolName: "versely_generate_image",
       toolArgs: body,
-      extra: { model: body.model, prompt: input.prompt, aspect_ratio: input.aspect_ratio, size: input.size },
+      extra: {
+        model: body.model,
+        prompt: input.prompt,
+        aspect_ratio: input.aspect_ratio,
+        resolution: input.resolution,
+        num_images: body.num_images,
+      },
     });
   },
 });
@@ -247,12 +268,22 @@ const versely_generate_video = defineTool({
         .url()
         .optional()
         .describe("Starting frame for image-to-video."),
+      image_urls: z
+        .array(z.string().url())
+        .optional()
+        .describe(
+          "Starting frame(s) for image-to-video. Equivalent to image_url; use either. Required by models whose name contains 'Image to Video'.",
+        ),
       end_image_url: z
         .string()
         .url()
         .optional()
-        .describe("End frame for frame-to-frame."),
-      duration_seconds: z.number().positive().optional(),
+        .describe("End frame for frame-to-frame (first-last-frame) models."),
+      duration_seconds: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Clip length in seconds. Drives BOTH generation and credit cost — omit and you get (and pay for) the 5s default."),
       aspect_ratio: z.string().optional(),
       resolution: z.string().optional(),
       seed: z.number().int().optional(),
@@ -262,6 +293,34 @@ const versely_generate_video = defineTool({
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
     body.model = await resolveCanonicalModel(ctx, "video", body.model);
+
+    // The backend reads `duration` (chat.controller / runpod.controller) and prices
+    // on it. `duration_seconds` is read nowhere: every request silently generated
+    // AND billed at the 5s default. Send `duration` as the authoritative field.
+    if (body.duration === undefined && body.duration_seconds !== undefined) {
+      body.duration = body.duration_seconds;
+    }
+
+    // Image-to-video routing: generate.controller's model-requirement validation and
+    // its per-model provider-head selection only inspect image_urls | images | image |
+    // first_frame_url — never the singular image_url. Sending only image_url made an
+    // I2V request look like T2V, so the I2V provider head was dropped from the chain
+    // (silent wrong output) or the request 400'd on "Model requirements not met".
+    // Send the array for routing; keep image_url, which FAL reads directly.
+    const firstFrame =
+      (Array.isArray(body.image_urls) && body.image_urls[0]) || body.image_url;
+    if (firstFrame) {
+      if (!Array.isArray(body.image_urls) || body.image_urls.length === 0) {
+        body.image_urls = [firstFrame];
+      }
+      if (!body.image_url) body.image_url = firstFrame;
+      if (!body.first_frame_url) body.first_frame_url = firstFrame;
+    }
+    // Frame-to-frame models read last_frame_url, not end_image_url.
+    if (body.end_image_url && !body.last_frame_url) {
+      body.last_frame_url = body.end_image_url;
+    }
+
     const submission = await ctx.client.post("/api/v1/generate/video", body);
     return handleAsync({
       ctx,
@@ -491,30 +550,96 @@ const versely_generate_audio = defineTool({
   },
 });
 
+/** Suno model versions the backend accepts (VALID_MODELS in sunoApi.controller). */
+const SunoModel = z.enum(["V3_5", "V4", "V4_5", "V4_5PLUS", "V4_5ALL", "V5", "V5_5"]);
+
 const versely_generate_music = defineTool({
   name: "versely_generate_music",
   description:
-    "Generate music with Suno (V3.5–V5.5). Returns a Suno taskId; default polls via the unified status endpoint.",
+    "Generate music with Suno. Returns a Suno taskId; default polls via the unified status endpoint.\n\n" +
+    "Two modes:\n" +
+    "• **Inspiration** (default, `custom_mode: false`) — `prompt` is a free-form description of the song; Suno writes the lyrics and picks the style.\n" +
+    "• **Custom** (`custom_mode: true`) — `prompt` becomes the LITERAL LYRICS, and `style` + `title` are then required.\n\n" +
+    "There is no separate lyrics field: to supply your own lyrics, set custom_mode:true and put them in `prompt`.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
-      prompt: z.string().describe("Style / mood / theme prompt."),
-      lyrics: z
+      prompt: z
+        .string()
+        .describe(
+          "In default mode: a description of the song. In custom_mode: the literal lyrics to sing.",
+        ),
+      model: SunoModel.optional().describe(
+        "Suno model version (default V5) — required by the backend. Underscored form (V4_5PLUS), not 'V4.5+'.",
+      ),
+      instrumental: z
+        .boolean()
+        .default(false)
+        .describe("No vocals. Required by the backend and must be a boolean."),
+      custom_mode: z
+        .boolean()
+        .optional()
+        .describe("Treat `prompt` as literal lyrics. Requires `style` and `title`."),
+      style: z
         .string()
         .optional()
-        .describe("Custom lyrics (omit for instrumental or auto-lyrics)."),
-      title: z.string().optional(),
-      tags: z
+        .describe("Musical style, e.g. 'pop, upbeat, electronic'. Required when custom_mode is true."),
+      title: z.string().optional().describe("Track title. Required when custom_mode is true."),
+      negative_tags: z.string().optional().describe("Styles to avoid."),
+      vocal_gender: z.enum(["m", "f"]).optional(),
+      style_weight: z.number().min(0).max(1).optional(),
+      weirdness_constraint: z.number().min(0).max(1).optional(),
+      audio_weight: z.number().min(0).max(1).optional(),
+      persona_id: z.string().optional(),
+      model_version: z
         .string()
         .optional()
-        .describe("Comma-separated style tags (e.g. 'pop, upbeat, electronic')."),
-      instrumental: z.boolean().optional(),
-      model_version: z.string().optional().describe("e.g. 'V4', 'V5'."),
+        .describe("Deprecated alias for model (e.g. 'V4') — prefer model."),
+      tags: z.string().optional().describe("Deprecated alias for style — prefer style."),
       ...AsyncFields,
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    const {
+      mode,
+      poll_timeout_ms,
+      poll_interval_ms,
+      model_version,
+      tags,
+      custom_mode,
+      negative_tags,
+      vocal_gender,
+      style_weight,
+      weirdness_constraint,
+      audio_weight,
+      persona_id,
+      ...rest
+    } = input;
+    const body: Record<string, unknown> = { ...rest };
+
+    // The controller reads customMode/model/style/personaId/negativeTags/vocalGender/
+    // styleWeight/weirdnessConstraint/audioWeight — camelCase, and hard-400s unless
+    // `model` is a VALID_MODELS member and `instrumental` is a real boolean.
+    // The old model_version / lyrics / tags fields were read nowhere.
+    // Precedence: explicit `model` > normalized legacy `model_version` > V5 default.
+    if (body.model === undefined && model_version) {
+      const normalized = model_version
+        .trim()
+        .toUpperCase()
+        .replace(/\+/g, "PLUS")
+        .replace(/[.\s-]/g, "_");
+      if (SunoModel.safeParse(normalized).success) body.model = normalized;
+    }
+    if (body.model === undefined) body.model = "V5";
+    if (body.style === undefined && tags !== undefined) body.style = tags;
+    if (custom_mode !== undefined) body.customMode = custom_mode;
+    if (negative_tags !== undefined) body.negativeTags = negative_tags;
+    if (vocal_gender !== undefined) body.vocalGender = vocal_gender;
+    if (style_weight !== undefined) body.styleWeight = style_weight;
+    if (weirdness_constraint !== undefined) body.weirdnessConstraint = weirdness_constraint;
+    if (audio_weight !== undefined) body.audioWeight = audio_weight;
+    if (persona_id !== undefined) body.personaId = persona_id;
+
     const submission = await ctx.client.post("/api/v1/suno/generate", body);
     return handleAsync({
       ctx,
@@ -526,10 +651,9 @@ const versely_generate_music = defineTool({
       toolName: "versely_generate_music",
       toolArgs: body,
       extra: {
-        model: input.model_version ? `Suno ${input.model_version}` : "Suno",
+        model: `Suno ${String(body.model ?? "V5")}`,
         prompt: input.prompt,
-        ...(input.lyrics ? { lyrics: input.lyrics } : {}),
-        ...(input.title ? { title: input.title } : {}),
+        ...(body.title ? { title: body.title } : {}),
       },
     });
   },
@@ -537,22 +661,46 @@ const versely_generate_music = defineTool({
 
 const versely_extend_music = defineTool({
   name: "versely_extend_music",
-  description: "Extend an existing Suno track from a given timestamp.",
+  description:
+    "Extend an existing Suno track from a given timestamp. Supplying prompt / style / title / continue_at_seconds automatically switches Suno into custom-parameter mode; omit them all to simply continue the source track with its original parameters.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
-      task_id: z.string().describe("Suno task_id of the source track."),
-      audio_id: z.string().describe("Specific audio variant ID within the task."),
+      audio_id: z
+        .string()
+        .describe("Audio variant ID of the source track (NOT the task_id)."),
+      model: SunoModel.default("V5").describe(
+        "Suno model version — required by the backend.",
+      ),
       continue_at_seconds: z
         .number()
         .nonnegative()
+        .optional()
         .describe("Position in seconds to continue from."),
       prompt: z.string().optional(),
+      style: z.string().optional(),
+      title: z.string().optional(),
       ...AsyncFields,
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    const {
+      mode,
+      poll_timeout_ms,
+      poll_interval_ms,
+      audio_id,
+      continue_at_seconds,
+      ...rest
+    } = input;
+    const body: Record<string, unknown> = { ...rest };
+    // Controller reads audioId / continueAt (camelCase) and requires `model`.
+    // The old audio_id / continue_at_seconds / task_id fields were read nowhere.
+    body.audioId = audio_id;
+    if (continue_at_seconds !== undefined) body.continueAt = continue_at_seconds;
+    // Deliberately do NOT send defaultParamFlag: the backend now auto-enables
+    // custom params when any of prompt/style/title/continueAt is present, and
+    // passing false would silently revert to a plain re-extend.
+    delete body.defaultParamFlag;
     const submission = await ctx.client.post("/api/v1/suno/extend", body);
     return handleAsync({
       ctx,
@@ -569,20 +717,31 @@ const versely_extend_music = defineTool({
 
 const versely_generate_lipsync = defineTool({
   name: "versely_generate_lipsync",
-  description: "Generate a lipsync video from a still image and an audio clip.",
+  description:
+    "Generate a lipsync video from a still image and an audio clip. `model` is required — call versely_find_models with type='lipsync' to discover valid names.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
-      image_url: z.string().url(),
+      image_url: z
+        .string()
+        .url()
+        .describe("Character still. Required by image-driven lipsync models (Infini Talk, Wan 2.2 Speech Turbo)."),
       audio_url: z.string().url(),
-      model: z.string().optional(),
+      model: z
+        .string()
+        .describe(
+          "Lipsync model — required (the backend 400s without it). Pass the slug or canonical name; discover via versely_find_models with type='lipsync'.",
+        ),
       ...AsyncFields,
     })
     .passthrough(),
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
-    if (body.model !== undefined) {
-      body.model = await resolveCanonicalModel(ctx, "lipsync", body.model);
+    body.model = await resolveCanonicalModel(ctx, "lipsync", body.model);
+    // Model-requirement validation reads image_urls | images only — a bare
+    // image_url made image-driven lipsync models 400 with "Image required for lipsync".
+    if (body.image_url && !Array.isArray(body.image_urls)) {
+      body.image_urls = [body.image_url];
     }
     const submission = await ctx.client.post("/api/v1/generate/lipsync", body);
     return handleAsync({
@@ -599,14 +758,29 @@ const versely_generate_lipsync = defineTool({
   },
 });
 
+/**
+ * /generate/background-removal hosts ONLY video background-removal models
+ * (PROVIDER_MODELS.*.background_removal). There is no image background-removal
+ * model in the dispatcher, so this tool is video-only despite its generic name.
+ */
+const BackgroundRemovalModel = z.enum([
+  "Veed Video Background Removal",
+  "Veed Video Background Removal Fast",
+  "Veed Video Background Removal Green Screen",
+  "BRIO Video Background Removal",
+]);
+
 const versely_remove_background = defineTool({
   name: "versely_remove_background",
-  description: "Remove the background from an image.",
+  description:
+    "Remove the background from a VIDEO, producing a transparent (VP9 alpha) matte for compositing. Video only — there is no image background-removal model behind this endpoint. Use 'Veed Video Background Removal Fast' for a quick pass, or the Green Screen variant for a chroma-key matte.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
-      image_url: z.string().url(),
-      model: z.string().optional(),
+      video_url: z.string().url().describe("Source video to cut out."),
+      model: BackgroundRemovalModel.default("Veed Video Background Removal").describe(
+        "Background-removal model — required by the backend; defaults to the standard VEED matte.",
+      ),
       ...AsyncFields,
     })
     .passthrough(),
@@ -622,27 +796,51 @@ const versely_remove_background = defineTool({
       mode: mode as AsyncMode,
       pollTimeoutMs: poll_timeout_ms,
       pollIntervalMs: poll_interval_ms,
-      kind: "image",
+      kind: "video",
       toolName: "versely_remove_background",
       toolArgs: body,
     });
   },
 });
 
+const ImageUpscaleModel = z.enum([
+  "Topaz Upscale Image",
+  "SeedVR Upscale",
+  "Clarity Crystal Upscaler",
+  "PrunaAI P-Image-Upscale",
+]);
+
 const versely_upscale_image = defineTool({
   name: "versely_upscale_image",
-  description: "Upscale an image to higher resolution.",
+  description: "Upscale an image to a higher resolution.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
       image_url: z.string().url(),
-      model: z.string().optional(),
-      scale_factor: z.number().positive().optional(),
+      model: ImageUpscaleModel.default("Topaz Upscale Image").describe(
+        "Upscale model — required by the backend; defaults to Topaz.",
+      ),
+      scale: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Upscale multiplier (e.g. 2 or 4). Default 2."),
+      scale_factor: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Deprecated alias for scale — prefer scale."),
       ...AsyncFields,
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
+    const { mode, poll_timeout_ms, poll_interval_ms, scale_factor, ...rest } = input;
+    const body: Record<string, unknown> = { ...rest };
+    // Backend reads `scale`; scale_factor was read nowhere → always 2x.
+    if (body.scale === undefined && scale_factor !== undefined) {
+      body.scale = Math.round(scale_factor);
+    }
     const submission = await ctx.client.post("/api/v1/generate/image-upscale", body);
     return handleAsync({
       ctx,
@@ -657,14 +855,23 @@ const versely_upscale_image = defineTool({
   },
 });
 
+const VideoUpscaleModel = z.enum([
+  "Topaz Upscale Video",
+  "Bytedance Upscaler Video",
+  "Video Enhancer Pro",
+  "Runway Upscale V1",
+]);
+
 const versely_upscale_video = defineTool({
   name: "versely_upscale_video",
-  description: "Upscale a video to higher resolution.",
+  description: "Upscale a video to a higher resolution.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
       video_url: z.string().url(),
-      model: z.string().optional(),
+      model: VideoUpscaleModel.default("Topaz Upscale Video").describe(
+        "Upscale model — required by the backend; defaults to Topaz.",
+      ),
       ...AsyncFields,
     })
     .passthrough(),

@@ -65,14 +65,43 @@ const versely_list_user_media = defineTool({
       .string()
       .optional()
       .describe("Override the user_id; defaults to the authenticated user."),
-    page: z.number().int().min(1).optional(),
-    limit: z.number().int().min(1).max(100).optional(),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Page size (default 10, server caps at 50)."),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("How many to skip (default 0). Use for paging, not `page`."),
   }),
   handler: async (input, ctx) => {
     const userId = await resolveUserId(ctx, input.user_id);
+    const query = { limit: input.limit, offset: input.offset };
+
+    // GET /user/:id/slideshows and /user/:id/ugc both destructure req.body, which is
+    // `undefined` on a bodyless GET under Express 5 — they 500 unconditionally. Their
+    // POST siblings are the same handlers with a body present, so route there instead.
+    if (input.type === "slideshows") {
+      const data = await ctx.client.post("/api/v1/slideshow/user/list", {}, { query });
+      return jsonResult(data);
+    }
+    if (input.type === "ugc") {
+      const data = await ctx.client.post(
+        `/api/v1/ugc/user/${encodeURIComponent(userId)}`,
+        { limit: input.limit, offset: input.offset },
+      );
+      return jsonResult(data);
+    }
+
+    // The backend reads limit/offset; `page` was read nowhere → always the first page.
     const data = await ctx.client.get(
       `/api/v1/user/${encodeURIComponent(userId)}/${input.type}`,
-      { query: { page: input.page, limit: input.limit } },
+      { query },
     );
     return jsonResult(data);
   },
@@ -80,11 +109,21 @@ const versely_list_user_media = defineTool({
 
 const versely_delete_generation = defineTool({
   name: "versely_delete_generation",
-  description: "Delete a specific generation (image, video, audio, or music) by ID.",
+  description:
+    "Delete a generation by ID. The plain types delete the media row; the '-row' variants delete the PARENT generation record — use those to clear a failed/pending generation that has no output URL (e.g. a failure tile).",
   inputSchema: z.object({
     type: z
-      .enum(["image", "video", "audio", "music"])
-      .describe("Generation type."),
+      .enum([
+        "image",
+        "video",
+        "audio",
+        "music",
+        "slideshow",
+        "ugc",
+        "image-row",
+        "video-row",
+      ])
+      .describe("Generation type. Use 'image-row'/'video-row' to remove a failed generation."),
     generation_id: z.string().describe("ID of the generation to delete."),
   }),
   handler: async (input, ctx) => {
