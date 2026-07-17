@@ -303,6 +303,28 @@ export async function startHttpServer(config: Config): Promise<void> {
     const server = buildServer(config, client);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      /**
+       * Answer with a plain JSON body instead of a one-event SSE stream.
+       *
+       * The SDK defaults this to false, so every reply — initialize included —
+       * went back as `text/event-stream` carrying exactly one `event: message`
+       * frame. We never stream: there is no server→client push, no
+       * resumability, and every call is one request → one result. So the SSE
+       * framing bought nothing and made the client parse a stream to read a
+       * value that was already complete.
+       *
+       * It also fits the evidence. Across 58 logged requests this server
+       * returned 200 to every single call — including the three
+       * versely_generate_image calls the client displayed as "Unable to reach
+       * versely-mcp" — while an `initialize` that we answered 200 was abandoned
+       * and retried 6s later. The client is discarding replies it successfully
+       * received, and the framing is the one unusual thing about them. A JSON
+       * body removes that variable entirely.
+       *
+       * Compatibility is unaffected: the transport still requires callers to
+       * accept both types, and JSON is the spec's other sanctioned response.
+       */
+      enableJsonResponse: true,
     });
 
     let closed = false;
