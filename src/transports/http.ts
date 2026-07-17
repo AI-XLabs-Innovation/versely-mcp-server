@@ -175,6 +175,59 @@ export async function startHttpServer(config: Config): Promise<void> {
   app.use(express.json({ limit: "4mb" }));
   app.use(requestLogger);
 
+  // --- CORS ------------------------------------------------------------------
+  // NOT optional. claude.ai's MCP client runs IN A BROWSER, so every call to
+  // this server is a cross-origin request: the browser sends an OPTIONS
+  // preflight first and blocks the real request unless the response approves
+  // it. Without these headers the call never leaves the browser — which the
+  // host reports as "Unable to reach versely-mcp" even though the server is
+  // healthy and never saw a request. curl and stdio clients don't enforce CORS,
+  // so this failure is invisible from the terminal and looks like a phantom.
+  //
+  // This lived only as an untracked edit on the droplet for a while. A pull that
+  // touched this file would have silently reverted it and taken claude.ai down
+  // with no obvious cause, so it belongs in the repo.
+  app.use((req, res, next) => {
+    const origin = req.header("origin");
+    if (origin) {
+      // Reflect rather than hardcode: claude.ai's iframe/app origins differ
+      // (claude.ai, claudeusercontent.com, ...) and a fixed value breaks them.
+      // Safe here because every route is bearer-authenticated — there is no
+      // cookie or ambient credential a hostile origin could ride.
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    }
+    // Always, even without an Origin: the response varies by it, and a cache
+    // that stored a no-Origin copy would otherwise serve it to a browser
+    // request and strip the approval — an intermittent, cache-shaped failure.
+    res.setHeader("Vary", "Origin");
+    // DELETE is in the spec's session-termination flow. We're stateless and
+    // answer 405, but a browser must be allowed to ASK — a preflight that
+    // omits the method fails before the 405 can be returned.
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      // Only non-safelisted request headers need listing. Last-Event-ID is
+      // used for SSE resumption; omitting a header the client sends fails the
+      // whole preflight, so this errs on the side of listing.
+      "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID",
+    );
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      // WWW-Authenticate must be readable or the browser can't see the OAuth
+      // challenge and never starts the auth flow.
+      "WWW-Authenticate, X-MCP-Request-Id, MCP-Session-Id",
+    );
+    if (req.method === "OPTIONS") {
+      // Cache the preflight. Without this the browser preflights EVERY call,
+      // doubling the request count and the number of chances to fail.
+      res.setHeader("Access-Control-Max-Age", "86400");
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   app.get("/healthz", (_req, res) => {
     res.json({
       status: "ok",
