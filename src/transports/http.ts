@@ -61,6 +61,14 @@ interface McpCallRecord {
   auth: "api_key" | "oauth_jwt" | "none" | "invalid";
   accept?: string;
   user_agent?: string;
+  /**
+   * Any Mcp-Session-Id the caller sent. We run stateless (sessionIdGenerator:
+   * undefined) and never issue one, so this should always be absent. If it ever
+   * shows up, a client is carrying a session we didn't mint — worth knowing,
+   * since that is a common cause of "capabilities not available" on servers
+   * that DO keep session state.
+   */
+  session_id?: string;
   error?: string;
 }
 
@@ -229,6 +237,7 @@ export async function startHttpServer(config: Config): Promise<void> {
         auth: req.oauthClaims ? "oauth_jwt" : "api_key",
         accept: req.header("accept"),
         user_agent: req.header("user-agent"),
+        ...(req.header("mcp-session-id") ? { session_id: req.header("mcp-session-id") } : {}),
         ...(error ? { error } : {}),
       });
     };
@@ -288,9 +297,15 @@ export async function startHttpServer(config: Config): Promise<void> {
       server: SERVER_NAME,
       version: SERVER_VERSION,
       uptime_s: Math.floor((Date.now() - PROCESS_START_MS) / 1000),
-      // Restarts wipe this — say so, or an empty list reads as "nothing arrived"
-      // when it may just mean the process recycled.
-      note: "In-memory ring buffer; cleared on restart. Absence of a call means it never reached this process.",
+      // The buffer is per-process. If this box runs PM2 in cluster mode, each
+      // worker keeps its own and a call can look "absent" merely because it was
+      // handled by a sibling. Curl this a few times: a changing pid means more
+      // than one worker, and absence proves nothing until every pid is checked.
+      // (Statelessness makes multi-worker safe to RUN — it just makes this log
+      // partial to READ.)
+      pid: process.pid,
+      note:
+        "In-memory ring buffer, per-process, cleared on restart. If `pid` differs between calls, this box is multi-worker and a missing entry may just live on another worker.",
       returned: recent.length,
       total_seen: mcpCallLog.length,
       calls: recent,
