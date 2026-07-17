@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import express, {
   type Request,
   type Response,
@@ -62,11 +62,10 @@ interface McpCallRecord {
   accept?: string;
   user_agent?: string;
   /**
-   * Any Mcp-Session-Id the caller sent. We run stateless (sessionIdGenerator:
-   * undefined) and never issue one, so this should always be absent. If it ever
-   * shows up, a client is carrying a session we didn't mint — worth knowing,
-   * since that is a common cause of "capabilities not available" on servers
-   * that DO keep session state.
+   * Any Mcp-Session-Id on the request. Sessions are now real (initialize
+   * mints one), so this shows which calls rode an existing session versus
+   * re-initialized from scratch — the churn that made claude.ai's broken
+   * capability-refresh path fire on every single call.
    */
   session_id?: string;
   error?: string;
@@ -167,7 +166,70 @@ function makeAuthMiddleware(config: Config) {
   };
 }
 
+// --- Sessions ----------------------------------------------------------------
+// This server ran stateless from day one (fresh Server per request, no
+// Mcp-Session-Id) to keep each caller's bearer request-scoped. The cost only
+// became visible on claude.ai: with no session to resume, its client runs the
+// full initialize + capability handshake before EVERY tool call, and each
+// handshake is one more chance to trip the client-side capability bug
+// (anthropics/claude-code#78193) that renders 200 results as "Unable to reach
+// versely-mcp". Stateful servers (which is most of them) go through that path
+// once per conversation — that's why other connectors' cards look immune.
+//
+// So: initialize now mints a session. The bearer stays per-user — a session is
+// bound to the identity that created it (JWT `sub`, or the vsk_ key itself)
+// and every subsequent request must both pass the bearer gate AND belong to
+// the same identity. Tokens may rotate mid-session (claude.ai refreshes its
+// JWT); the freshest verified bearer is re-bound to the session's client on
+// each request. Clients that never echo the session id keep working on the
+// old one-shot path below.
+
+interface SessionEntry {
+  transport: StreamableHTTPServerTransport;
+  server: ReturnType<typeof buildServer>;
+  client: VerselyClient;
+  /** JWT `sub` for OAuth callers, the vsk_ key itself for key callers. */
+  owner: string;
+  lastSeenMs: number;
+}
+
+const SESSION_IDLE_MS = 30 * 60_000;
+const SESSION_MAX = 500; // hard cap; beyond this, oldest-idle sessions are evicted
+
+function sessionOwner(req: AuthedRequest): string {
+  return req.oauthClaims?.sub ?? req.apiKey!;
+}
+
+function isInitializeBody(body: unknown): boolean {
+  const items = Array.isArray(body) ? body : [body];
+  return items.some(
+    (m) => m && typeof m === "object" && (m as Record<string, unknown>).method === "initialize",
+  );
+}
+
 export async function startHttpServer(config: Config): Promise<void> {
+  const sessions = new Map<string, SessionEntry>();
+
+  function dropSession(sid: string, reason: string): void {
+    const entry = sessions.get(sid);
+    if (!entry) return;
+    sessions.delete(sid);
+    entry.transport.close().catch(() => {});
+    entry.server.close().catch(() => {});
+    logLine({ level: "info", message: "session_closed", session_id: sid, reason, open_sessions: sessions.size });
+  }
+
+  const sweeper = setInterval(() => {
+    const now = Date.now();
+    for (const [sid, entry] of sessions) {
+      if (now - entry.lastSeenMs > SESSION_IDLE_MS) dropSession(sid, "idle_expired");
+    }
+    if (sessions.size > SESSION_MAX) {
+      const byIdle = [...sessions.entries()].sort((a, b) => a[1].lastSeenMs - b[1].lastSeenMs);
+      for (const [sid] of byIdle.slice(0, sessions.size - SESSION_MAX)) dropSession(sid, "capacity_evicted");
+    }
+  }, 60_000);
+  sweeper.unref();
   const app = express();
   app.disable("x-powered-by");
   // Trust the first proxy hop so req.ip reflects the real client when behind nginx.
@@ -299,43 +361,98 @@ export async function startHttpServer(config: Config): Promise<void> {
     // exactly the shape a severed/abandoned request leaves behind.
     res.on("close", () => finalize(res.writableEnded ? undefined : "client_disconnected_before_response"));
 
-    const client = new VerselyClient(config, apiKey);
-    const server = buildServer(config, client);
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      /**
-       * Answer with a plain JSON body instead of a one-event SSE stream.
-       *
-       * The SDK defaults this to false, so every reply — initialize included —
-       * went back as `text/event-stream` carrying exactly one `event: message`
-       * frame. We never stream: there is no server→client push, no
-       * resumability, and every call is one request → one result. So the SSE
-       * framing bought nothing and made the client parse a stream to read a
-       * value that was already complete.
-       *
-       * It also fits the evidence. Across 58 logged requests this server
-       * returned 200 to every single call — including the three
-       * versely_generate_image calls the client displayed as "Unable to reach
-       * versely-mcp" — while an `initialize` that we answered 200 was abandoned
-       * and retried 6s later. The client is discarding replies it successfully
-       * received, and the framing is the one unusual thing about them. A JSON
-       * body removes that variable entirely.
-       *
-       * Compatibility is unaffected: the transport still requires callers to
-       * accept both types, and JSON is the spec's other sanctioned response.
-       */
-      enableJsonResponse: true,
-    });
-
-    let closed = false;
-    res.on("close", () => {
-      if (closed) return;
-      closed = true;
-      transport.close().catch(() => {});
-      server.close().catch(() => {});
-    });
+    const sid = req.header("mcp-session-id");
 
     try {
+      // --- Established session: route to its long-lived transport. ---------
+      if (sid) {
+        const entry = sessions.get(sid);
+        if (!entry) {
+          // Expired, evicted, or minted by a previous process. 404 is the
+          // spec's signal for "session gone, re-initialize" — SDK clients
+          // (and claude.ai) recover by starting a fresh handshake.
+          finalize("session_not_found");
+          res.status(404).json({
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session not found; re-initialize" },
+            id: null,
+          });
+          return;
+        }
+        if (entry.owner !== sessionOwner(req)) {
+          // Valid bearer, wrong user: someone is replaying another user's
+          // session id. Refuse rather than serving them that user's session.
+          finalize("session_owner_mismatch");
+          res.status(403).json({ error: "session_owner_mismatch" });
+          return;
+        }
+        entry.lastSeenMs = Date.now();
+        // Re-bind the freshest verified bearer — OAuth tokens rotate
+        // mid-session and the backend must see a live one.
+        entry.client.setApiKey(apiKey);
+        await entry.transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // --- No session yet + initialize: mint one. ---------------------------
+      if (isInitializeBody(req.body)) {
+        const client = new VerselyClient(config, apiKey);
+        const server = buildServer(config, client);
+        const owner = sessionOwner(req);
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          // Plain JSON bodies instead of one-event SSE frames — we never
+          // push on the POST channel, so the framing bought nothing.
+          enableJsonResponse: true,
+          onsessioninitialized: (sessionId) => {
+            sessions.set(sessionId, {
+              transport,
+              server,
+              client,
+              owner,
+              lastSeenMs: Date.now(),
+            });
+            logLine({
+              level: "info",
+              message: "session_opened",
+              session_id: sessionId,
+              open_sessions: sessions.size,
+            });
+          },
+        });
+        transport.onclose = () => {
+          if (transport.sessionId && sessions.has(transport.sessionId)) {
+            sessions.delete(transport.sessionId);
+            logLine({
+              level: "info",
+              message: "session_closed",
+              session_id: transport.sessionId,
+              reason: "transport_closed",
+              open_sessions: sessions.size,
+            });
+          }
+        };
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // --- Legacy one-shot: no session id, non-initialize call. ------------
+      // Some clients never echo Mcp-Session-Id; they keep the original
+      // stateless contract — ephemeral server, torn down with the response.
+      const client = new VerselyClient(config, apiKey);
+      const server = buildServer(config, client);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      let closed = false;
+      res.on("close", () => {
+        if (closed) return;
+        closed = true;
+        transport.close().catch(() => {});
+        server.close().catch(() => {});
+      });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
@@ -371,7 +488,8 @@ export async function startHttpServer(config: Config): Promise<void> {
    * so /debug/recent-calls finally shows whether claude.ai's GETs reach us
    * at all, or die earlier at Anthropic's proxy / Cloudflare.
    */
-  app.get("/mcp", requireBearer, (req: AuthedRequest, res) => {
+  app.get("/mcp", requireBearer, async (req: AuthedRequest, res) => {
+    const sid = req.header("mcp-session-id");
     recordMcpCall({
       ts: new Date().toISOString(),
       request_id: (res.locals as ResLocals).requestId,
@@ -381,8 +499,43 @@ export async function startHttpServer(config: Config): Promise<void> {
       auth: req.oauthClaims ? "oauth_jwt" : "api_key",
       accept: req.header("accept"),
       user_agent: req.header("user-agent"),
-      ...(req.header("mcp-session-id") ? { session_id: req.header("mcp-session-id") } : {}),
+      ...(sid ? { session_id: sid } : {}),
     });
+
+    // Session-bound stream: hand it to the session's transport so real
+    // server→client notifications can ride it. A heartbeat comment keeps
+    // nginx/Cloudflare from idling the connection out between events.
+    if (sid) {
+      const entry = sessions.get(sid);
+      if (!entry) {
+        res.status(404).json({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Session not found; re-initialize" },
+          id: null,
+        });
+        return;
+      }
+      if (entry.owner !== sessionOwner(req)) {
+        res.status(403).json({ error: "session_owner_mismatch" });
+        return;
+      }
+      entry.lastSeenMs = Date.now();
+      res.setHeader("X-Accel-Buffering", "no");
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded) res.write(`: keepalive ${Date.now()}\n\n`);
+      }, 25_000);
+      res.on("close", () => clearInterval(heartbeat));
+      try {
+        await entry.transport.handleRequest(req, res);
+      } catch {
+        clearInterval(heartbeat);
+        if (!res.headersSent) res.status(500).json({ error: "internal_error" });
+      }
+      return;
+    }
+
+    // Session-less stream (claude.ai opens this before/without a session —
+    // a 405 here trips its fatal capability toast, claude-code#78193).
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -398,11 +551,30 @@ export async function startHttpServer(config: Config): Promise<void> {
     res.on("close", () => clearInterval(heartbeat));
   });
 
-  // Method-not-allowed for /mcp on anything but POST/GET. DELETE is the
-  // spec's session-termination call; we are stateless so 405 is the correct
-  // and spec-sanctioned answer there.
+  // DELETE /mcp — spec session termination. Routes to the session's
+  // transport (which closes it; onclose sweeps the map). Without a known
+  // session there is nothing to terminate: 405, as the spec allows.
+  app.delete("/mcp", requireBearer, async (req: AuthedRequest, res) => {
+    const sid = req.header("mcp-session-id");
+    const entry = sid ? sessions.get(sid) : undefined;
+    if (!sid || !entry) {
+      res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET"] });
+      return;
+    }
+    if (entry.owner !== sessionOwner(req)) {
+      res.status(403).json({ error: "session_owner_mismatch" });
+      return;
+    }
+    try {
+      await entry.transport.handleRequest(req, res);
+    } catch {
+      if (!res.headersSent) res.status(500).json({ error: "internal_error" });
+    }
+  });
+
+  // Method-not-allowed for anything else (PUT, PATCH, ...).
   app.all("/mcp", (_req, res) => {
-    res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET"] });
+    res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET", "DELETE"] });
   });
 
   /**
@@ -428,6 +600,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       // (Statelessness makes multi-worker safe to RUN — it just makes this log
       // partial to READ.)
       pid: process.pid,
+      open_sessions: sessions.size,
       note:
         "In-memory ring buffer, per-process, cleared on restart. If `pid` differs between calls, this box is multi-worker and a missing entry may just live on another worker.",
       returned: recent.length,

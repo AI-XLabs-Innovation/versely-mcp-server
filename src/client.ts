@@ -31,8 +31,18 @@ export class VerselyClient {
 
   constructor(
     private readonly config: Config,
-    private readonly apiKey: string,
+    private apiKey: string,
   ) {}
+
+  /**
+   * Swap the bearer forwarded to the backend. Session-mode transports outlive
+   * a single OAuth access token — claude.ai refreshes the JWT mid-session —
+   * so the HTTP layer re-binds the freshest verified bearer on every request.
+   * Same user (enforced upstream), newer credential.
+   */
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
+  }
 
   async getCurrentUserId(): Promise<string> {
     if (this.#cachedUserId) return this.#cachedUserId;
