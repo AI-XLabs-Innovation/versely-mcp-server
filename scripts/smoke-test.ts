@@ -98,8 +98,30 @@ async function run(): Promise<void> {
   });
   assert("POST /mcp with malformed vsk_ → 401", badToken.status === 401);
 
-  const wrongMethod = await fetch(MCP_URL, { method: "GET" });
-  assert("GET /mcp → 405", wrongMethod.status === 405);
+  // GET /mcp is the streamable-http standalone SSE stream. claude.ai treats a
+  // 405 here as a fatal capability failure (anthropics/claude-code#78193), so
+  // the server now serves a keepalive stream: unauthenticated GETs still hit
+  // the bearer gate, authenticated ones get 200 + text/event-stream held open.
+  const getNoAuth = await fetch(MCP_URL, { method: "GET" });
+  assert("GET /mcp without auth → 401", getNoAuth.status === 401);
+
+  const sseAbort = new AbortController();
+  const getSse = await fetch(MCP_URL, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${TOKEN}` },
+    signal: sseAbort.signal,
+  });
+  assert("GET /mcp with auth → 200 SSE stream", getSse.status === 200);
+  assert(
+    "GET /mcp content-type is text/event-stream",
+    (getSse.headers.get("content-type") ?? "").startsWith("text/event-stream"),
+    `got ${getSse.headers.get("content-type")}`,
+  );
+  // The stream is intentionally never-ending — abort it so the test can exit.
+  sseAbort.abort();
+
+  const wrongMethod = await fetch(MCP_URL, { method: "DELETE", headers: { Authorization: `Bearer ${TOKEN}` } });
+  assert("DELETE /mcp → 405", wrongMethod.status === 405);
 
   // -------- MCP handshake via SDK client --------
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
