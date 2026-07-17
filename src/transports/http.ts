@@ -35,6 +35,57 @@ function logLine(record: Record<string, unknown>): void {
   process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), ...record }) + "\n");
 }
 
+// --- Request recorder --------------------------------------------------------
+// Every "Unable to reach versely-mcp" report so far has been diagnosed by
+// guesswork, because the one fact that splits the problem in half was never
+// available: DID THE REQUEST EVEN ARRIVE?
+//
+//   arrived + 200  -> the server did its job; the client discarded the answer
+//   arrived + 4xx/5xx -> ours, and the record says exactly why
+//   never arrived  -> nothing server-side can fix it
+//
+// stderr already logs this, but reading it needs SSH into the box. This keeps
+// the last N in memory and serves them over HTTP so a failure can be inspected
+// within seconds of happening. Bounded, no bodies, no tokens — safe to leave on.
+
+interface McpCallRecord {
+  ts: string;
+  request_id: string;
+  /** JSON-RPC method claude.ai asked for (initialize / tools/call / ...). */
+  rpc_method?: string;
+  /** Tool name when rpc_method is tools/call — the thing that actually failed. */
+  tool?: string;
+  status: number;
+  duration_ms: number;
+  /** How the caller authenticated. Never the token itself. */
+  auth: "api_key" | "oauth_jwt" | "none" | "invalid";
+  accept?: string;
+  user_agent?: string;
+  error?: string;
+}
+
+const MCP_CALL_LOG_MAX = 100;
+const mcpCallLog: McpCallRecord[] = [];
+
+function recordMcpCall(rec: McpCallRecord): void {
+  mcpCallLog.push(rec);
+  if (mcpCallLog.length > MCP_CALL_LOG_MAX) mcpCallLog.shift();
+}
+
+/** Pull the JSON-RPC method / tool name out of a request body, batch or single. */
+function describeRpc(body: unknown): { rpc_method?: string; tool?: string } {
+  const one = Array.isArray(body) ? body[0] : body;
+  if (!one || typeof one !== "object") return {};
+  const o = one as Record<string, unknown>;
+  const rpc_method = typeof o.method === "string" ? o.method : undefined;
+  const params = o.params as Record<string, unknown> | undefined;
+  const tool =
+    rpc_method === "tools/call" && params && typeof params.name === "string"
+      ? params.name
+      : undefined;
+  return { ...(rpc_method ? { rpc_method } : {}), ...(tool ? { tool } : {}) };
+}
+
 function requestLogger(req: Request, res: Response, next: NextFunction): void {
   const start = Date.now();
   const requestId = newRequestId();
@@ -160,6 +211,32 @@ export async function startHttpServer(config: Config): Promise<void> {
   app.post("/mcp", requireBearer, async (req: AuthedRequest, res) => {
     const apiKey = req.apiKey!;
     const requestId = (res.locals as ResLocals).requestId;
+
+    // Record every call that reaches us, with the outcome we actually produced.
+    // Registered before any work so a throw or a client disconnect still lands.
+    const startedAt = Date.now();
+    const rpc = describeRpc(req.body);
+    let recorded = false;
+    const finalize = (error?: string) => {
+      if (recorded) return;
+      recorded = true;
+      recordMcpCall({
+        ts: new Date().toISOString(),
+        request_id: requestId,
+        ...rpc,
+        status: res.statusCode,
+        duration_ms: Date.now() - startedAt,
+        auth: req.oauthClaims ? "oauth_jwt" : "api_key",
+        accept: req.header("accept"),
+        user_agent: req.header("user-agent"),
+        ...(error ? { error } : {}),
+      });
+    };
+    res.on("finish", () => finalize());
+    // 'close' without 'finish' means the caller hung up before we answered —
+    // exactly the shape a severed/abandoned request leaves behind.
+    res.on("close", () => finalize(res.writableEnded ? undefined : "client_disconnected_before_response"));
+
     const client = new VerselyClient(config, apiKey);
     const server = buildServer(config, client);
     const transport = new StreamableHTTPServerTransport({
@@ -193,6 +270,31 @@ export async function startHttpServer(config: Config): Promise<void> {
   // Method-not-allowed for /mcp on anything but POST.
   app.all("/mcp", (_req, res) => {
     res.status(405).json({ error: "method_not_allowed", allow: ["POST"] });
+  });
+
+  /**
+   * GET /debug/recent-calls — the last N MCP calls that REACHED this server.
+   *
+   * Answers the question that splits "Unable to reach versely-mcp" in half:
+   * if the failing call is listed with status 200, the server answered and the
+   * client dropped it; if it isn't listed at all, the request never arrived and
+   * no server change can help. Bearer-gated (same rule as /mcp) because the
+   * tool names reveal usage. Carries no bodies and no tokens.
+   */
+  app.get("/debug/recent-calls", requireBearer, (req: AuthedRequest, res) => {
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "50"), 10) || 50, 1), MCP_CALL_LOG_MAX);
+    const recent = mcpCallLog.slice(-limit).reverse();
+    res.json({
+      server: SERVER_NAME,
+      version: SERVER_VERSION,
+      uptime_s: Math.floor((Date.now() - PROCESS_START_MS) / 1000),
+      // Restarts wipe this — say so, or an empty list reads as "nothing arrived"
+      // when it may just mean the process recycled.
+      note: "In-memory ring buffer; cleared on restart. Absence of a call means it never reached this process.",
+      returned: recent.length,
+      total_seen: mcpCallLog.length,
+      calls: recent,
+    });
   });
 
   // Final error handler — anything that escapes route handlers ends up here.
