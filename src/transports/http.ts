@@ -351,9 +351,58 @@ export async function startHttpServer(config: Config): Promise<void> {
     }
   });
 
-  // Method-not-allowed for /mcp on anything but POST.
+  /**
+   * GET /mcp — the streamable-http "standalone SSE stream".
+   *
+   * The spec makes this stream optional and explicitly permits answering 405.
+   * claude.ai's client does not honor that: it opens this GET on every
+   * capability refresh, and when the answer is 405 it marks the WHOLE
+   * connector's capabilities as failed — the "Client server capabilities not
+   * available" toast (anthropics/claude-code#78193). With capabilities down,
+   * the MCP Apps bridge refuses the media card's tools/call polls, and every
+   * refused poll renders in chat as "Unable to reach versely-mcp" — while the
+   * POSTs all return 200 and the generations run fine. The 405 we used to
+   * send from the catch-all below was the first domino.
+   *
+   * So: accept the stream. We have no server→client notifications to push,
+   * so this is a keepalive-only stream — SSE comment lines (":" prefix),
+   * which clients must ignore by spec. That satisfies the client without
+   * inventing traffic. Recorded in the ring buffer as rpc_method "GET /mcp"
+   * so /debug/recent-calls finally shows whether claude.ai's GETs reach us
+   * at all, or die earlier at Anthropic's proxy / Cloudflare.
+   */
+  app.get("/mcp", requireBearer, (req: AuthedRequest, res) => {
+    recordMcpCall({
+      ts: new Date().toISOString(),
+      request_id: (res.locals as ResLocals).requestId,
+      rpc_method: "GET /mcp (sse stream)",
+      status: 200,
+      duration_ms: 0,
+      auth: req.oauthClaims ? "oauth_jwt" : "api_key",
+      accept: req.header("accept"),
+      user_agent: req.header("user-agent"),
+      ...(req.header("mcp-session-id") ? { session_id: req.header("mcp-session-id") } : {}),
+    });
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    // Tell nginx not to buffer this response — buffered SSE never flushes,
+    // which the client experiences as a hang instead of an open stream.
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+    res.write(": versely-mcp standalone sse stream (keepalive only)\n\n");
+    const heartbeat = setInterval(() => {
+      res.write(`: keepalive ${Date.now()}\n\n`);
+    }, 25_000);
+    res.on("close", () => clearInterval(heartbeat));
+  });
+
+  // Method-not-allowed for /mcp on anything but POST/GET. DELETE is the
+  // spec's session-termination call; we are stateless so 405 is the correct
+  // and spec-sanctioned answer there.
   app.all("/mcp", (_req, res) => {
-    res.status(405).json({ error: "method_not_allowed", allow: ["POST"] });
+    res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET"] });
   });
 
   /**
