@@ -14,6 +14,19 @@ export interface Config {
   oauthIssuer: string;
   resourceUrl: string;          // canonical URL of this resource (audience claim)
   authServerUrl: string;        // base URL of the OAuth authorization server
+  /**
+   * Kill switch for the MCP Apps media cards (MCP_DISABLE_APPS_UI=1).
+   *
+   * claude.ai's connector proxy 405s the client's capability-refresh GET
+   * before it reaches this server (anthropics/claude-code#78193). When that
+   * lands, claude.ai marks the connector's capabilities dead and every
+   * *interactive* tool result — even ones answered 200 — renders as an
+   * "Unable to reach versely-mcp" error chip, because the card iframe can't
+   * hydrate. Plain (non-interactive) results keep rendering through the same
+   * outage. This flag strips the ui declarations so results degrade to the
+   * ordinary render path until Anthropic fixes the client.
+   */
+  disableAppsUi: boolean;
 }
 
 export const SERVER_NAME = "versely-mcp";
@@ -74,6 +87,7 @@ export function loadConfig(): Config {
     oauthIssuer,
     resourceUrl,
     authServerUrl,
+    disableAppsUi: parseBool("MCP_DISABLE_APPS_UI"),
   };
   return cached;
 }
@@ -93,6 +107,11 @@ function isValidHttpUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function parseBool(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
 }
 
 function parsePositiveInt(name: string, fallback: number): number {

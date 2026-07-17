@@ -38,17 +38,25 @@ export function buildServer(config: Config, client: VerselyClient): Server {
   // resources/read to fetch the iframe HTML. `extensions` is a typed key in
   // ServerCapabilitiesSchema (Record<string, object>), so the namespaced
   // sub-key passes through verbatim.
+  // MCP_DISABLE_APPS_UI: strip every Apps surface (extension capability,
+  // tool _meta.ui, ui:// resources) so hosts treat all tools as ordinary
+  // non-interactive tools. See Config.disableAppsUi for why this exists.
+  const appsUi = !config.disableAppsUi;
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       capabilities: {
         tools: {},
         resources: {},
-        extensions: {
-          "io.modelcontextprotocol/ui": {
-            mimeTypes: [UI_MIME_TYPE],
-          },
-        },
+        ...(appsUi
+          ? {
+              extensions: {
+                "io.modelcontextprotocol/ui": {
+                  mimeTypes: [UI_MIME_TYPE],
+                },
+              },
+            }
+          : {}),
       },
     },
   );
@@ -64,7 +72,7 @@ export function buildServer(config: Config, client: VerselyClient): Server {
       // MCP Apps (SEP-1865): if the tool declares a UI template, surface its
       // `_meta` so the host can fetch the linked `ui://` resource and render
       // it inline. Hosts without MCP Apps support ignore this field.
-      ...(t.meta ? { _meta: t.meta } : {}),
+      ...(appsUi && t.meta ? { _meta: t.meta } : {}),
     })),
   }));
 
@@ -96,7 +104,7 @@ export function buildServer(config: Config, client: VerselyClient): Server {
   // declared in a tool's `_meta.ui.resourceUri`. The resource's own _meta
   // carries `ui.csp` (and `ui.permissions` if needed) per spec.
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: UI_RESOURCES.map((r) => ({
+    resources: (appsUi ? UI_RESOURCES : []).map((r) => ({
       uri: r.uri,
       name: r.name,
       description: r.description,
