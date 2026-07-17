@@ -363,35 +363,68 @@ export async function startHttpServer(config: Config): Promise<void> {
 
     const sid = req.header("mcp-session-id");
 
+    // One-shot serving: ephemeral stateless transport, torn down with the
+    // response. Used for clients that never adopted a session AND as the
+    // graceful path for stale session ids (see below). Stateless transports
+    // don't validate the Mcp-Session-Id header, so a stale id rides along
+    // harmlessly; auth is per-request either way.
+    const serveOneShot = async (): Promise<void> => {
+      const client = new VerselyClient(config, apiKey);
+      const server = buildServer(config, client);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      let closed = false;
+      res.on("close", () => {
+        if (closed) return;
+        closed = true;
+        transport.close().catch(() => {});
+        server.close().catch(() => {});
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    };
+
     try {
       // --- Established session: route to its long-lived transport. ---------
       if (sid) {
         const entry = sessions.get(sid);
         if (!entry) {
-          // Expired, evicted, or minted by a previous process. 404 is the
-          // spec's signal for "session gone, re-initialize" — SDK clients
-          // (and claude.ai) recover by starting a fresh handshake.
-          finalize("session_not_found");
-          res.status(404).json({
-            jsonrpc: "2.0",
-            error: { code: -32001, message: "Session not found; re-initialize" },
-            id: null,
-          });
+          // Stale session: expired, evicted, or minted by a process that has
+          // since restarted (every deploy wipes the in-memory map). The spec
+          // says 404 "re-initialize" — but claude.ai surfaces that as a
+          // fatal "MCP session has been terminated" toast and fails the
+          // in-flight tool call instead of quietly re-initializing. The
+          // session id carries no authority (every request is bearer-authed
+          // on its own), so the graceful move is to just SERVE the call
+          // statelessly. The client keeps believing in its session; every
+          // call still works; deploys become invisible.
+          //
+          // An initialize with a stale id still mints a fresh session below
+          // by falling through — the client is explicitly starting over.
+          if (isInitializeBody(req.body)) {
+            // fall through to the initialize branch (fresh session)
+          } else {
+            finalize("stale_session_served_one_shot");
+            await serveOneShot();
+            return;
+          }
+        } else {
+          if (entry.owner !== sessionOwner(req)) {
+            // Valid bearer, wrong user: someone is replaying another user's
+            // session id. Refuse rather than serving them that user's session.
+            finalize("session_owner_mismatch");
+            res.status(403).json({ error: "session_owner_mismatch" });
+            return;
+          }
+          entry.lastSeenMs = Date.now();
+          // Re-bind the freshest verified bearer — OAuth tokens rotate
+          // mid-session and the backend must see a live one.
+          entry.client.setApiKey(apiKey);
+          await entry.transport.handleRequest(req, res, req.body);
           return;
         }
-        if (entry.owner !== sessionOwner(req)) {
-          // Valid bearer, wrong user: someone is replaying another user's
-          // session id. Refuse rather than serving them that user's session.
-          finalize("session_owner_mismatch");
-          res.status(403).json({ error: "session_owner_mismatch" });
-          return;
-        }
-        entry.lastSeenMs = Date.now();
-        // Re-bind the freshest verified bearer — OAuth tokens rotate
-        // mid-session and the backend must see a live one.
-        entry.client.setApiKey(apiKey);
-        await entry.transport.handleRequest(req, res, req.body);
-        return;
       }
 
       // --- No session yet + initialize: mint one. ---------------------------
@@ -440,21 +473,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       // --- Legacy one-shot: no session id, non-initialize call. ------------
       // Some clients never echo Mcp-Session-Id; they keep the original
       // stateless contract — ephemeral server, torn down with the response.
-      const client = new VerselyClient(config, apiKey);
-      const server = buildServer(config, client);
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
-      let closed = false;
-      res.on("close", () => {
-        if (closed) return;
-        closed = true;
-        transport.close().catch(() => {});
-        server.close().catch(() => {});
-      });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      await serveOneShot();
     } catch (err) {
       logLine({
         level: "error",
@@ -505,16 +524,12 @@ export async function startHttpServer(config: Config): Promise<void> {
     // Session-bound stream: hand it to the session's transport so real
     // server→client notifications can ride it. A heartbeat comment keeps
     // nginx/Cloudflare from idling the connection out between events.
-    if (sid) {
-      const entry = sessions.get(sid);
-      if (!entry) {
-        res.status(404).json({
-          jsonrpc: "2.0",
-          error: { code: -32001, message: "Session not found; re-initialize" },
-          id: null,
-        });
-        return;
-      }
+    // A STALE session id (post-restart, expired) falls through to the plain
+    // keepalive stream below instead of 404ing — same rationale as POST:
+    // the id carries no authority and a hard failure only produces scary
+    // client toasts.
+    if (sid && sessions.has(sid)) {
+      const entry = sessions.get(sid)!;
       if (entry.owner !== sessionOwner(req)) {
         res.status(403).json({ error: "session_owner_mismatch" });
         return;
@@ -556,9 +571,15 @@ export async function startHttpServer(config: Config): Promise<void> {
   // session there is nothing to terminate: 405, as the spec allows.
   app.delete("/mcp", requireBearer, async (req: AuthedRequest, res) => {
     const sid = req.header("mcp-session-id");
-    const entry = sid ? sessions.get(sid) : undefined;
-    if (!sid || !entry) {
+    if (!sid) {
       res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET"] });
+      return;
+    }
+    const entry = sessions.get(sid);
+    if (!entry) {
+      // Deleting a session that's already gone (restart, sweep) is a no-op
+      // success — the client wanted it dead and it is.
+      res.status(200).json({ ok: true, note: "session already terminated" });
       return;
     }
     if (entry.owner !== sessionOwner(req)) {
