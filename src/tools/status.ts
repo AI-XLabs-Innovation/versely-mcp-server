@@ -3,7 +3,6 @@ import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult, extractMediaAssets } from "./_helpers.js";
 import { pollStatus } from "../poller.js";
 import {
-  metaForMediaCard,
   buildMediaCardPayload,
   type MediaKind,
 } from "../ui/templates.js";
@@ -117,8 +116,18 @@ function classifyStatus(data: unknown): "pending" | "completed" | "failed" {
 const versely_get_task_status = defineTool({
   name: "versely_get_task_status",
   description:
-    "Get the current status of an async generation task by request_id (single, non-blocking lookup). When the task is complete and has produced media, the result also hydrates the inline media card.",
-  meta: metaForMediaCard(),
+    "Get the current status of an async generation task by request_id (single, non-blocking lookup). " +
+    "NOTE: on hosts that render inline media cards, the generation tool's own card already polls and " +
+    "displays the finished media BY ITSELF — do not call this in a rapid loop just to show the user " +
+    "progress. Call it when you actually need the asset URLs (e.g. as reference input for a next step), " +
+    "and space calls out by ~15-30s.",
+  // Deliberately NO metaForMediaCard() here. The generating tool's card is
+  // the single visual for a task; when this tool also declared the card,
+  // every model-initiated status poll spawned ANOTHER card in chat, frozen
+  // at "Generating… 0:00" (pending status payloads carry no poll
+  // instruction, so those extra cards never update). The iframe's own poll
+  // loop is unaffected: it calls this tool over the postMessage bridge and
+  // reads structuredContent directly — tool _meta plays no part there.
   inputSchema: z.object({
     request_id: z
       .string()
@@ -177,7 +186,15 @@ const versely_get_task_status = defineTool({
           ? obj.percent
           : undefined;
     return {
-      content: [{ type: "text", text: `Task ${input.request_id} still pending.` }],
+      content: [
+        {
+          type: "text",
+          text:
+            `Task ${input.request_id} still pending. The user's inline media card (if shown) updates ` +
+            `by itself — no need to re-check just for display. If you need the result URLs, check ` +
+            `again in ~15-30 seconds.`,
+        },
+      ],
       structuredContent: {
         status: "pending",
         task_id: input.request_id,
