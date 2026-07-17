@@ -182,12 +182,31 @@ export interface MediaResultOpts {
 const INLINE_PREVIEW_ENABLED =
   (process.env.VERSELY_INLINE_IMAGE_PREVIEW ?? "true").toLowerCase() !== "false";
 const MAX_INLINE_IMAGES = 4;
-const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Per-image and whole-response ceilings for inlined previews.
+ *
+ * These were 5MB/image with no total cap, which let a single tool result carry
+ * 4 x 5MB = 20MB raw, ~27MB once base64 expands it. Real generations hit that:
+ * a Midjourney result is 4 PNGs of ~1.9MB each = 7.5MB raw -> ~10MB of base64
+ * in ONE get_task_status response. Hosts reject a payload that size, and the
+ * rejection surfaces to the user as "Unable to reach versely-mcp" — the server
+ * looks down when it actually answered, and the generation is already paid for.
+ * A single-image result (~250KB) sailed through, which is why this looked
+ * random rather than like a size limit.
+ *
+ * The inline copy is a CONVENIENCE — it lets the model see the pixels and
+ * covers hosts where the iframe fails. The URLs are always in the text and in
+ * structuredContent, so skipping an oversized image costs nothing that matters.
+ * Budgets are deliberately well under any plausible host limit.
+ */
+const MAX_INLINE_IMAGE_BYTES = 750_000;
+const MAX_INLINE_TOTAL_BYTES = 1_500_000;
 const INLINE_FETCH_TIMEOUT_MS = 8_000;
 
 async function fetchImageAsBase64(
   url: string,
-): Promise<{ data: string; mimeType: string } | null> {
+): Promise<{ data: string; mimeType: string; bytes: number } | null> {
   try {
     const res = await fetch(url, {
       signal: AbortSignal.timeout(INLINE_FETCH_TIMEOUT_MS),
@@ -195,9 +214,16 @@ async function fetchImageAsBase64(
     if (!res.ok) return null;
     const contentType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
     if (!contentType.startsWith("image/")) return null;
+    // Bail on the declared size before buffering, so an oversized asset doesn't
+    // get pulled into memory only to be discarded.
+    const declared = Number(res.headers.get("content-length") ?? "");
+    if (Number.isFinite(declared) && declared > MAX_INLINE_IMAGE_BYTES) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length === 0 || buf.length > MAX_INLINE_IMAGE_BYTES) return null;
-    return { data: buf.toString("base64"), mimeType: contentType };
+    // `bytes` is the base64 length — the thing that actually travels in the
+    // response — not the raw byte count.
+    const data = buf.toString("base64");
+    return { data, mimeType: contentType, bytes: data.length };
   } catch {
     // Network error, timeout, CSP, signed-URL expiry — degrade gracefully.
     return null;
@@ -240,8 +266,35 @@ export async function mediaResult(
       .map((a) => a.url);
     if (imageUrls.length > 0) {
       const fetched = await Promise.all(imageUrls.map(fetchImageAsBase64));
+      // Enforce a budget across the WHOLE response, not just per image. Four
+      // images each under the per-image cap still add up to a payload the host
+      // will refuse, and a refused response is indistinguishable from an
+      // unreachable server.
+      let budget = MAX_INLINE_TOTAL_BYTES;
+      let skipped = 0;
       for (const img of fetched) {
-        if (img) content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+        if (!img) {
+          // fetchImageAsBase64 returned null: over the per-image cap, wrong
+          // content-type, or a network failure.
+          skipped++;
+          continue;
+        }
+        if (img.bytes > budget) {
+          skipped++;
+          continue;
+        }
+        budget -= img.bytes;
+        content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+      }
+      if (skipped > 0) {
+        // Say so rather than letting the model believe it saw everything and
+        // describe images that were never attached.
+        content.push({
+          type: "text",
+          text:
+            `(${skipped} of ${imageUrls.length} image${imageUrls.length === 1 ? "" : "s"} not shown inline — too large to attach. ` +
+            `Open the URL${imageUrls.length === 1 ? "" : "s"} above to view ${imageUrls.length === 1 ? "it" : "them"}.)`,
+        });
       }
     }
   }
