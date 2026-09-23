@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
+import { SYNC_TIMEOUT_MS } from "../client.js";
 import { metaForMediaCard } from "../ui/templates.js";
 
 /**
@@ -23,6 +24,9 @@ const versely_create_slideshow = defineTool({
   description:
     "Create a slideshow by generating multiple AI images from a prompt (no automation, no overlays).",
   meta: metaForMediaCard(),
+  // Only a fixed set of non-RunPod image models works here, so the plugin
+  // hides the picker and the backend default applies.
+  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       prompt: z.string(),
@@ -51,7 +55,9 @@ const versely_create_slideshow = defineTool({
     // Backend counts with num_images; a bare `n` was read nowhere, so every
     // slideshow silently generated (and charged for) the 5-image default.
     if (body.num_images === undefined && n !== undefined) body.num_images = n;
-    const data = await ctx.client.post("/api/v1/slideshow/create", body);
+    const data = await ctx.client.post("/api/v1/slideshow/create", body, {
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
     return mediaResult(data, {
       kind: "gallery",
       toolName: "versely_create_slideshow",
@@ -66,6 +72,9 @@ const versely_create_automated_slideshow = defineTool({
   description:
     "Full automation: AI plans the slideshow, generates the images, and burns text overlays in one request.",
   meta: metaForMediaCard(),
+  // Only a fixed set of non-RunPod image models works here, so the plugin
+  // hides the picker and the backend default applies.
+  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       prompt: z
@@ -110,7 +119,9 @@ const versely_create_automated_slideshow = defineTool({
     if (typeof body.prompt !== "string" || !body.prompt.trim()) {
       throw new Error("`prompt` is required (the legacy `topic` field is accepted as an alias).");
     }
-    const data = await ctx.client.post("/api/v1/slideshow/create-automated", body);
+    const data = await ctx.client.post("/api/v1/slideshow/create-automated", body, {
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
     return mediaResult(data, {
       kind: "gallery",
       toolName: "versely_create_automated_slideshow",
@@ -188,6 +199,9 @@ const versely_add_slideshow_images = defineTool({
   name: "versely_add_slideshow_images",
   description: "Generate and append more AI images to an existing slideshow.",
   meta: metaForMediaCard(),
+  // Only a fixed set of non-RunPod image models works here, so the plugin
+  // hides the picker and the backend default applies.
+  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -218,6 +232,7 @@ const versely_add_slideshow_images = defineTool({
     const data = await ctx.client.post(
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/images`,
       body,
+      { timeoutMs: SYNC_TIMEOUT_MS },
     );
     return mediaResult(data, {
       kind: "gallery",
@@ -291,6 +306,7 @@ const versely_add_text_overlay = defineTool({
     const data = await ctx.client.post(
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/text-overlay`,
       body,
+      { timeoutMs: SYNC_TIMEOUT_MS },
     );
     return mediaResult(data, {
       kind: "gallery",
@@ -342,12 +358,14 @@ const versely_slideshow_to_video = defineTool({
     const data = await ctx.client.post(
       `/api/v1/slideshow/${encodeURIComponent(slideshow_id)}/video`,
       body,
+      { timeoutMs: SYNC_TIMEOUT_MS },
     );
     return mediaResult(data, {
       kind: "video",
       toolName: "versely_slideshow_to_video",
       toolArgs: input,
-      extra: { aspect_ratio: input.aspect_ratio, duration_seconds: input.duration_per_slide_seconds },
+      // No duration chip: the per-slide hold time shown as "3s" read as the video's length.
+      extra: { aspect_ratio: input.aspect_ratio },
     });
   },
 });

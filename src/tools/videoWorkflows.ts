@@ -100,7 +100,8 @@ const versely_get_video_workflow_run = defineTool({
   name: "versely_get_video_workflow_run",
   description:
     "Fetch a video-workflow run's status, including per-scene progress. Response is translated into a MediaCardPayload (pending / completed / failed) so the iframe poll loop can update the card in place — this is the tool the iframe self-polls during a run.",
-  meta: metaForMediaCard(),
+  // Visible to the app too: the card's own poll loop calls this tool.
+  meta: metaForMediaCard({ app: true }),
   inputSchema: z.object({
     run_id: z.string().describe("Run UUID."),
   }),
@@ -108,12 +109,15 @@ const versely_get_video_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/video-workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
+    // includePoll: a model-initiated check renders a new card, which must be
+    // able to follow the run (the iframe's own loop ignores `poll` here).
     return workflowRunToCardPayload(data, {
       runId: input.run_id,
       toolName: "versely_get_video_workflow_run",
       toolArgs: { run_id: input.run_id },
       pollTool: "versely_get_video_workflow_run",
       pollArgKey: "run_id",
+      includePoll: true,
     });
   },
 });

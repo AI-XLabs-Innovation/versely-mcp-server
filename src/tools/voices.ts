@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { defineTool, type Tool } from "./_types.js";
+import { defineTool, defineVariant, type Tool } from "./_types.js";
 import type { ToolContext } from "./_types.js";
 import { jsonResult } from "./_helpers.js";
+import { loadPluginCatalog, type PluginModel } from "./_pluginCatalog.js";
 
 // versely_list_voices exposes every voice catalog the backend knows about so
 // the LLM never has to ask the user for an ElevenLabs / Cartesia / Inworld /
@@ -685,6 +686,82 @@ function matchesFilters(
   return true;
 }
 
+// --- openai profile: RunPod TTS voices only ---
+//
+// The plugin only offers RunPod-served voiceover models, so it only lists
+// their voices. The plugin catalog carries them per model (contract 5); until
+// the backend serves it, the Minimax Speech catalog above — the RunPod TTS —
+// stands in.
+
+/** RunPod's TTS model when the plugin catalog isn't available to name it. */
+const RUNPOD_TTS_FALLBACK_MODEL = "Minimax Speech";
+
+function voiceFieldFor(model: PluginModel): "voice" | "voice_id" {
+  const names = new Set(model.params.map((p) => p?.name));
+  if (names.has("voice_id")) return "voice_id";
+  if (names.has("voice")) return "voice";
+  return "voice_id";
+}
+
+const LIST_VOICES_OPENAI = defineVariant({
+  description:
+    "List the voices available for voiceovers (versely_generate_audio). Pick a voice yourself — never ask the " +
+    "user for a voice id — and pass its `id` (not its name) in the field named by `voice_field`. Filter with " +
+    "`query` (matches id, name, language, gender), `language` or `gender`.",
+  inputSchema: z.object({
+    query: z.string().optional().describe("Case-insensitive text to match in id, name, language or gender."),
+    language: z.string().optional().describe("Filter by language, e.g. 'English' or 'Spanish'."),
+    gender: z.string().optional().describe("Filter by gender ('male' / 'female')."),
+    limit: z.number().int().positive().max(100).optional().describe("Max voices to return. Default 25, max 100."),
+    offset: z.number().int().nonnegative().optional().describe("Pagination offset. Default 0."),
+  }),
+  handler: async (input, ctx) => {
+    const listing = await loadPluginCatalog(ctx, "audio");
+    const withVoices = listing.available
+      ? listing.models.filter((m) => Array.isArray(m.voices) && m.voices.length > 0)
+      : [];
+
+    let voices: NormalizedVoice[];
+    let models: Array<{ model: string; voice_field: "voice" | "voice_id" }>;
+    if (withVoices.length > 0) {
+      const multi = withVoices.length > 1;
+      voices = withVoices.flatMap((m) =>
+        (m.voices ?? []).map((v) => ({
+          id: String(v.id),
+          name: String(v.name ?? v.id),
+          ...(v.language ? { language: v.language } : {}),
+          ...(v.gender ? { gender: v.gender } : {}),
+          ...(multi ? { model: m.name } : {}),
+        })),
+      );
+      models = withVoices.map((m) => ({ model: m.name, voice_field: voiceFieldFor(m) }));
+    } else {
+      voices = MINIMAX_VOICES;
+      models = [{ model: RUNPOD_TTS_FALLBACK_MODEL, voice_field: "voice_id" }];
+    }
+
+    const limit = Math.min(input.limit ?? 25, 100);
+    const offset = input.offset ?? 0;
+    const matched = voices.filter((v) =>
+      matchesFilters(v, { query: input.query, language: input.language, gender: input.gender }),
+    );
+    const page = matched.slice(offset, offset + limit);
+    const first = models[0]!;
+    return jsonResult({
+      models,
+      voice_field: first.voice_field,
+      usage:
+        `Pass the chosen voice's \`id\` as \`${first.voice_field}\` to versely_generate_audio with model "${first.model}"` +
+        (models.length > 1 ? " (or the model named on the voice)." : "."),
+      total_matched: matched.length,
+      returned: page.length,
+      offset,
+      has_more: offset + page.length < matched.length,
+      voices: page,
+    });
+  },
+});
+
 // --- Tool ---
 
 const versely_list_voices = defineTool({
@@ -809,6 +886,7 @@ const versely_list_voices = defineTool({
 
     return jsonResult(payload);
   },
+  openai: LIST_VOICES_OPENAI,
 });
 
 export const voiceTools: Tool[] = [versely_list_voices];

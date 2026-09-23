@@ -13,7 +13,8 @@ import { debugTools } from "./debug.js";
 import { voiceTools } from "./voices.js";
 import { dubbingTools } from "./dubbing.js";
 
-export const allTools: Tool[] = [
+/** Every tool users can be offered (subject to their profile — see _policy.ts). */
+export const standardTools: Tool[] = [
   ...userTools,
   ...generateTools,
   ...slideshowTools,
@@ -26,5 +27,17 @@ export const allTools: Tool[] = [
   ...videoWorkflowTools,
   ...voiceTools,
   ...dubbingTools,
-  ...debugTools,
 ];
+
+export { debugTools };
+
+/**
+ * Every tool DEFINED, registered or not. The policy table is checked against
+ * this, so a row for the (normally unregistered) debug tool is still valid.
+ */
+export const allToolDefinitions: Tool[] = [...standardTools, ...debugTools];
+
+/** What the server registers: debug tools only with MCP_ENABLE_DEBUG_TOOLS=1. */
+export function registeredTools(opts: { enableDebugTools: boolean }): Tool[] {
+  return opts.enableDebugTools ? allToolDefinitions : standardTools;
+}

@@ -15,8 +15,20 @@ import {
  * generation tables. A dub lives in `dubbing_projects` and has no row there,
  * so a status poll on a project id 404s forever. versely_get_dub is the only
  * completion path — which is also why the pending card below overrides
- * pendingMediaResult's default summary (it names wait_for_task).
+ * pendingMediaResult's default summary (it names the generic status tool).
  */
+
+const DUB_POLL_INTERVAL_MS = 10_000;
+const DUB_POLL_TIMEOUT_MS = 1_800_000;
+
+function dubPoll(projectId: string) {
+  return {
+    tool_name: "versely_get_dub",
+    args: { project_id: projectId },
+    interval_ms: DUB_POLL_INTERVAL_MS,
+    timeout_ms: DUB_POLL_TIMEOUT_MS,
+  };
+}
 
 // ISO-639-1/3 + optional region, matching LANG_RE in dubbingStudio.controller.ts.
 const LangCode = z
@@ -94,6 +106,8 @@ function cardForProject(project: DubProject): ToolResult {
     return {
       content: [{ type: "text", text: `Dubbing project ${project.id} failed: ${err}` }],
       structuredContent: {
+        kind,
+        assets: [],
         status: "failed",
         task_id: project.id,
         error: String(err),
@@ -130,19 +144,28 @@ function cardForProject(project: DubProject): ToolResult {
   }
 
   // queued / preparing / dubbing / downloading — or 'dubbed' with no media yet.
+  // Carries a full pending card (kind + poll instruction): get_dub declares
+  // the card, so a model-initiated check renders a NEW card, and without a
+  // poll instruction that card froze at its first frame (same bug as
+  // get_task_status, d8e8fd5). The iframe's own poll loop ignores `poll` on
+  // responses, so this is harmless there.
   return {
     content: [
       {
         type: "text",
         text:
           `Dubbing project ${project.id} is still ${status || "processing"} and is NOT finished. ` +
-          `Call versely_get_dub with project_id="${project.id}" again to check. ` +
+          `The inline card (if shown) updates by itself; if you need the result, call versely_get_dub ` +
+          `with project_id="${project.id}" again in a minute or two. ` +
           `Do not describe this as complete until it returns a result URL.`,
       },
     ],
     structuredContent: {
+      kind,
+      assets: [],
       status: "pending",
       task_id: project.id,
+      poll: dubPoll(project.id),
       raw: project,
     },
   };
@@ -155,9 +178,27 @@ const versely_create_dub = defineTool({
     "Two engines: 'elevenlabs' (default) clones the speaker's voice, handles audio OR video, " +
     "supports trimming and background separation, up to 30 minutes; 'heygen' additionally " +
     "LIP-SYNCS the speaker to the new language but is video-only, has no trimming, is limited " +
-    "to 8 minutes, and costs ~3x more. Returns a project_id — poll it with versely_get_dub " +
-    "(NOT versely_wait_for_task, which cannot see dubbing projects).",
+    "to 8 minutes, and costs ~3x more. Returns a project_id — check it with versely_get_dub " +
+    "(the generic task-status tools cannot see dubbing projects).",
   meta: metaForMediaCard(),
+  // openai: one engine (the default voice-cloning one); engine choice and its
+  // engine-specific options are hidden, and no provider is named.
+  openai: {
+    description:
+      "Dub a Versely-hosted video or audio file into another language, keeping the speaker's voice. " +
+      "Up to 30 minutes; trim with start_time / end_time to dub (and pay for) only part of it. " +
+      "Spends the user's Versely credits. Returns a project_id; the inline card updates itself, or check it " +
+      "with versely_get_dub. Dubbing often takes several minutes.",
+    hide: ["engine", "translate_audio_only", "enable_dynamic_duration"],
+    params: {
+      start_time:
+        "Trim start, in SECONDS. Billing is based on the selected window, so trimming a long source is how you control cost.",
+      end_time: "Trim end, in SECONDS. Must be greater than start_time.",
+      drop_background_audio: "Strip background audio, keeping the dubbed speech alone.",
+      highest_resolution: "Render the dubbed video at the highest available resolution.",
+      watermark: "Watermark the output.",
+    },
+  },
   inputSchema: z
     .object({
       source_url: z
@@ -237,17 +278,18 @@ const versely_create_dub = defineTool({
       pollArgs: { project_id: project.id },
       toolName: "versely_create_dub",
       toolArgs: input as Record<string, unknown>,
-      // pendingMediaResult's default summary points the model at
-      // versely_wait_for_task, which polls /api/v1/status and would 404 on a
-      // dubbing project id forever. Name the right tool instead.
+      // pendingMediaResult's default summary is written for generation jobs
+      // ("video can take several minutes", resubmit warnings keyed to the
+      // generic status flow). Dubs are slower and only visible through
+      // versely_get_dub, so spell that out.
       summary:
         `Dubbing started — project ${project.id} is processing and is NOT finished yet. ` +
         `If an inline preview is shown it will update on its own. Otherwise call ` +
         `versely_get_dub with project_id="${project.id}" to check progress. ` +
         `Dubbing is slow (often several minutes for a long clip). ` +
         `Do not describe this as complete until a poll returns a result URL.`,
-      intervalMs: 10_000,
-      timeoutMs: 1_800_000,
+      intervalMs: DUB_POLL_INTERVAL_MS,
+      timeoutMs: DUB_POLL_TIMEOUT_MS,
       extra: {
         project_id: project.id,
         target_lang: input.target_lang,
@@ -261,8 +303,10 @@ const versely_get_dub = defineTool({
   name: "versely_get_dub",
   description:
     "Get a dubbing project by id — the polling target for versely_create_dub. " +
-    "When the dub has finished, hydrates the inline media card with the dubbed track(s).",
-  meta: metaForMediaCard(),
+    "When the dub has finished, hydrates the inline media card with the dubbed track(s). " +
+    "The dub's card follows progress by itself: only call this when you need the result, a minute or two apart.",
+  // Visible to the app too: the card's own poll loop calls this tool.
+  meta: metaForMediaCard({ app: true }),
   inputSchema: z.object({
     project_id: z.string().describe("The project id returned by versely_create_dub."),
   }),

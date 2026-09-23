@@ -1,16 +1,20 @@
 import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
-import { jsonResult, mediaResult } from "./_helpers.js";
-import { metaForMediaCard } from "../ui/templates.js";
+import { SYNC_TIMEOUT_MS } from "../client.js";
+import { buildMediaCardPayload, metaForMediaCard } from "../ui/templates.js";
 
 const CaptionPosition = z.enum(["top", "middle", "bottom"]);
+
+/** openai wording for the background-removal switch (no provider named). */
+const OPENAI_REMOVE_BACKGROUND = "Remove the overlay video's background before compositing it.";
 
 const versely_add_video_overlay = defineTool({
   name: "versely_add_video_overlay",
   description:
     "Overlay a foreground video (e.g. talking head) on top of a base video, positioned in a corner.",
   meta: metaForMediaCard(),
+  openai: { params: { remove_background: OPENAI_REMOVE_BACKGROUND } },
   inputSchema: z
     .object({
       slideshow_video_url: z
@@ -72,7 +76,9 @@ const versely_add_video_overlay = defineTool({
         "`slideshow_video_url` is required (the legacy `base_video_url` is accepted as an alias).",
       );
     }
-    const submission = await ctx.client.post("/api/v1/ugc/add-video-overlay", body);
+    const submission = await ctx.client.post("/api/v1/ugc/add-video-overlay", body, {
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
     return handleAsync({
       ctx,
       submitResponse: submission,
@@ -115,7 +121,9 @@ const versely_add_captions = defineTool({
     // nowhere, so every caption silently rendered in the default Arial/white.
     if (body.font_family === undefined && font !== undefined) body.font_family = font;
     if (body.font_color === undefined && color !== undefined) body.font_color = color;
-    const submission = await ctx.client.post("/api/v1/ugc/add-captions", body);
+    const submission = await ctx.client.post("/api/v1/ugc/add-captions", body, {
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
     return handleAsync({
       ctx,
       submitResponse: submission,
@@ -170,6 +178,7 @@ const versely_add_timestamped_captions = defineTool({
     const submission = await ctx.client.post(
       "/api/v1/ugc/add-timestamped-captions",
       body,
+      { timeoutMs: SYNC_TIMEOUT_MS },
     );
     return handleAsync({
       ctx,
@@ -192,6 +201,11 @@ const versely_compose_with_overlay = defineTool({
     "`duration_sec` is REQUIRED on every image item (how long it holds). Video items may be trimmed with start_sec/end_sec. " +
     "There is no background-audio parameter on this endpoint — mux audio separately afterwards.",
   meta: metaForMediaCard(),
+  openai: {
+    // Only meaningful with the deprecated media_urls form, which is hidden.
+    hide: ["duration_per_item_seconds"],
+    params: { remove_background: OPENAI_REMOVE_BACKGROUND },
+  },
   inputSchema: z
     .object({
       base_media: z
@@ -296,6 +310,7 @@ const versely_compose_with_overlay = defineTool({
     const submission = await ctx.client.post(
       "/api/v1/ugc/compose-with-overlay",
       body,
+      { timeoutMs: SYNC_TIMEOUT_MS },
     );
     return handleAsync({
       ctx,
@@ -318,11 +333,35 @@ const versely_get_ugc = defineTool({
     ugc_id: z.string(),
   }),
   handler: async (input, ctx) => {
-    const data = await ctx.client.get(
+    const data = await ctx.client.get<{ data?: Record<string, unknown> }>(
       `/api/v1/ugc/${encodeURIComponent(input.ugc_id)}`,
     );
-    // Read-only fetch — no Recreate.
-    return mediaResult(data, { kind: "video" });
+    // The row also carries every INPUT url (base video, overlay, background
+    // image). Walking it for media — as this used to — put the inputs on the
+    // card next to the result, as a gallery. The card shows the result only.
+    const row = (data?.data ?? {}) as Record<string, unknown>;
+    const finalUrl = typeof row.final_video_url === "string" && row.final_video_url.trim()
+      ? row.final_video_url.trim()
+      : null;
+    if (!finalUrl) {
+      const status = typeof row.status === "string" ? row.status : "unknown";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `UGC video ${input.ugc_id} has no finished video yet (status: ${status}).\n${JSON.stringify(data, null, 2)}`,
+          },
+        ],
+      };
+    }
+    const structuredContent = buildMediaCardPayload("video", [{ url: finalUrl, label: "UGC video" }], {
+      status: "completed",
+      task_id: input.ugc_id,
+    });
+    return {
+      content: [{ type: "text", text: `UGC video ${input.ugc_id}:\n${finalUrl}` }],
+      ...(structuredContent ? { structuredContent } : {}),
+    };
   },
 });
 

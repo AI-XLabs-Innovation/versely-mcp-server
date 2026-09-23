@@ -11,6 +11,7 @@ import {
   type MediaKind as UiMediaKind,
   type UiAsset,
 } from "../ui/templates.js";
+import { currentCallContext } from "../requestContext.js";
 
 export function jsonResult(value: unknown): ToolResult {
   return {
@@ -259,7 +260,11 @@ export async function mediaResult(
     { type: "text", text: summarizeAssets(assets, opts.summary) },
   ];
 
-  if (INLINE_PREVIEW_ENABLED) {
+  // The openai profile never ships inline previews (server.ts strips them),
+  // so don't spend up to 8s per image fetching bytes that would be discarded.
+  const wantsInline = INLINE_PREVIEW_ENABLED && currentCallContext()?.profile !== "openai";
+
+  if (wantsInline) {
     const imageUrls = assets
       .filter((a) => a.kind === "image")
       .slice(0, MAX_INLINE_IMAGES)

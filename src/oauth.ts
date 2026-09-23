@@ -30,6 +30,13 @@ export interface AccessTokenClaims {
   iat: number;
   jti: string;
   token_use?: "access";
+  /**
+   * Client kind. The backend signs `ck: "openai"` into tokens it issues to
+   * ChatGPT (an OAuth client whose redirect host is chatgpt.com). Because it is
+   * inside the signature it can't be added or removed by the caller, which is
+   * what makes the openai profile sticky (see profiles.ts). Absent otherwise.
+   */
+  ck?: "openai";
 }
 
 export interface VerifyOptions {

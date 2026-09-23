@@ -19,7 +19,8 @@
     "docs": "tsx scripts/generate-tools-doc.ts",
     "smoke": "npm run build && tsx scripts/smoke-test.ts",
     "clean": "rimraf dist",
-    "preview:card": "tsx scripts/preview-card.ts"
+    "preview:card": "tsx scripts/preview-card.ts",
+    "annotations": "tsx scripts/annotations-report.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

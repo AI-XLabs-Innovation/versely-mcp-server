@@ -1,4 +1,5 @@
 import { VerselyConfigError } from "./errors.js";
+import { parseProfileList, type Profile } from "./profiles.js";
 
 export interface Config {
   apiUrl: string;
@@ -27,6 +28,21 @@ export interface Config {
    * ordinary render path until Anthropic fixes the client.
    */
   disableAppsUi: boolean;
+  /**
+   * MCP_ENABLE_DEBUG_TOOLS=1 registers versely_render_test_card. Off by
+   * default: it is a render-pipeline probe, not something users (or a plugin
+   * reviewer) should find in the tool list.
+   */
+  enableDebugTools: boolean;
+  /**
+   * MCP_ADMIN_TOKEN (>= 32 chars) unlocks GET /debug/recent-calls. Unset — or
+   * too short to be a real secret — and the route answers 404 to everyone.
+   */
+  adminToken: string | null;
+  /** Profiles whose creation tools get the duplicate-call guard (idempotency.ts). */
+  dedupeProfiles: ReadonlySet<Profile>;
+  /** Profiles served the v2 media card; the rest keep v1 byte-for-byte. */
+  cardV2Profiles: ReadonlySet<Profile>;
 }
 
 export const SERVER_NAME = "versely-mcp";
@@ -76,6 +92,8 @@ export function loadConfig(): Config {
     process.env.OAUTH_AUTH_SERVER_URL?.trim() || apiUrl,
   );
 
+  const rawAdminToken = process.env.MCP_ADMIN_TOKEN?.trim() || null;
+
   cached = {
     apiUrl,
     defaultPollTimeoutMs,
@@ -88,6 +106,10 @@ export function loadConfig(): Config {
     resourceUrl,
     authServerUrl,
     disableAppsUi: parseBool("MCP_DISABLE_APPS_UI"),
+    enableDebugTools: parseBool("MCP_ENABLE_DEBUG_TOOLS"),
+    adminToken: rawAdminToken && rawAdminToken.length >= 32 ? rawAdminToken : null,
+    dedupeProfiles: parseProfileList(process.env.MCP_DEDUPE_PROFILES, ["openai"]),
+    cardV2Profiles: parseProfileList(process.env.MCP_CARD_V2_PROFILES, ["openai"]),
   };
   return cached;
 }

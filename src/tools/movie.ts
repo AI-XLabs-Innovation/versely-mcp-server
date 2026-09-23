@@ -2,7 +2,12 @@ import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import type { ToolResult } from "./_types.js";
 import { jsonResult, pendingMediaResult } from "./_helpers.js";
+import { SYNC_TIMEOUT_MS } from "../client.js";
 import { metaForMediaCard } from "../ui/templates.js";
+
+/** openai-profile wording for scene model fields: RunPod models only, none named. */
+const OPENAI_SCENE_MODEL =
+  "A video model `name` from versely_find_models (type 'video'). Models whose modes are i2v only need an image_url.";
 
 // ─── Movie iframe wiring ─────────────────────────────────────────────────────
 // Movies are multi-scene async generations: the LLM creates a movie, kicks off
@@ -220,7 +225,14 @@ function movieResultFromPayload(
       : failed > 0
         ? `generating (${failed} scene${failed === 1 ? "" : "s"} failed so far)`
         : "generating scenes";
-  const summary = `${title} — ${completed} of ${total} scene${total === 1 ? "" : "s"} ready, ${phaseLabel}…`;
+  // The pending text is what a model reads after polling by hand. Same fix
+  // as get_task_status (d8e8fd5): say the card follows the job by itself, so
+  // the model stops re-polling (each call used to spawn another card).
+  const summary =
+    `${title} — ${completed} of ${total} scene${total === 1 ? "" : "s"} ready, ${phaseLabel}… ` +
+    `The movie is still generating and is NOT finished. The inline card (if shown) updates by itself; ` +
+    `if you need the result, check versely_get_movie_status with movie_id="${movieId}" again in a minute or two. ` +
+    `Do not start the generation again.`;
 
   const structuredContent: Record<string, unknown> = {
     kind: "gallery" as const,
@@ -337,6 +349,7 @@ const versely_create_movie = defineTool({
       scenes: z.array(SceneInputSchema).min(1),
     })
     .passthrough(),
+  openai: { params: { "scenes[].model": OPENAI_SCENE_MODEL } },
   handler: async (input, ctx) => {
     const data = await ctx.client.post<{ data?: { movie?: { id?: string; title?: string }; scenes?: MovieSceneDTO[] } }>(
       "/api/v1/movie/create",
@@ -406,9 +419,13 @@ const versely_get_movie = defineTool({
     const data = await ctx.client.get(
       `/api/v1/movie/${encodeURIComponent(input.movie_id)}`,
     );
+    // includePoll: this tool declares the card, so a lookup made while the
+    // movie is still generating renders a NEW card — which must be able to
+    // follow the job, not freeze at its first frame.
     return movieResultFromPayload(data, input.movie_id, {
       toolName: "versely_get_movie",
       toolArgs: { movie_id: input.movie_id },
+      includePoll: true,
     });
   },
 });
@@ -428,20 +445,24 @@ const versely_delete_movie = defineTool({
 const versely_get_movie_status = defineTool({
   name: "versely_get_movie_status",
   description:
-    "Get real-time generation status for a movie and each of its scenes. This is the tool the iframe self-polls every ~5s during movie generation — the response is normalized into a MediaCardPayload (pending/completed/failed) so the iframe can update the card in place.",
-  meta: metaForMediaCard(),
+    "Get real-time generation status for a movie and each of its scenes. This is the tool the iframe self-polls every ~5s during movie generation — the response is normalized into a MediaCardPayload (pending/completed/failed) so the iframe can update the card in place. " +
+    "The movie's card already follows progress by itself: don't call this in a loop just to show progress — only when you need the result, spaced a minute or two apart.",
+  // Visible to the app too: the card's own poll loop calls this tool.
+  meta: metaForMediaCard({ app: true }),
   inputSchema: z.object({ movie_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.get(
       `/api/v1/movie/${encodeURIComponent(input.movie_id)}/status`,
     );
-    // No `includePoll` here — by the time the iframe is calling this, it's
-    // already in its polling loop. Re-emitting the poll instruction would
-    // be redundant. The original pending card from versely_generate_movie_scenes
-    // is what set up the loop.
+    // The poll instruction rides along on pending results. When the iframe is
+    // the caller it already has its loop and ignores it; when the MODEL is the
+    // caller, the card this call spawns needs it — without it that card froze
+    // at "0:00" (the frozen duplicate-card bug fixed for get_task_status in
+    // d8e8fd5).
     return movieResultFromPayload(data, input.movie_id, {
       toolName: "versely_get_movie",
       toolArgs: { movie_id: input.movie_id },
+      includePoll: true,
     });
   },
 });
@@ -524,10 +545,12 @@ const versely_combine_movie = defineTool({
     const data = await ctx.client.post(
       `/api/v1/movie/${encodeURIComponent(movie_id)}/combine`,
       body,
+      { timeoutMs: SYNC_TIMEOUT_MS },
     );
     return movieResultFromPayload(data, movie_id, {
       toolName: "versely_combine_movie",
       toolArgs: input,
+      includePoll: true,
     });
   },
 });
@@ -555,6 +578,7 @@ const versely_add_movie_scene = defineTool({
       previous_scene_order: z.number().int().positive().optional(),
     })
     .passthrough(),
+  openai: { params: { model: OPENAI_SCENE_MODEL } },
   handler: async (input, ctx) => {
     const { movie_id, ...body } = input;
     const data = await ctx.client.post(
@@ -574,7 +598,7 @@ const versely_update_movie_scene = defineTool({
       scene_id: z.string(),
       prompt: z.string().optional(),
       generation_type: z.enum(SCENE_GENERATION_TYPES).optional(),
-      model: z.string().optional(),
+      model: z.string().optional().describe("New video model for the scene (a name from versely_find_models)."),
       image_url: z.string().url().optional(),
       first_frame_url: z.string().url().optional(),
       last_frame_url: z.string().url().optional(),
@@ -612,7 +636,7 @@ const versely_regenerate_scene = defineTool({
 const versely_cancel_movie = defineTool({
   name: "versely_cancel_movie",
   description:
-    "Cancel a movie that's still generating. Marks the movie and any non-terminal scenes as 'cancelled', preserves any scenes that already completed, and refunds credits for the scenes that didn't run. Use this instead of versely_delete_movie when the user wants to keep the partial output. No-op (200) if the movie is already in a terminal status.",
+    "Cancel a movie that's still generating. Marks the movie and any non-terminal scenes as 'cancelled' and preserves any scenes that already completed. Credits: scenes that never started were never charged; scenes already generating finish and keep their charge (cancelling moves no credits). Use this instead of versely_delete_movie when the user wants to keep the partial output. No-op (200) if the movie is already in a terminal status.",
   inputSchema: z.object({ movie_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.post(

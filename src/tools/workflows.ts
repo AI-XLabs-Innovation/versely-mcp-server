@@ -745,7 +745,8 @@ const versely_get_workflow_run = defineTool({
   name: "versely_get_workflow_run",
   description:
     "Fetch a single workflow run by its run/task ID. Unified across scenes-mode and steps-mode runs. Response is translated into a MediaCardPayload (pending / completed / failed) so the iframe poll loop can update the card in place — this is the tool the iframe self-polls during a run.",
-  meta: metaForMediaCard(),
+  // Visible to the app too: the card's own poll loop calls this tool.
+  meta: metaForMediaCard({ app: true }),
   inputSchema: z.object({
     run_id: z
       .string()
@@ -755,14 +756,17 @@ const versely_get_workflow_run = defineTool({
     const data = await ctx.client.get(
       `/api/v1/workflows/runs/${encodeURIComponent(input.run_id)}`,
     );
-    // No `includePoll` — by the time the iframe calls this, it's already in
-    // its polling loop. Re-emitting the poll instruction is redundant.
+    // includePoll: harmless for the iframe (its loop ignores `poll` on
+    // responses), essential for the card a MODEL-initiated call spawns —
+    // without it that card froze on its first frame (see get_task_status,
+    // d8e8fd5).
     return workflowRunToCardPayload(data, {
       runId: input.run_id,
       toolName: "versely_get_workflow_run",
       toolArgs: { run_id: input.run_id },
       pollTool: "versely_get_workflow_run",
       pollArgKey: "run_id",
+      includePoll: true,
     });
   },
 });

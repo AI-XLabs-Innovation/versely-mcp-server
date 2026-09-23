@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineTool, type Tool } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
 import { jsonResult } from "./_helpers.js";
+import { SYNC_TIMEOUT_MS } from "../client.js";
 import { metaForMediaCard } from "../ui/templates.js";
 
 /** Seconds → "HH:MM:SS", the only time format /features/extract-frames accepts. */
@@ -45,7 +46,8 @@ const versely_extract_frames = defineTool({
         .describe("Deprecated alias for frame_count — prefer frame_count."),
       fps: z.number().positive().optional().describe("Sampling rate (default 1)."),
       output_format: z
-        .enum(["png", "jpg", "jpeg", "webp"])
+        // The backend accepts png / jpg / jpeg only and 400s on anything else.
+        .enum(["png", "jpg", "jpeg"])
         .optional()
         .describe("Frame image format (default 'png')."),
       ...AsyncFields,
@@ -71,7 +73,9 @@ const versely_extract_frames = defineTool({
     body.start_time = secondsToHms(start);
     body.end_time = secondsToHms(end_seconds ?? start + 1);
 
-    const submission = await ctx.client.post("/api/v1/features/extract-frames", body);
+    const submission = await ctx.client.post("/api/v1/features/extract-frames", body, {
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
     return handleAsync({
       ctx,
       submitResponse: submission,
@@ -121,7 +125,9 @@ const versely_merge_videos = defineTool({
     if (body.transition_type === undefined && transition !== undefined) {
       body.transition_type = transition;
     }
-    const submission = await ctx.client.post("/api/v1/features/merge-videos", body);
+    const submission = await ctx.client.post("/api/v1/features/merge-videos", body, {
+      timeoutMs: SYNC_TIMEOUT_MS,
+    });
     return handleAsync({
       ctx,
       submitResponse: submission,
@@ -138,7 +144,7 @@ const versely_merge_videos = defineTool({
 const versely_generate_prompt = defineTool({
   name: "versely_generate_prompt",
   description:
-    "Use Gemini to expand a brief idea into a richer generation prompt. Free — starts no generation.\n\n" +
+    "Use Gemini to expand a brief idea into a richer generation prompt. Costs 1 Versely credit; starts no media generation.\n\n" +
     "`content_type: 'speech'` switches to the spoken-delivery enhancer, which rewrites the text for TTS " +
     "(pacing, emphasis, pronunciation) and returns { enhanced_text, style_suggestion?, provider_scheme? }. " +
     "Pair it with target_provider/mood/language before calling versely_generate_audio.\n\n" +

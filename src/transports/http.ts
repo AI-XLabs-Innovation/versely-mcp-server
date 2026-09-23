@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import express, {
   type Request,
   type Response,
@@ -11,16 +11,23 @@ import {
   type Config,
 } from "../config.js";
 import { VerselyClient, isValidApiKeyFormat } from "../client.js";
-import { buildServer, getRegisteredToolCount } from "../server.js";
+import { buildServer, getRegisteredToolCount, validateServerSetup } from "../server.js";
 import { verifyAccessToken, looksLikeJwt } from "../oauth.js";
+import { resolveProfile, type Profile } from "../profiles.js";
+import { OPENAI_APPS_CHALLENGE_TOKEN } from "../openaiChallenge.js";
 
 const PROCESS_START_MS = Date.now();
+
+/** Public repo documenting this server (RFC 9728 resource_documentation). */
+const DOCS_URL = "https://github.com/AI-XLabs-Innovation/versely-mcp-server";
 
 interface AuthedRequest extends Request {
   /** The bearer to forward to api.versely.studio. Either a `vsk_*` key or an OAuth JWT. */
   apiKey?: string;
   /** When the bearer is an OAuth JWT, the verified claims. */
-  oauthClaims?: { sub: string; scope: string; azp: string };
+  oauthClaims?: { sub: string; scope: string; azp: string; ck?: string };
+  /** Tool profile for this request (see profiles.ts). Set by the bearer gate. */
+  profile?: Profile;
 }
 
 interface ResLocals {
@@ -59,6 +66,8 @@ interface McpCallRecord {
   duration_ms: number;
   /** How the caller authenticated. Never the token itself. */
   auth: "api_key" | "oauth_jwt" | "none" | "invalid";
+  /** Tool profile the call was served under. */
+  profile?: Profile;
   accept?: string;
   user_agent?: string;
   /**
@@ -114,6 +123,21 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
+/**
+ * What the request asked for: `?profile=` and/or `X-Versely-Profile`. Only
+ * ever used to NARROW to the openai profile (resolveProfile) — it can't widen
+ * a ChatGPT token's profile, whose `ck` claim decides on its own.
+ */
+function requestedProfile(req: Request): string[] {
+  const out: string[] = [];
+  const q = req.query.profile;
+  if (typeof q === "string") out.push(q);
+  else if (Array.isArray(q)) for (const v of q) if (typeof v === "string") out.push(v);
+  const h = req.header("x-versely-profile");
+  if (h) out.push(h);
+  return out;
+}
+
 function makeAuthMiddleware(config: Config) {
   // Per RFC 9728: 401 responses on protected resources must include a
   // WWW-Authenticate header pointing clients at our protected-resource metadata
@@ -123,6 +147,12 @@ function makeAuthMiddleware(config: Config) {
   const challenge = `Bearer realm="versely-mcp", resource_metadata="${resourceMetadataUrl}"`;
 
   return function requireBearer(req: AuthedRequest, res: Response, next: NextFunction): void {
+    // Once the bearer is verified: decide the tool profile from the SIGNED
+    // claim first, the request's own ask second.
+    const proceed = () => {
+      req.profile = resolveProfile({ ck: req.oauthClaims?.ck, requested: requestedProfile(req) });
+      next();
+    };
     const send401 = (error: string, description?: string) => {
       res.setHeader("WWW-Authenticate", description
         ? `${challenge}, error="${error}", error_description="${description}"`
@@ -140,7 +170,7 @@ function makeAuthMiddleware(config: Config) {
     // Legacy path: `vsk_*` keys forward straight through to the backend.
     if (isValidApiKeyFormat(token)) {
       req.apiKey = token;
-      return next();
+      return proceed();
     }
 
     // OAuth JWT path: verify locally (HS256, shared secret with backend).
@@ -155,8 +185,13 @@ function makeAuthMiddleware(config: Config) {
           issuer: config.oauthIssuer,
         });
         req.apiKey = token;        // forwarded as Bearer to api.versely.studio
-        req.oauthClaims = { sub: claims.sub, scope: claims.scope, azp: claims.azp };
-        return next();
+        req.oauthClaims = {
+          sub: claims.sub,
+          scope: claims.scope,
+          azp: claims.azp,
+          ...(typeof claims.ck === "string" ? { ck: claims.ck } : {}),
+        };
+        return proceed();
       } catch (err) {
         return send401("invalid_token", err instanceof Error ? err.message : "JWT verification failed");
       }
@@ -188,7 +223,7 @@ interface SessionEntry {
   transport: StreamableHTTPServerTransport;
   server: ReturnType<typeof buildServer>;
   client: VerselyClient;
-  /** JWT `sub` for OAuth callers, the vsk_ key itself for key callers. */
+  /** `<JWT sub or vsk_ key>#<profile>` — see sessionOwner. */
   owner: string;
   lastSeenMs: number;
 }
@@ -196,8 +231,27 @@ interface SessionEntry {
 const SESSION_IDLE_MS = 30 * 60_000;
 const SESSION_MAX = 500; // hard cap; beyond this, oldest-idle sessions are evicted
 
+/**
+ * Who a session belongs to: the identity (JWT `sub` for OAuth callers, the
+ * vsk_ key itself for key callers) AND the profile it was opened under. A
+ * session's server is built for one profile, so a request arriving on it
+ * under another profile — e.g. an openai session re-used without
+ * ?profile=openai — is refused (403) rather than served the wrong tool set.
+ */
 function sessionOwner(req: AuthedRequest): string {
-  return req.oauthClaims?.sub ?? req.apiKey!;
+  return `${req.oauthClaims?.sub ?? req.apiKey!}#${req.profile ?? "full"}`;
+}
+
+/** Stable, non-reversible identity key for per-user in-memory state (dedupe). */
+function ownerKeyOf(req: AuthedRequest): string {
+  return createHash("sha256").update(req.oauthClaims?.sub ?? req.apiKey!).digest("hex");
+}
+
+/** Constant-time string compare that doesn't leak the length either. */
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 function isInitializeBody(body: unknown): boolean {
@@ -270,9 +324,10 @@ export async function startHttpServer(config: Config): Promise<void> {
     res.setHeader(
       "Access-Control-Allow-Headers",
       // Only non-safelisted request headers need listing. Last-Event-ID is
-      // used for SSE resumption; omitting a header the client sends fails the
-      // whole preflight, so this errs on the side of listing.
-      "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID",
+      // used for SSE resumption; X-Versely-Profile lets a browser client
+      // restrict itself to a profile. Omitting a header the client sends
+      // fails the whole preflight, so this errs on the side of listing.
+      "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID, X-Versely-Profile",
     );
     res.setHeader(
       "Access-Control-Expose-Headers",
@@ -296,13 +351,29 @@ export async function startHttpServer(config: Config): Promise<void> {
       server: SERVER_NAME,
       version: SERVER_VERSION,
       uptime_s: Math.floor((Date.now() - PROCESS_START_MS) / 1000),
-      tools: getRegisteredToolCount(),
+      tools: getRegisteredToolCount(config, "full"),
+      tools_openai: getRegisteredToolCount(config, "openai"),
     });
+  });
+
+  // OpenAI Apps domain verification. Public by design (OpenAI fetches it with
+  // no credentials), so it is registered with no auth at all; the token is a
+  // committed constant (see openaiChallenge.ts) and 404s while it is empty.
+  app.get("/.well-known/openai-apps-challenge", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.type("text/plain");
+    if (!OPENAI_APPS_CHALLENGE_TOKEN) {
+      res.status(404).send("Not found");
+      return;
+    }
+    res.send(OPENAI_APPS_CHALLENGE_TOKEN);
   });
 
   // RFC 9728 OAuth Protected Resource Metadata. Tells clients which authorization
   // server protects this MCP endpoint and which scopes/auth methods are supported.
-  app.get("/.well-known/oauth-protected-resource", (_req, res) => {
+  // Also served at the path-suffixed form RFC 9728 §3.1 derives for a resource
+  // with a path (/mcp) — some clients only look there.
+  const protectedResourceMetadata = (_req: Request, res: Response) => {
     res.json({
       resource: config.resourceUrl,
       authorization_servers: [config.authServerUrl],
@@ -311,9 +382,11 @@ export async function startHttpServer(config: Config): Promise<void> {
         "ugc", "workflows", "analytics", "read",
       ],
       bearer_methods_supported: ["header"],
-      resource_documentation: "https://github.com/AI-XLabs-Innovation/versely-mcp",
+      resource_documentation: DOCS_URL,
     });
-  });
+  };
+  app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
+  app.get("/.well-known/oauth-protected-resource/mcp", protectedResourceMetadata);
 
   app.get("/", (_req, res) => {
     res.json({
@@ -325,7 +398,7 @@ export async function startHttpServer(config: Config): Promise<void> {
         health: "GET /healthz",
         oauth_protected_resource: "GET /.well-known/oauth-protected-resource",
       },
-      docs: "https://github.com/AI-XLabs-Innovation/versely-mcp",
+      docs: DOCS_URL,
     });
   });
 
@@ -333,6 +406,8 @@ export async function startHttpServer(config: Config): Promise<void> {
 
   app.post("/mcp", requireBearer, async (req: AuthedRequest, res) => {
     const apiKey = req.apiKey!;
+    const profile = req.profile ?? "full";
+    const ownerKey = ownerKeyOf(req);
     const requestId = (res.locals as ResLocals).requestId;
 
     // Record every call that reaches us, with the outcome we actually produced.
@@ -350,6 +425,7 @@ export async function startHttpServer(config: Config): Promise<void> {
         status: res.statusCode,
         duration_ms: Date.now() - startedAt,
         auth: req.oauthClaims ? "oauth_jwt" : "api_key",
+        profile,
         accept: req.header("accept"),
         user_agent: req.header("user-agent"),
         ...(req.header("mcp-session-id") ? { session_id: req.header("mcp-session-id") } : {}),
@@ -369,8 +445,8 @@ export async function startHttpServer(config: Config): Promise<void> {
     // don't validate the Mcp-Session-Id header, so a stale id rides along
     // harmlessly; auth is per-request either way.
     const serveOneShot = async (): Promise<void> => {
-      const client = new VerselyClient(config, apiKey);
-      const server = buildServer(config, client);
+      const client = new VerselyClient(config, apiKey, { profile });
+      const server = buildServer(config, client, { profile, ownerKey });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
@@ -429,8 +505,8 @@ export async function startHttpServer(config: Config): Promise<void> {
 
       // --- No session yet + initialize: mint one. ---------------------------
       if (isInitializeBody(req.body)) {
-        const client = new VerselyClient(config, apiKey);
-        const server = buildServer(config, client);
+        const client = new VerselyClient(config, apiKey, { profile });
+        const server = buildServer(config, client, { profile, ownerKey });
         const owner = sessionOwner(req);
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -516,6 +592,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       status: 200,
       duration_ms: 0,
       auth: req.oauthClaims ? "oauth_jwt" : "api_key",
+      profile: req.profile,
       accept: req.header("accept"),
       user_agent: req.header("user-agent"),
       ...(sid ? { session_id: sid } : {}),
@@ -604,10 +681,19 @@ export async function startHttpServer(config: Config): Promise<void> {
    * Answers the question that splits "Unable to reach versely-mcp" in half:
    * if the failing call is listed with status 200, the server answered and the
    * client dropped it; if it isn't listed at all, the request never arrived and
-   * no server change can help. Bearer-gated (same rule as /mcp) because the
-   * tool names reveal usage. Carries no bodies and no tokens.
+   * no server change can help. Carries no bodies and no tokens.
+   *
+   * Operator-only: `Authorization: Bearer <MCP_ADMIN_TOKEN>`. It used to accept
+   * any bearer that merely LOOKED like a vsk_ key (the gate only checks the
+   * format), which showed every user's recent tool calls to anyone. With no
+   * admin token configured — or a wrong one — the route doesn't exist (404).
    */
-  app.get("/debug/recent-calls", requireBearer, (req: AuthedRequest, res) => {
+  app.get("/debug/recent-calls", (req: Request, res) => {
+    const auth = /^Bearer\s+(.+)$/i.exec(req.header("authorization")?.trim() ?? "");
+    if (!config.adminToken || !auth || !safeEqual(auth[1]!.trim(), config.adminToken)) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "50"), 10) || 50, 1), MCP_CALL_LOG_MAX);
     const recent = mcpCallLog.slice(-limit).reverse();
     res.json({
@@ -642,6 +728,11 @@ export async function startHttpServer(config: Config): Promise<void> {
     if (!res.headersSent) res.status(500).json({ error: "internal_error" });
   });
 
+  // Build every profile's tool catalog before accepting traffic: a tool with
+  // no policy row, or a stale description override, fails the deploy here
+  // instead of the first user's tools/list.
+  const toolCounts = validateServerSetup(config);
+
   await new Promise<void>((resolve) => {
     const httpServer = app.listen(config.httpPort, config.httpHost, () => {
       logLine({
@@ -650,7 +741,8 @@ export async function startHttpServer(config: Config): Promise<void> {
         host: config.httpHost,
         port: config.httpPort,
         api: config.apiUrl,
-        tools: getRegisteredToolCount(),
+        tools: toolCounts.full,
+        tools_openai: toolCounts.openai,
         version: SERVER_VERSION,
       });
       resolve();

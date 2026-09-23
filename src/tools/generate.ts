@@ -1,9 +1,27 @@
 import { z } from "zod";
-import { defineTool, type Tool } from "./_types.js";
+import { defineTool, defineVariant, type Tool, type ToolContext } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
 import { jsonResult } from "./_helpers.js";
 import { resolveCanonicalModel } from "./_modelResolver.js";
+import {
+  PLUGIN_CREDITS_NOTE,
+  PLUGIN_MODEL_TYPES,
+  compactModel,
+  findCatalogModel,
+  loadCatalogModels,
+  loadPluginCatalog,
+  loadPluginModel,
+  modesFromCategories,
+  runpodFallbackModels,
+  type CatalogType,
+  type PluginModel,
+  type PluginModelType,
+} from "./_pluginCatalog.js";
 import { metaForMediaCard } from "../ui/templates.js";
+
+/** Model-field wording for the openai profile: no model names, ever. */
+const OPENAI_MODEL_PARAM = (type: string) =>
+  `A model \`name\` from versely_find_models (type '${type}'). Use versely_get_model_inputs with the same name for the other inputs it accepts.`;
 
 const versely_list_models = defineTool({
   name: "versely_list_models",
@@ -89,6 +107,66 @@ const FIND_MODELS_PATHS: Record<"image" | "video" | "audio" | "lipsync", string>
   audio: "/api/v1/ai-models/audio",
   lipsync: "/api/v1/ai-models/lipsync",
 };
+
+// openai profile: the plugin lists ONLY RunPod-served models (owner rule — no
+// model the plugin can't serve is ever named to the user or to ChatGPT), from
+// the backend's plugin catalog, with a one-line summary of each model's inputs.
+const FIND_MODELS_OPENAI = defineVariant({
+  description:
+    "List the image, video and voiceover models available here, with their price. ALWAYS call this before " +
+    "versely_generate_image / versely_generate_video / versely_generate_audio and pass an entry's `name` as " +
+    "`model` — never guess a model. `modes` says what a model takes (t2i/t2v = prompt only, i2i/i2v = needs an " +
+    "input image, tts = speech); `params` summarises its other inputs. For the full input list call " +
+    "versely_get_model_inputs with the name. " +
+    PLUGIN_CREDITS_NOTE,
+  inputSchema: z.object({
+    type: z
+      .enum(["image", "video", "audio"])
+      .optional()
+      .describe("image, video or audio (voiceover). Omit to list all three."),
+    q: z
+      .string()
+      .optional()
+      .describe("Case-insensitive words that must all appear in the model's name."),
+    limit: z.number().int().min(1).max(100).optional().describe("Max results returned. Default 30."),
+  }),
+  handler: async (input, ctx) => {
+    const types: readonly PluginModelType[] = input.type ? [input.type] : PLUGIN_MODEL_TYPES;
+    const listings = await Promise.all(types.map((t) => loadPluginCatalog(ctx, t)));
+    let allDetailed = true;
+    const models: Array<{ model: PluginModel; detailed: boolean }> = [];
+    for (let i = 0; i < types.length; i++) {
+      const listing = listings[i]!;
+      if (listing.available) {
+        for (const model of listing.models) models.push({ model, detailed: true });
+      } else {
+        // Backend without the plugin catalog yet: same model set from the
+        // regular catalog, minus the parameter detail.
+        allDetailed = false;
+        for (const model of await runpodFallbackModels(ctx, types[i]!)) models.push({ model, detailed: false });
+      }
+    }
+    const tokens = input.q ? input.q.toLowerCase().trim().split(/\s+/).filter(Boolean) : [];
+    const matched = models.filter(({ model: m }) => {
+      if (tokens.length === 0) return true;
+      const hay = `${m.name} ${m.display_name}`.toLowerCase().replace(/-/g, " ");
+      return tokens.every((t) => hay.includes(t));
+    });
+    const limit = input.limit ?? 30;
+    return jsonResult({
+      total: matched.length,
+      returned: Math.min(limit, matched.length),
+      credits_note: PLUGIN_CREDITS_NOTE,
+      ...(allDetailed
+        ? {}
+        : {
+            params_note:
+              "Detailed model inputs are unavailable right now; use the generate tool's own inputs (prompt, aspect_ratio, duration, image_url...).",
+          }),
+      models: matched.slice(0, limit).map(({ model, detailed }) => compactModel(model, { withParams: detailed })),
+    });
+  },
+});
 
 const versely_find_models = defineTool({
   name: "versely_find_models",
@@ -258,13 +336,137 @@ const versely_find_models = defineTool({
       models: slim,
     });
   },
+  openai: FIND_MODELS_OPENAI,
 });
+
+/**
+ * Full input list for one model, from the plugin catalog (contract 5): the
+ * parameters RunPod accepts, translated to the names our /generate/* body
+ * takes, plus per-mode variants and TTS voices. Lets the model fill inputs
+ * itself instead of asking the user or guessing field names.
+ *
+ * The plugin catalog covers RunPod-served models. For anything else (full
+ * profile), or while the backend endpoint isn't deployed, this returns what
+ * the regular catalog knows and says the detailed list is unavailable.
+ */
+const versely_get_model_inputs = defineTool({
+  name: "versely_get_model_inputs",
+  description:
+    "Get the inputs a model accepts — names, types, allowed values, defaults, and (for voiceover models) " +
+    "its voices — so you can fill them in instead of asking the user. Pass a model `name` from " +
+    "versely_find_models. Send the returned params as top-level arguments to the matching generate tool " +
+    "(versely_generate_image / versely_generate_video / versely_generate_audio), next to `model` and the prompt. " +
+    "When a model has no detailed input list, the reply says so and gives what the catalog knows.",
+  inputSchema: z.object({
+    model: z.string().min(1).describe("A model `name` from versely_find_models."),
+  }),
+  handler: async (input, ctx) => {
+    const wanted = input.model.trim();
+    let lookup = await loadPluginModel(ctx, wanted);
+
+    // The endpoint wants the canonical name. If the caller passed a display
+    // name or a different casing, map it through the listing and ask again.
+    if (lookup.status === "not_in_catalog") {
+      const canonical = await canonicalPluginName(ctx, wanted);
+      if (canonical && canonical !== wanted) lookup = await loadPluginModel(ctx, canonical);
+    }
+
+    if (lookup.status === "found") {
+      const m = lookup.model;
+      const tool =
+        m.type === "image" ? "versely_generate_image" : m.type === "video" ? "versely_generate_video" : "versely_generate_audio";
+      return jsonResult({
+        model: m.name,
+        ...(m.display_name !== m.name ? { display_name: m.display_name } : {}),
+        type: m.type,
+        modes: m.modes,
+        requires_image: m.requires_image,
+        credits: m.credits,
+        ...(m.credits_note ? { credits_note: m.credits_note } : {}),
+        params: m.params,
+        ...(m.params_by_mode ? { params_by_mode: m.params_by_mode } : {}),
+        ...(m.voices ? { voices: m.voices } : {}),
+        usage:
+          `Call ${tool} with model: "${m.name}" plus any of these params as top-level arguments. ` +
+          `params_by_mode (when present) lists the inputs specific to each mode.`,
+      });
+    }
+
+    if (lookup.status === "not_in_catalog" && ctx.profile === "openai") {
+      return jsonResult({
+        found: false,
+        model: wanted,
+        message: `"${wanted}" is not one of the models available here. Pick a model name from versely_find_models.`,
+      });
+    }
+
+    // Either the model isn't RunPod-served (full profile), or the endpoint is
+    // missing: answer from the regular catalog.
+    const entry = await regularCatalogEntry(ctx, wanted);
+    if (!entry || (ctx.profile === "openai" && entry.model.is_runpod_discounted !== true)) {
+      return jsonResult({
+        found: false,
+        model: wanted,
+        message: `No model named "${wanted}" was found. Pick a model name from versely_find_models.`,
+      });
+    }
+    const m = entry.model;
+    return jsonResult({
+      model: m.name,
+      ...(m.display_name && m.display_name !== m.name ? { display_name: m.display_name } : {}),
+      type: entry.type,
+      modes: modesFromCategories(m.categories),
+      requires_image: Boolean(m.requires_image),
+      ...(typeof m.credits === "number" ? { credits: m.credits } : {}),
+      ...(m.reference_config ? { reference_config: m.reference_config } : {}),
+      params: "unavailable",
+      note:
+        lookup.status === "unavailable"
+          ? "The detailed input list is unavailable right now. Use the generate tool's own inputs (prompt, aspect_ratio, duration, image_url...)."
+          : "A detailed input list exists only for the models the plugin catalog covers. Use the generate tool's own inputs for this one.",
+    });
+  },
+});
+
+async function canonicalPluginName(ctx: ToolContext, wanted: string): Promise<string | undefined> {
+  const w = wanted.toLowerCase();
+  for (const type of PLUGIN_MODEL_TYPES) {
+    const listing = await loadPluginCatalog(ctx, type);
+    if (!listing.available) continue;
+    const hit = listing.models.find((m) => m.name.toLowerCase() === w || m.display_name.toLowerCase() === w);
+    if (hit) return hit.name;
+  }
+  return undefined;
+}
+
+async function regularCatalogEntry(
+  ctx: ToolContext,
+  wanted: string,
+): Promise<{ type: CatalogType; model: Awaited<ReturnType<typeof loadCatalogModels>>[number] } | undefined> {
+  const types: CatalogType[] = ctx.profile === "openai" ? ["image", "video", "audio"] : ["image", "video", "audio", "lipsync"];
+  for (const type of types) {
+    const hit = findCatalogModel(await loadCatalogModels(ctx, type), wanted);
+    if (hit?.name) return { type, model: hit };
+  }
+  return undefined;
+}
 
 const versely_generate_image = defineTool({
   name: "versely_generate_image",
   description:
-    "Generate one or more images (text-to-image, image-to-image, editing) using a chosen model. Returns a request_id immediately (submit mode) — poll it with versely_wait_for_task to get the finished asset.",
+    "Generate one or more images (text-to-image, image-to-image, editing) using a chosen model. Returns a request_id immediately (submit mode) while the job runs in the background. Hosts that show the inline media card update it by themselves; otherwise check the job with versely_get_task_status.",
   meta: metaForMediaCard(),
+  openai: {
+    description:
+      "Generate one or more images from a prompt, optionally from input images, with a model from versely_find_models. " +
+      "The job runs in the background and spends the user's Versely credits; the inline card updates itself when it finishes. " +
+      "Call it once per request and do not resubmit a pending job.",
+    params: {
+      model: OPENAI_MODEL_PARAM("image"),
+      resolution:
+        "Resolution tier, for models whose inputs (versely_get_model_inputs) list one. Higher tiers cost more credits.",
+    },
+  },
   inputSchema: z
     .object({
       model: z
@@ -336,8 +538,20 @@ const versely_generate_image = defineTool({
 const versely_generate_video = defineTool({
   name: "versely_generate_video",
   description:
-    "Generate a video (text-to-video, image-to-video, frame-to-frame) using a chosen model. Returns a request_id immediately (submit mode) — poll it with versely_wait_for_task to get the finished asset.",
+    "Generate a video (text-to-video, image-to-video, frame-to-frame) using a chosen model. Returns a request_id immediately (submit mode) while the job runs in the background. Hosts that show the inline media card update it by themselves; otherwise check the job with versely_get_task_status.",
   meta: metaForMediaCard(),
+  openai: {
+    description:
+      "Generate a video from a prompt, optionally starting from an image, with a model from versely_find_models " +
+      "(models whose modes include i2v need an image). The job runs in the background and spends the user's Versely " +
+      "credits; video takes a few minutes and the inline card updates itself when it finishes. Call it once per request " +
+      "and do not resubmit a pending job.",
+    params: {
+      model: OPENAI_MODEL_PARAM("video"),
+      image_urls:
+        "Starting frame(s) for image-to-video. Equivalent to image_url; use either. Required by models whose modes are i2v only.",
+    },
+  },
   inputSchema: z
     .object({
       model: z
@@ -515,7 +729,7 @@ function resolveValidVoice(profile: AudioModelProfile, supplied: string): string
 
 function buildAudioToolDescription(): string {
   const lines: string[] = [
-    "Generate speech / audio via TTS. Returns a request_id immediately (submit mode) — poll it with versely_wait_for_task to get the finished asset.",
+    "Generate speech / audio via TTS. Returns a request_id immediately (submit mode) while the job runs in the background. Hosts that show the inline media card update it by themselves; otherwise check the job with versely_get_task_status.",
     "",
     "Each model requires a voice id from its own catalog — cross-pollinating",
     "voices between providers (e.g. 'Adam' on Qwen, 'Ethan' on ElevenLabs) is",
@@ -552,6 +766,19 @@ const versely_generate_audio = defineTool({
   name: "versely_generate_audio",
   description: buildAudioToolDescription(),
   meta: metaForMediaCard(),
+  openai: {
+    description:
+      "Generate a voiceover (text to speech) with a voice model from versely_find_models (type 'audio'). " +
+      "Pick the voice yourself with versely_list_voices (or the voices in versely_get_model_inputs) instead of " +
+      "asking the user; omit it to use the model's default voice. The job runs in the background and spends the " +
+      "user's Versely credits; the inline card updates itself when it finishes. Call it once per request.",
+    params: {
+      model: OPENAI_MODEL_PARAM("audio"),
+      voice:
+        "Voice id from versely_list_voices or versely_get_model_inputs (pass the `id`, not the display name). Omit to use the model's default voice.",
+      voice_id: "Same as `voice` — pass whichever the model's inputs name. Treated as equivalent by this server.",
+    },
+  },
   inputSchema: z
     .object({
       model: z
@@ -639,12 +866,23 @@ const SunoModel = z.enum(["V3_5", "V4", "V4_5", "V4_5PLUS", "V4_5ALL", "V5", "V5
 const versely_generate_music = defineTool({
   name: "versely_generate_music",
   description:
-    "Generate music with Suno. Returns a Suno taskId; default polls via the unified status endpoint.\n\n" +
+    "Generate music with Suno. Returns a task id right away while the track renders in the background; hosts that show the inline media card update it by themselves, otherwise check it with versely_get_task_status.\n\n" +
     "Two modes:\n" +
     "• **Inspiration** (default, `custom_mode: false`) — `prompt` is a free-form description of the song; Suno writes the lyrics and picks the style.\n" +
     "• **Custom** (`custom_mode: true`) — `prompt` becomes the LITERAL LYRICS, and `style` + `title` are then required.\n\n" +
     "There is no separate lyrics field: to supply your own lyrics, set custom_mode:true and put them in `prompt`.",
   meta: metaForMediaCard(),
+  // The music model picker can only name non-RunPod models, so the plugin
+  // hides it and the backend default applies.
+  openai: {
+    description:
+      "Generate a song or instrumental track. The job runs in the background and spends the user's Versely credits; " +
+      "the inline card updates itself when it finishes.\n\n" +
+      "Two modes:\n" +
+      "• Inspiration (default, `custom_mode: false`) — `prompt` describes the song; lyrics and style are written for you.\n" +
+      "• Custom (`custom_mode: true`) — `prompt` is the LITERAL LYRICS, and `style` + `title` are then required.",
+    hide: ["model"],
+  },
   inputSchema: z
     .object({
       prompt: z
@@ -747,6 +985,13 @@ const versely_extend_music = defineTool({
   description:
     "Extend an existing Suno track from a given timestamp. Supplying prompt / style / title / continue_at_seconds automatically switches Suno into custom-parameter mode; omit them all to simply continue the source track with its original parameters.",
   meta: metaForMediaCard(),
+  openai: {
+    description:
+      "Extend a music track made with versely_generate_music from a given timestamp. Supplying prompt / style / title / " +
+      "continue_at_seconds steers the continuation; omit them all to simply continue the track as it was. " +
+      "Spends the user's Versely credits; the inline card updates itself when it finishes.",
+    hide: ["model"],
+  },
   inputSchema: z
     .object({
       audio_id: z
@@ -803,6 +1048,16 @@ const versely_generate_lipsync = defineTool({
   description:
     "Generate a lipsync video from a still image and an audio clip. `model` is required — call versely_find_models with type='lipsync' to discover valid names.",
   meta: metaForMediaCard(),
+  // Ready for when the plugin catalog serves a lip-sync model (tools/_policy.ts).
+  openai: {
+    description:
+      "Generate a lip-sync video from a still image and an audio clip, with a lip-sync model from versely_find_models. " +
+      "Spends the user's Versely credits; the inline card updates itself when it finishes.",
+    params: {
+      image_url: "The character still to animate.",
+      model: "A lip-sync model `name` from versely_find_models.",
+    },
+  },
   inputSchema: z
     .object({
       image_url: z
@@ -858,6 +1113,12 @@ const versely_remove_background = defineTool({
   description:
     "Remove the background from a VIDEO, producing a transparent (VP9 alpha) matte for compositing. Video only — there is no image background-removal model behind this endpoint. Use 'Veed Video Background Removal Fast' for a quick pass, or the Green Screen variant for a chroma-key matte.",
   meta: metaForMediaCard(),
+  openai: {
+    description:
+      "Remove the background from a VIDEO, producing a transparent matte for compositing (video only, not images). " +
+      "Spends the user's Versely credits; the inline card updates itself when it finishes.",
+    hide: ["model"],
+  },
   inputSchema: z
     .object({
       video_url: z.string().url().describe("Source video to cut out."),
@@ -897,6 +1158,7 @@ const versely_upscale_image = defineTool({
   name: "versely_upscale_image",
   description: "Upscale an image to a higher resolution.",
   meta: metaForMediaCard(),
+  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       image_url: z.string().url(),
@@ -949,6 +1211,7 @@ const versely_upscale_video = defineTool({
   name: "versely_upscale_video",
   description: "Upscale a video to a higher resolution.",
   meta: metaForMediaCard(),
+  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       video_url: z.string().url(),
@@ -976,6 +1239,7 @@ const versely_upscale_video = defineTool({
 
 export const generateTools: Tool[] = [
   versely_find_models,
+  versely_get_model_inputs,
   versely_list_models,
   versely_generate_image,
   versely_generate_video,

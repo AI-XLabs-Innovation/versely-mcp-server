@@ -134,12 +134,31 @@ export async function handleAsync(args: {
 }): Promise<ToolResult> {
   const requestId = pickRequestId(args.submitResponse);
 
-  if (args.mode === "submit" || !requestId) {
-    // When we have a request_id AND know the asset kind, emit a pending
-    // mediaResult so the iframe self-polls versely_get_task_status until
-    // the job completes. This bypasses claude.ai's per-tool execution
-    // timeout that wait-mode hits for long video generations.
-    if (requestId && args.kind) {
+  if (!requestId) {
+    // No polling handle: the endpoint did its work inside the request (UGC
+    // composites, merges, frame extraction) and answered with the finished
+    // file. Render THAT as a completed card — falling through to plain JSON
+    // left the card these tools declare stuck on its placeholder forever.
+    // mediaResult itself returns plain JSON when the payload has no media.
+    const done = await mediaResult(args.submitResponse, {
+      kind: args.kind,
+      toolName: args.toolName,
+      toolArgs: args.toolArgs,
+      extra: { ...(args.extra ?? {}), status: "completed" },
+    });
+    if (done.structuredContent) return done;
+    return jsonResult({
+      submission: args.submitResponse,
+      hint: "No request_id in the response: the operation either finished synchronously or is tracked by its own status tool.",
+    });
+  }
+
+  if (args.mode === "submit") {
+    // When we know the asset kind, emit a pending mediaResult so the iframe
+    // self-polls versely_get_task_status until the job completes. This
+    // bypasses claude.ai's per-tool execution timeout that wait-mode hits for
+    // long video generations.
+    if (args.kind) {
       return pendingMediaResult({
         kind: args.kind,
         taskId: requestId,
@@ -152,11 +171,9 @@ export async function handleAsync(args: {
     }
     return jsonResult({
       mode: args.mode,
-      ...(requestId ? { request_id: requestId } : {}),
+      request_id: requestId,
       submission: args.submitResponse,
-      hint: requestId
-        ? `Use versely_get_task_status (or versely_wait_for_task) with request_id "${requestId}" to check progress.`
-        : "No request_id detected — operation may have completed synchronously, or uses a domain-specific status endpoint.",
+      hint: `Check progress with versely_get_task_status (request_id "${requestId}"). The job is already running and charged: do not resubmit it.`,
     });
   }
 

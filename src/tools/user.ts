@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineTool, type Tool } from "./_types.js";
+import { defineTool, defineVariant, type Tool } from "./_types.js";
 import { jsonResult, resolveUserId } from "./_helpers.js";
 
 const Empty = z.object({});
@@ -7,11 +7,55 @@ const Empty = z.object({});
 const versely_get_me = defineTool({
   name: "versely_get_me",
   description:
-    "Get the authenticated user's profile, plan, and credit balance. Returns the full /user/me response.",
+    "Get the authenticated user's profile (id, email, name) and credit balance. Returns the full /user/me response.",
   inputSchema: Empty,
   handler: async (_input, ctx) => {
     const data = await ctx.client.get("/api/v1/user/me");
     return jsonResult(data);
+  },
+});
+
+/**
+ * The backend's `plugin` block (cross-repo contract 4) — present only on
+ * ChatGPT-plugin requests (a ck:"openai" token that came through this server).
+ */
+interface PluginBlock {
+  free_account?: boolean;
+  free_credits_granted?: number;
+  free_credits_remaining?: number;
+  runpod_only?: boolean;
+}
+
+// openai: the balance in the plugin's own terms. `trial` / `trial_offer`
+// describe the web app's free trial, which the plugin can't start and must
+// not advertise, so they never appear here.
+const GET_CREDITS_OPENAI = defineVariant({
+  description:
+    "Get the user's Versely credit balance. `credits` is the main balance. When `free_account` is true the " +
+    "account has not paid yet and works on free plugin credits (`plugin_free_credits`): only the models from " +
+    "versely_find_models can be used and some features are unavailable — tell the user that plainly.",
+  inputSchema: z.object({}),
+  handler: async (_input, ctx) => {
+    const userId = await ctx.client.getCurrentUserId();
+    const data = await ctx.client.get<Record<string, unknown>>(
+      `/api/v1/user/${encodeURIComponent(userId)}/credits`,
+    );
+    const plugin = (data?.plugin && typeof data.plugin === "object" ? data.plugin : {}) as PluginBlock;
+    const freeAccount = plugin.free_account === true;
+    const credits = typeof data?.credits === "number" ? data.credits : 0;
+    return jsonResult({
+      credits,
+      // Frozen (unusable) once the account pays, so only reported while free.
+      plugin_free_credits: freeAccount ? (plugin.free_credits_remaining ?? 0) : 0,
+      free_account: freeAccount,
+      ...(freeAccount
+        ? {
+            note:
+              "Free plugin credits cover image, video and voiceover generation with the models from versely_find_models. " +
+              "Other features are not available on free plugin credits.",
+          }
+        : {}),
+    });
   },
 });
 
@@ -29,8 +73,16 @@ const versely_get_credits = defineTool({
     const data = await ctx.client.get(
       `/api/v1/user/${encodeURIComponent(userId)}/credits`,
     );
+    // `trial_offer` is the web app's "start a free trial" pitch (spots left,
+    // eligibility). It is an upsell, not a balance, and has no place in an
+    // assistant's answer to "how many credits do I have".
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const { trial_offer: _offer, ...rest } = data as Record<string, unknown>;
+      return jsonResult(rest);
+    }
     return jsonResult(data);
   },
+  openai: GET_CREDITS_OPENAI,
 });
 
 const versely_list_api_key_scopes = defineTool({
