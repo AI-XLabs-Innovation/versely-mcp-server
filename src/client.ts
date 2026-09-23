@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { fetch, type Response } from "undici";
 import type { Config } from "./config.js";
 import { VerselyApiError, VerselyNetworkError } from "./errors.js";
+import type { Profile } from "./profiles.js";
+import { proxyHeaderValue } from "./proxySignature.js";
+import { currentCallContext } from "./requestContext.js";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -10,13 +14,27 @@ export interface RequestOptions {
   query?: Record<string, QueryValue>;
   body?: unknown;
   signal?: AbortSignal;
-  /** Retry once on transient 5xx / network errors. Default true. */
+  /**
+   * Retry once on transient 5xx / network errors. Honoured for GET only —
+   * see #executeWithRetry. Default true.
+   */
   retry?: boolean;
   /** Override the per-request timeout. Default 60s. */
   timeoutMs?: number;
   /** Extra headers (merged with auth + content-type). */
   headers?: Record<string, string>;
 }
+
+/**
+ * Timeout for endpoints that do their work INSIDE the request (FFmpeg merges,
+ * UGC composites, slideshow renders, frame extraction) and answer with the
+ * finished file. They routinely outlive the 60s default, and a client-side
+ * abort there doesn't stop the server — it just loses the result of a job the
+ * user has already paid for. 95s stays under Cloudflare's ~100s cut-off.
+ */
+export const SYNC_TIMEOUT_MS = 95_000;
+
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
  * Returns true if the value looks like a Versely API key.
@@ -26,13 +44,22 @@ export function isValidApiKeyFormat(key: unknown): key is string {
   return typeof key === "string" && /^vsk_[A-Za-z0-9_-]{8,}$/.test(key.trim());
 }
 
+export interface VerselyClientOptions {
+  /** Tool profile this client serves; sent as X-Versely-Client-Profile. */
+  profile?: Profile;
+}
+
 export class VerselyClient {
   #cachedUserId?: string;
+  readonly #profile: Profile;
 
   constructor(
     private readonly config: Config,
     private apiKey: string,
-  ) {}
+    opts: VerselyClientOptions = {},
+  ) {
+    this.#profile = opts.profile ?? "full";
+  }
 
   /**
    * Swap the bearer forwarded to the backend. Session-mode transports outlive
@@ -42,6 +69,14 @@ export class VerselyClient {
    */
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
+  }
+
+  /**
+   * "key" for vsk_ API keys, "oauth" for connector tokens. The backend prices
+   * the two differently, so caches of priced data are keyed by this.
+   */
+  authKind(): "key" | "oauth" {
+    return this.apiKey.startsWith("vsk_") ? "key" : "oauth";
   }
 
   async getCurrentUserId(): Promise<string> {
@@ -86,15 +121,22 @@ export class VerselyClient {
     path: string,
     opts: RequestOptions,
   ): Promise<T> {
-    const allowRetry = opts.retry ?? true;
+    // Only reads are retried. A POST that 5xx'd or timed out may still have
+    // started — and charged for — a generation, so sending it again is how one
+    // request becomes two paid jobs. Writes get exactly one attempt; the error
+    // text tells the caller how to check before trying again.
+    const allowRetry = method === "GET" && (opts.retry ?? true);
     const maxAttempts = allowRetry ? 2 : 1;
+    // One key per logical request (shared by any retry), so a backend that
+    // honours Idempotency-Key can collapse a replay of THIS request.
+    const idempotencyKey = method === "POST" ? randomUUID() : undefined;
     let attempt = 0;
     let lastErr: unknown;
 
     while (attempt < maxAttempts) {
       attempt += 1;
       try {
-        return await this.#executeOnce<T>(method, path, opts);
+        return await this.#executeOnce<T>(method, path, opts, idempotencyKey);
       } catch (err) {
         lastErr = err;
         if (attempt >= maxAttempts) break;
@@ -109,11 +151,12 @@ export class VerselyClient {
     method: HttpMethod,
     path: string,
     opts: RequestOptions,
+    idempotencyKey: string | undefined,
   ): Promise<T> {
     const url = this.#buildUrl(path, opts.query);
-    const headers = this.#buildHeaders(opts.headers);
+    const headers = this.#buildHeaders(opts.headers, idempotencyKey);
     const body = opts.body !== undefined ? JSON.stringify(opts.body) : undefined;
-    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -123,16 +166,21 @@ export class VerselyClient {
     try {
       res = await fetch(url, { method, headers, body, signal });
     } catch (err) {
-      if ((err as { name?: string })?.name === "AbortError") {
+      const aborted = (err as { name?: string })?.name === "AbortError";
+      const what = aborted
+        ? `no response after ${Math.round(timeoutMs / 1000)}s`
+        : `network error: ${err instanceof Error ? err.message : String(err)}`;
+      if (method !== "GET") {
+        // The request left this server; whether the backend acted on it is
+        // unknown. Saying so is the only thing that stops a blind retry from
+        // paying for the same generation twice.
         throw new VerselyNetworkError(
-          `${method} ${path} aborted after ${timeoutMs}ms`,
+          `${method} ${path}: ${what}. The request may still have been processed - ` +
+            `check versely_list_user_media before retrying.`,
           err,
         );
       }
-      throw new VerselyNetworkError(
-        `${method} ${path} network error: ${err instanceof Error ? err.message : String(err)}`,
-        err,
-      );
+      throw new VerselyNetworkError(`${method} ${path} ${aborted ? "aborted after " + timeoutMs + "ms" : what}`, err);
     } finally {
       clearTimeout(timer);
     }
@@ -163,12 +211,25 @@ export class VerselyClient {
     return url.toString();
   }
 
-  #buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  #buildHeaders(
+    extra: Record<string, string> | undefined,
+    idempotencyKey: string | undefined,
+  ): Record<string, string> {
+    // Cross-repo contract 2. The subject is per tools/call (ChatGPT user id),
+    // so it comes from the call context — this client may be shared by a whole
+    // session. The proxy signature covers it; both are omitted/empty together.
+    const subject = currentCallContext()?.subject;
+    const proxy = proxyHeaderValue(this.config.oauthJwtSecret, subject ?? "");
     return {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
       Accept: "application/json",
       "User-Agent": this.config.userAgent,
+      // Informational only: the backend never grants or bills on it.
+      "X-Versely-Client-Profile": this.#profile,
+      ...(proxy ? { "X-Versely-Proxy": proxy } : {}),
+      ...(subject ? { "X-Versely-OpenAI-Subject": subject } : {}),
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
       ...(extra ?? {}),
     };
   }
