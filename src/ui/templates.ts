@@ -26,6 +26,12 @@
 // Versely CDN subdomains declared on each tool. claude.ai currently
 // hardcodes its sandbox CSP (anthropics/claude-ai-mcp#40); our declarations
 // kick in once that's fixed.
+//
+// Two versions of the card live here: v1 (below, served to claude.ai and
+// every profile not in MCP_CARD_V2_PROFILES — keep it byte-for-byte) and v2
+// (further down, the ChatGPT plugin's). See the v2 header for the differences.
+
+import type { Profile } from "../profiles.js";
 
 const MEDIA_CARD_HTML = String.raw`<!doctype html>
 <html><head><meta charset="utf-8"/>
@@ -890,6 +896,622 @@ const MEDIA_CARD_HTML = String.raw`<!doctype html>
 </script>
 </body></html>`;
 
+// --- Media card v2 ----------------------------------------------------------
+//
+// Served to the profiles in MCP_CARD_V2_PROFILES (default: openai). v1 above
+// stays byte-for-byte for everyone else until v2 has shipped a release.
+//
+// What changed from v1, and why:
+//   - Polling is a setTimeout CHAIN with one request in flight. v1 used
+//     setInterval, so a slow host piled up concurrent tools/call requests and
+//     a late answer to an old poll could overwrite a newer one. Here only the
+//     in-flight id's response is used, and a poll with no answer after 30s
+//     counts as an error (three in a row and the card stops and says why).
+//   - A poll that errors WITHOUT describing the job (transport trouble, a
+//     transient 5xx) is a retryable error, not a verdict on the job; only a
+//     result that carries the job's task_id can mark it failed.
+//   - Answers the host's `ping` and `ui/resource-teardown` requests (teardown
+//     also stops polling), and follows the host theme: ui/initialize's
+//     hostContext.theme and ui/notifications/host-context-changed set
+//     data-theme on <html>, falling back to prefers-color-scheme.
+//   - Opens media through `ui/open-link` (sandboxed frames often can't
+//     navigate), falling back to window.open(noopener) on an error or after
+//     1.5s without an answer.
+//   - State = result _meta["studio.versely/card"] merged under
+//     structuredContent (ChatGPT shows structuredContent to the model, so the
+//     server keeps the bulky card-only fields in _meta), plus
+//     window.openai.toolResponseMetadata when the host provides it.
+//   - status "info" renders a plain message (used when a card tool had no
+//     media to show, so the card never sits on its placeholder).
+//
+// Same build trap as v1: no backticks and no dollar-brace sequences anywhere
+// in this template, comments included.
+
+const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
+<html><head><meta charset="utf-8"/>
+<meta name="color-scheme" content="light dark"/>
+<meta name="referrer" content="no-referrer"/>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: transparent;
+    --card: #ffffff;
+    --card-border: #e5e7eb;
+    --fg: #0a0a0b;
+    --muted: #4b5563;
+    --chip-bg: #f3f4f6;
+    --chip-fg: #1f2937;
+    --accent: #7c3aed;
+    --radius: 14px;
+    --radius-sm: 8px;
+    --err-fg: #b91c1c;
+    --err-bg: rgba(185, 28, 28, 0.08);
+    --err-border: rgba(185, 28, 28, 0.25);
+    --info-bg: #f3f4f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --card: #131316;
+      --card-border: #27272a;
+      --fg: #f4f4f5;
+      --muted: #d4d4d8;
+      --chip-bg: #1f1f23;
+      --chip-fg: #e4e4e7;
+      --err-fg: #f87171;
+      --err-bg: rgba(248, 113, 113, 0.08);
+      --err-border: rgba(248, 113, 113, 0.25);
+      --info-bg: #1f1f23;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --card: #131316;
+    --card-border: #27272a;
+    --fg: #f4f4f5;
+    --muted: #d4d4d8;
+    --chip-bg: #1f1f23;
+    --chip-fg: #e4e4e7;
+    --err-fg: #f87171;
+    --err-bg: rgba(248, 113, 113, 0.08);
+    --err-border: rgba(248, 113, 113, 0.25);
+    --info-bg: #1f1f23;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    color: var(--fg); -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    box-sizing: border-box;
+    max-width: 440px;
+    min-height: 96px;
+  }
+  .head { padding: 14px 16px 10px; display: flex; align-items: flex-start; gap: 8px; }
+  .prompt {
+    flex: 1; min-width: 0;
+    font-size: 13px; line-height: 1.45; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .prompt.expanded { -webkit-line-clamp: unset; display: block; }
+  .toggle {
+    flex: 0 0 auto; background: none; border: 0; cursor: pointer;
+    color: var(--fg); padding: 0 2px; line-height: 1; font-size: 14px;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 12px; }
+  .chip {
+    background: var(--chip-bg); color: var(--chip-fg);
+    border-radius: 999px; padding: 3px 10px;
+    font-size: 11px; font-weight: 500; line-height: 1.5; white-space: nowrap;
+  }
+  .loading { padding: 28px 16px; color: var(--fg); font-size: 13px; text-align: center; }
+  .grid { display: grid; gap: 4px; }
+  .grid.n1 { grid-template-columns: 1fr; }
+  .grid.n2 { grid-template-columns: 1fr 1fr; }
+  .grid.n3 { grid-template-columns: repeat(3, 1fr); }
+  .grid.n4plus { grid-template-columns: repeat(2, 1fr); }
+  .tile { position: relative; overflow: hidden; background: #000; }
+  .tile img, .tile video { width: 100%; height: 100%; display: block; object-fit: cover; cursor: zoom-in; }
+  .tile audio { width: 100%; display: block; align-self: center; }
+  .tile.solo { display: flex; align-items: center; justify-content: center; background: #000; max-height: 340px; }
+  .tile.solo img, .tile.solo video {
+    width: auto; height: auto; max-width: 100%; max-height: 340px;
+    display: block; object-fit: contain; cursor: pointer; background: #000;
+  }
+  .player { width: 100%; max-height: 340px; display: block; background: #000; object-fit: contain; }
+  .audio-list { padding: 8px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .audio-row { display: flex; flex-direction: column; gap: 4px; }
+  .audio-label { font-size: 12px; color: var(--fg); }
+  audio { width: 100%; }
+  .foot { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; border-top: 1px solid var(--card-border); }
+  .open-link {
+    background: none; border: 0; padding: 0; cursor: pointer;
+    font: inherit; font-size: 12px; font-weight: 600; color: var(--fg); text-decoration: underline;
+  }
+  .brand { margin-left: auto; font-size: 11px; color: var(--fg); display: inline-flex; align-items: center; gap: 6px; }
+  .brand-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); display: inline-block; }
+  .placeholder {
+    min-height: 120px; padding: 24px 20px;
+    display: flex; align-items: center; gap: 14px;
+    background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+    color: #ffffff; font-size: 14px; font-weight: 500;
+  }
+  .placeholder .dot { width: 10px; height: 10px; border-radius: 999px; background: #ffffff; animation: pulse 1.4s ease-in-out infinite; flex: 0 0 auto; }
+  .placeholder .tag { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .placeholder .col { display: flex; flex-direction: column; gap: 4px; }
+  @keyframes pulse { 0%, 100% { transform: scale(0.85); opacity: 0.5; } 50% { transform: scale(1.2); opacity: 1; } }
+  .pending {
+    margin: 0 16px 16px; padding: 18px 16px;
+    display: flex; flex-direction: column; align-items: stretch;
+    background: linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+    color: #ffffff; border-radius: var(--radius-sm);
+  }
+  .pending .pending-row { display: flex; align-items: flex-start; gap: 12px; }
+  .pending .spin {
+    width: 18px; height: 18px; flex: 0 0 auto; border-radius: 999px;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #ffffff;
+    animation: spin 0.9s linear infinite; margin-top: 2px;
+  }
+  .pending .planning-dot { width: 10px; height: 10px; flex: 0 0 auto; border-radius: 999px; background: #ffffff; margin: 5px 4px 0; }
+  .pending .label { font-size: 13px; font-weight: 500; }
+  .pending .elapsed { font-size: 11px; margin-top: 2px; }
+  .pending .col { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .pending .progress { margin-top: 6px; height: 4px; background: rgba(255,255,255,0.2); border-radius: 999px; overflow: hidden; }
+  .pending .bar { height: 100%; background: #ffffff; transition: width 0.4s ease; }
+  .pending .pending-thumbs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .pending .pending-thumb { width: 96px; max-width: 30%; display: flex; flex-direction: column; gap: 4px; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.08); }
+  .pending .pending-thumb video, .pending .pending-thumb img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; background: rgba(0,0,0,0.2); }
+  .pending .pending-thumb span { font-size: 10px; padding: 0 4px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .failed-body {
+    margin: 0 16px 16px; padding: 14px 16px;
+    background: var(--err-bg); border: 1px solid var(--err-border); color: var(--err-fg);
+    border-radius: var(--radius-sm); font-size: 13px;
+  }
+  .info-body {
+    margin: 0 16px 16px; padding: 14px 16px;
+    background: var(--info-bg); color: var(--fg);
+    border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45;
+  }
+  .card > .info-body:first-child, .card > .failed-body:first-child { margin-top: 16px; }
+</style></head>
+<body>
+<div id="root"><div class="card"><div class="placeholder"><span class="dot"></span><div class="col"><span class="tag">Versely</span><span>Preparing preview...</span></div></div></div></div>
+<script>
+(function () {
+  var root = document.getElementById('root');
+  var CARD_META_KEY = 'studio.versely/card';
+  var POLL_ERROR_LIMIT = 3;
+  var POLL_STALE_MS = 30000;
+  var OPEN_LINK_FALLBACK_MS = 1500;
+  var state = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function urlExt(u) {
+    try { var p = new URL(u).pathname; var m = p.match(/\.([a-z0-9]+)$/i); return (m ? m[1] : '').toLowerCase(); }
+    catch (e) { return ''; }
+  }
+  function isVideoUrl(u) { return /^(mp4|mov|webm|m4v|mkv)$/.test(urlExt(u)); }
+  function isAudioUrl(u) { return /^(mp3|wav|m4a|ogg|oga|flac|aac|mpeg|mpga|opus|weba)$/.test(urlExt(u)); }
+  function assign() {
+    var out = {};
+    for (var i = 0; i < arguments.length; i++) {
+      var src = arguments[i];
+      if (!src || typeof src !== 'object') continue;
+      for (var k in src) if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k];
+    }
+    return out;
+  }
+
+  // --- Rendering -------------------------------------------------------------
+  function renderChips(s) {
+    var chips = [];
+    if (s.model) chips.push('<span class="chip">' + esc(s.model) + '</span>');
+    if (s.aspect_ratio) chips.push('<span class="chip">' + esc(s.aspect_ratio) + '</span>');
+    if (s.size) chips.push('<span class="chip">' + esc(s.size) + '</span>');
+    if (s.duration_seconds) chips.push('<span class="chip">' + esc(s.duration_seconds) + 's</span>');
+    if (s.seed != null) chips.push('<span class="chip">seed ' + esc(s.seed) + '</span>');
+    return chips.length ? '<div class="chips">' + chips.join('') + '</div>' : '';
+  }
+  function renderHead(s) {
+    var text = s.prompt || s.text || s.title || s.summary || '';
+    if (!text) return '';
+    return '<div class="head"><div class="prompt" data-prompt>' + esc(text) + '</div>' +
+      '<button class="toggle" data-toggle aria-label="Expand">&#8964;</button></div>';
+  }
+  function renderImageGrid(assets) {
+    var n = assets.length;
+    var cls = n === 1 ? 'n1' : n === 2 ? 'n2' : n === 3 ? 'n3' : 'n4plus';
+    var html = '<div class="grid ' + cls + '">';
+    for (var i = 0; i < n; i++) {
+      var a = assets[i] || {};
+      var url = esc(a.url || '');
+      var inner;
+      if (isVideoUrl(a.url)) {
+        inner = '<video src="' + url + '" controls playsinline preload="metadata" referrerpolicy="no-referrer"></video>';
+      } else if (isAudioUrl(a.url)) {
+        inner = '<audio src="' + url + '" controls preload="metadata"></audio>';
+      } else {
+        inner = '<img src="' + url + '" alt="' + esc(a.label || '') + '" loading="lazy" referrerpolicy="no-referrer" data-open="' + url + '"/>';
+      }
+      html += '<div class="' + (n === 1 ? 'tile solo' : 'tile') + '">' + inner + '</div>';
+    }
+    return html + '</div>';
+  }
+  function renderVideo(asset) {
+    return '<video class="player" src="' + esc(asset.url) + '" controls playsinline preload="metadata" referrerpolicy="no-referrer"></video>';
+  }
+  function renderAudio(assets) {
+    var html = '<div class="audio-list">';
+    for (var i = 0; i < assets.length; i++) {
+      var a = assets[i] || {}; if (!a.url) continue;
+      html += '<div class="audio-row"><div class="audio-label">' + esc(a.label || ('Track ' + (i + 1))) + '</div>' +
+        '<audio src="' + esc(a.url) + '" controls preload="metadata" referrerpolicy="no-referrer"></audio></div>';
+    }
+    return html + '</div>';
+  }
+  function formatElapsed(ms) {
+    var secs = Math.max(0, Math.round(ms / 1000));
+    var mm = Math.floor(secs / 60), ss = secs % 60;
+    return mm + ':' + (ss < 10 ? '0' + ss : ss);
+  }
+  function renderPending(s) {
+    var isMovie = (typeof s.scenes_total === 'number' && s.scenes_total > 0);
+    var headline;
+    var titlePrefix = s.title ? esc(s.title) + ' - ' : '';
+    if (isMovie) {
+      var done = (typeof s.scenes_completed === 'number') ? s.scenes_completed : 0;
+      var total = s.scenes_total;
+      var plural = total === 1 ? '' : 's';
+      if (s.phase === 'planning') headline = titlePrefix + 'planned ' + total + ' scene' + plural + ' (not generating yet)';
+      else if (s.phase === 'combining') headline = titlePrefix + 'all scenes ready, combining...';
+      else headline = titlePrefix + done + ' of ' + total + ' scene' + plural + ' ready';
+    } else {
+      var kindLabel = s.kind === 'video' ? 'video' : s.kind === 'audio' ? 'audio' : s.kind === 'gallery' ? 'media' : 'image';
+      headline = 'Generating ' + kindLabel + '...';
+    }
+    var planning = isMovie && s.phase === 'planning';
+    var pct = (typeof s.progress === 'number' && !isNaN(s.progress))
+      ? Math.max(0, Math.min(100, s.progress > 1 ? s.progress : s.progress * 100)) : null;
+    var thumbs = '';
+    if (isMovie) {
+      var assets = Array.isArray(s.assets) ? s.assets.filter(function (a) { return a && a.url; }) : [];
+      if (assets.length) {
+        thumbs = '<div class="pending-thumbs">';
+        for (var i = 0; i < assets.length; i++) {
+          var a = assets[i], label = esc(a.label || '');
+          if (isVideoUrl(a.url)) thumbs += '<div class="pending-thumb"><video src="' + esc(a.url) + '" muted playsinline preload="metadata" referrerpolicy="no-referrer"></video><span>' + label + '</span></div>';
+          else if (!isAudioUrl(a.url)) thumbs += '<div class="pending-thumb"><img src="' + esc(a.url) + '" alt="' + label + '" referrerpolicy="no-referrer"><span>' + label + '</span></div>';
+        }
+        thumbs += '</div>';
+      }
+    }
+    return '<div class="pending"><div class="pending-row">' +
+      (planning ? '<div class="planning-dot"></div>' : '<div class="spin"></div>') +
+      '<div class="col"><div class="label">' + headline + '</div>' +
+      (planning ? '' : '<div class="elapsed" data-elapsed>' + formatElapsed(pollElapsedMs()) + ' elapsed</div>') +
+      (planning || pct == null ? '' : '<div class="progress"><div class="bar" data-bar style="width:' + pct.toFixed(0) + '%"></div></div>') +
+      '</div></div>' + thumbs + '</div>';
+  }
+  function primaryUrl(s, assets) {
+    if (s.final_video_url) return s.final_video_url;
+    return assets.length === 1 ? assets[0].url : '';
+  }
+  function renderFoot(s, assets) {
+    var label = s.toolName ? String(s.toolName).replace(/^versely_/, '') : 'media';
+    var open = '';
+    var url = s.status === 'pending' || s.status === 'failed' || s.status === 'info' ? '' : primaryUrl(s, assets);
+    if (url) open = '<button class="open-link" data-open="' + esc(url) + '">Open</button>';
+    return '<div class="foot">' + open + '<span class="brand"><span class="brand-dot"></span>Versely &middot; ' + esc(label) + '</span></div>';
+  }
+
+  function render() {
+    if (!state) return;
+    var s = state;
+    var assets = Array.isArray(s.assets) ? s.assets.filter(function (a) { return a && a.url; }) : [];
+    var kind = s.kind;
+    if (!kind) kind = assets.length === 1 ? (isVideoUrl(assets[0].url) ? 'video' : isAudioUrl(assets[0].url) ? 'audio' : 'image') : 'gallery';
+    var body;
+    if (s.status === 'pending') body = renderPending(s);
+    else if (s.status === 'failed') body = '<div class="failed-body">' + esc(s.error || s.message || 'Generation failed.') + '</div>';
+    else if (s.status === 'info') body = '<div class="info-body">' + esc(s.message || 'Done.') + '</div>';
+    else if (!assets.length) body = '<div class="loading">No media returned.</div>';
+    else if (kind === 'video' || (assets.length === 1 && isVideoUrl(assets[0].url))) body = renderVideo(assets[0]);
+    else if (kind === 'audio' || isAudioUrl(assets[0].url)) body = renderAudio(assets);
+    else body = renderImageGrid(assets);
+    root.innerHTML = '<div class="card">' + renderHead(s) + renderChips(s) + body + renderFoot(s, assets) + '</div>';
+
+    var toggle = root.querySelector('[data-toggle]');
+    var prompt = root.querySelector('[data-prompt]');
+    if (toggle && prompt) toggle.addEventListener('click', function () { prompt.classList.toggle('expanded'); });
+    var links = root.querySelectorAll('[data-open]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].addEventListener('click', function (ev) { ev.preventDefault(); openLink(this.getAttribute('data-open')); });
+    }
+    reportSize();
+  }
+
+  // --- Host bridge -----------------------------------------------------------
+  var seq = 0;
+  function nextId() { seq += 1; return Date.now() * 1000 + (seq % 1000); }
+  function send(msg) { try { if (window.parent) window.parent.postMessage(msg, '*'); } catch (e) {} }
+  function reply(id, result) { send({ jsonrpc: '2.0', id: id, result: result || {} }); }
+  var callbacks = {};
+  function request(method, params, onDone) {
+    var id = nextId();
+    if (onDone) callbacks[id] = onDone;
+    send({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+    return id;
+  }
+
+  function applyTheme(theme) {
+    if (theme === 'dark' || theme === 'light') document.documentElement.setAttribute('data-theme', theme);
+  }
+
+  function openLink(url) {
+    if (!url) return;
+    var settled = false;
+    function fallback() {
+      if (settled) return;
+      settled = true;
+      try { window.open(url, '_blank', 'noopener,noreferrer'); } catch (e) {}
+    }
+    request('ui/open-link', { url: url }, function (msg) {
+      if (msg.error || (msg.result && msg.result.isError)) fallback();
+      else settled = true;
+    });
+    setTimeout(fallback, OPEN_LINK_FALLBACK_MS);
+  }
+
+  // --- Polling: one request in flight, chained with setTimeout -------------
+  var poll = { active: false, spec: null, startedAt: 0, inflightId: null, errors: 0,
+               nextTimer: null, staleTimer: null, budgetTimer: null, tickTimer: null };
+
+  function pollElapsedMs() { return poll.startedAt ? Date.now() - poll.startedAt : 0; }
+  function pollTaskLabel() {
+    var args = (poll.spec && poll.spec.args) || {};
+    return args.request_id || args.run_id || args.movie_id || args.project_id || (state && state.task_id) || 'this job';
+  }
+
+  function stopPolling() {
+    poll.active = false;
+    poll.inflightId = null;
+    if (poll.nextTimer) { clearTimeout(poll.nextTimer); poll.nextTimer = null; }
+    if (poll.staleTimer) { clearTimeout(poll.staleTimer); poll.staleTimer = null; }
+    if (poll.budgetTimer) { clearTimeout(poll.budgetTimer); poll.budgetTimer = null; }
+    if (poll.tickTimer) { clearInterval(poll.tickTimer); poll.tickTimer = null; }
+  }
+
+  function finish(patch) {
+    stopPolling();
+    var kind = state && state.kind;
+    state = assign(state, patch);
+    if (kind && !patch.kind) state.kind = kind;
+    delete state.poll;
+    render();
+  }
+
+  function startPolling(s) {
+    if (poll.active || !s || s.status !== 'pending' || !s.poll || !s.poll.tool_name) return;
+    poll.active = true;
+    poll.spec = s.poll;
+    poll.startedAt = Date.now();
+    poll.errors = 0;
+    var budget = s.poll.timeout_ms > 0 ? s.poll.timeout_ms : 600000;
+    poll.budgetTimer = setTimeout(function () {
+      finish({ status: 'failed', error: 'This preview stopped checking, but the job may still finish. Ask for the status of ' + pollTaskLabel() + ' to collect it.' });
+    }, budget);
+    poll.tickTimer = setInterval(function () {
+      var el = root.querySelector('[data-elapsed]');
+      if (el) el.textContent = formatElapsed(pollElapsedMs()) + ' elapsed';
+    }, 1000);
+    sendPoll();
+  }
+
+  function scheduleNextPoll() {
+    if (!poll.active || poll.nextTimer || poll.inflightId != null) return;
+    var interval = poll.spec.interval_ms > 0 ? poll.spec.interval_ms : 5000;
+    poll.nextTimer = setTimeout(function () { poll.nextTimer = null; sendPoll(); }, interval);
+  }
+
+  function sendPoll() {
+    if (!poll.active || poll.inflightId != null) return;
+    var id = nextId();
+    poll.inflightId = id;
+    send({ jsonrpc: '2.0', id: id, method: 'tools/call',
+           params: { name: poll.spec.tool_name, arguments: poll.spec.args || {} } });
+    poll.staleTimer = setTimeout(function () {
+      if (poll.inflightId !== id) return;
+      poll.inflightId = null;
+      poll.staleTimer = null;
+      onPollError();
+    }, POLL_STALE_MS);
+  }
+
+  function onPollError() {
+    poll.errors += 1;
+    if (poll.errors >= POLL_ERROR_LIMIT) {
+      finish({ status: 'failed', error: 'Live updates are unavailable here, so this card cannot refresh itself. The job keeps running: ask for the status of ' + pollTaskLabel() + ' to collect the result.' });
+      return;
+    }
+    scheduleNextPoll();
+  }
+
+  function cardStateFromResult(result) {
+    if (!result || typeof result !== 'object') return null;
+    var meta = result._meta && result._meta[CARD_META_KEY];
+    var sc = result.structuredContent;
+    if (sc || meta) return assign(meta, sc);
+    if (Array.isArray(result.content)) {
+      for (var i = 0; i < result.content.length; i++) {
+        var c = result.content[i];
+        if (c && c.type === 'text' && typeof c.text === 'string') {
+          try {
+            var parsed = JSON.parse(c.text);
+            if (parsed && typeof parsed === 'object' && (parsed.status || parsed.assets)) return parsed;
+          } catch (e) {}
+        }
+      }
+    }
+    return null;
+  }
+
+  var MERGEABLE = ['assets', 'progress', 'phase', 'scenes_total', 'scenes_completed', 'scenes_failed',
+                   'scenes_generating', 'scenes_pending', 'title'];
+
+  function onPollResponse(msg) {
+    if (poll.staleTimer) { clearTimeout(poll.staleTimer); poll.staleTimer = null; }
+    poll.inflightId = null;
+    if (!poll.active) return;
+    if (msg.error) return onPollError();
+    var result = msg.result || {};
+    var sc = cardStateFromResult(result);
+    // An error that doesn't describe the job (no task_id) is transport or
+    // tool trouble: retry it. Only the job itself can say it failed.
+    if (!sc || (result.isError && !sc.task_id) || sc.status === 'info') return onPollError();
+    poll.errors = 0;
+    var hasAssets = Array.isArray(sc.assets) && sc.assets.length > 0;
+    if (sc.status === 'completed' || (!sc.status && hasAssets)) {
+      finish(assign(sc, { status: 'completed', kind: (state && state.kind) || sc.kind }));
+      return;
+    }
+    if (sc.status === 'failed') {
+      finish({ status: 'failed', error: sc.error || sc.message || 'Generation failed.' });
+      return;
+    }
+    var before = state && Array.isArray(state.assets) ? state.assets.length : 0;
+    var scenesBefore = state ? state.scenes_completed : undefined;
+    var merged = assign(state);
+    for (var i = 0; i < MERGEABLE.length; i++) if (MERGEABLE[i] in sc) merged[MERGEABLE[i]] = sc[MERGEABLE[i]];
+    state = merged;
+    var grew = (Array.isArray(state.assets) ? state.assets.length : 0) > before;
+    if (grew || state.scenes_completed !== scenesBefore) {
+      render();
+    } else if (typeof sc.progress === 'number') {
+      var bar = root.querySelector('[data-bar]');
+      var pct = Math.max(0, Math.min(100, sc.progress > 1 ? sc.progress : sc.progress * 100));
+      if (bar) bar.style.width = pct.toFixed(0) + '%';
+    }
+    scheduleNextPoll();
+  }
+
+  // --- State ingestion ---------------------------------------------------------
+  var lastInput = null;
+  function ingest(structured, meta) {
+    var cardMeta = meta && meta[CARD_META_KEY];
+    if (!structured && !cardMeta) return;
+    var next = assign(cardMeta, structured);
+    if (lastInput && !next.toolArgs) next.toolArgs = lastInput;
+    state = next;
+    render();
+    startPolling(state);
+  }
+
+  var lastReportedH = -1;
+  function reportSize() {
+    try {
+      var card = document.querySelector('.card') || document.body;
+      var rect = card.getBoundingClientRect();
+      var h = Math.ceil(rect.height) || document.documentElement.scrollHeight;
+      var w = Math.ceil(rect.width) || document.documentElement.scrollWidth;
+      if (h === lastReportedH || h <= 0) return;
+      lastReportedH = h;
+      send({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { width: w, height: h } });
+    } catch (e) {}
+  }
+  try { new ResizeObserver(function () { reportSize(); }).observe(document.body); } catch (e) {}
+  window.addEventListener('load', reportSize);
+  setTimeout(reportSize, 50);
+  setTimeout(reportSize, 300);
+
+  // window.openai globals (ChatGPT), read once now and again on each update.
+  function readOpenAiGlobals() {
+    try {
+      var o = window.openai;
+      if (!o) return;
+      if (o.theme) applyTheme(o.theme);
+      if (o.toolInput) lastInput = o.toolInput;
+      if (o.toolOutput || o.toolResponseMetadata) ingest(o.toolOutput, o.toolResponseMetadata);
+    } catch (e) {}
+  }
+  window.addEventListener('openai:set_globals', readOpenAiGlobals);
+  readOpenAiGlobals();
+
+  var initId = null;
+  var initAcked = false;
+
+  window.addEventListener('message', function (ev) {
+    var m = ev.data;
+    if (!m || typeof m !== 'object') return;
+
+    // Answers to our own requests.
+    if (m.id != null && (m.result !== undefined || m.error !== undefined) && !m.method) {
+      if (m.id === initId) {
+        var hc = m.result && m.result.hostContext;
+        if (hc && hc.theme) applyTheme(hc.theme);
+        if (!initAcked) {
+          initAcked = true;
+          send({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+        }
+        return;
+      }
+      if (poll.inflightId != null && m.id === poll.inflightId) return onPollResponse(m);
+      var cb = callbacks[m.id];
+      if (cb) { delete callbacks[m.id]; cb(m); }
+      // Anything else is a late answer to a poll we already gave up on: ignore.
+      return;
+    }
+
+    // Requests from the host.
+    if (m.method === 'ping' && m.id != null) return reply(m.id, {});
+    if (m.method === 'ui/resource-teardown') {
+      stopPolling();
+      if (m.id != null) reply(m.id, {});
+      return;
+    }
+
+    // Notifications from the host.
+    var p = m.params || {};
+    if (m.method === 'ui/notifications/host-context-changed') return applyTheme(p.theme);
+    if (m.method === 'ui/notifications/tool-input') { lastInput = p.arguments || p; return; }
+    if (m.method === 'ui/notifications/tool-result') return ingest(p.structuredContent, p._meta);
+    if (m.method === 'ui/notifications/tool-cancelled') {
+      if (!state) { state = { status: 'info', message: 'This request was cancelled.' }; render(); }
+      return;
+    }
+    // Inspector / legacy shapes.
+    if (m.type === 'tool-output' && m.payload) return ingest(m.payload, null);
+    if (m.structuredContent) return ingest(m.structuredContent, m._meta);
+  });
+
+  try {
+    var hash = (location.hash || '').match(/state=([^&]+)/);
+    if (hash) ingest(JSON.parse(atob(decodeURIComponent(hash[1]))), null);
+  } catch (e) {}
+
+  initId = nextId();
+  send({
+    jsonrpc: '2.0', id: initId, method: 'ui/initialize',
+    params: {
+      protocolVersion: '2026-01-26',
+      appInfo: { name: 'Versely Media Card', version: '2.0.0' },
+      appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] },
+    },
+  });
+})();
+</script>
+</body></html>`;
+
 // --- Registry ---------------------------------------------------------------
 
 /**
@@ -908,6 +1530,9 @@ export const UI_MIME_TYPE = "text/html;profile=mcp-app";
 /** Single resource URI all media tools point at. */
 export const MEDIA_CARD_URI = "ui://versely/media-card";
 
+/** The v2 card's HTML, exported for the offline preview script. */
+export const MEDIA_CARD_V2 = MEDIA_CARD_V2_HTML;
+
 interface UiResourceEntry {
   uri: string;
   name: string;
@@ -921,42 +1546,83 @@ interface UiResourceEntry {
   meta: Record<string, unknown>;
 }
 
+const MEDIA_CARD_CSP = {
+  resourceDomains: [
+    "https://img.versely.studio",
+    "https://videos.versely.studio",
+    "https://audio.versely.studio",
+    "https://user-files.versely.studio",
+    "https://slideshow-images.versely.studio",
+    "https://slideshowvideos.versely.studio",
+    "https://avatars.versely.studio",
+    "https://cdn.versely.studio",
+  ],
+  connectDomains: [],
+  frameDomains: [],
+};
+
 const MEDIA_CARD_RESOURCE_META: Record<string, unknown> = {
   ui: {
     // Hosts that respect csp will allow the Versely CDN subdomains so the
     // iframe sandbox doesn't block media loads. claude.ai currently
     // hardcodes its sandbox CSP (anthropics/claude-ai-mcp#40); these
     // declarations kick in once that's fixed and on other hosts today.
-    csp: {
-      resourceDomains: [
-        "https://img.versely.studio",
-        "https://videos.versely.studio",
-        "https://audio.versely.studio",
-        "https://user-files.versely.studio",
-        "https://slideshow-images.versely.studio",
-        "https://slideshowvideos.versely.studio",
-        "https://avatars.versely.studio",
-        "https://cdn.versely.studio",
-      ],
-      connectDomains: [],
-      frameDomains: [],
-    },
+    csp: MEDIA_CARD_CSP,
   },
 };
 
+/**
+ * ChatGPT requires a unique `domain` for the card's sandbox origin and an
+ * explicit `prefersBorder`. claude.ai assigns its own sandbox domain per
+ * connector, so the full profile keeps the plain meta above unchanged.
+ */
+const OPENAI_MEDIA_CARD_RESOURCE_META: Record<string, unknown> = {
+  ui: {
+    csp: MEDIA_CARD_CSP,
+    domain: "https://mcp.versely.studio",
+    prefersBorder: false,
+  },
+};
+
+const MEDIA_CARD_NAME = "Versely Media Card";
+const MEDIA_CARD_DESCRIPTION =
+  "Branded inline card rendering Versely-generated images, videos, audio, and slideshows. Hydrates from structuredContent { kind, assets, model, prompt, toolName, toolArgs }.";
+
+/** The full-profile / v1 resource list (what this server always served). */
 export const UI_RESOURCES: ReadonlyArray<UiResourceEntry> = [
   {
     uri: MEDIA_CARD_URI,
-    name: "Versely Media Card",
-    description:
-      "Branded inline card rendering Versely-generated images, videos, audio, and slideshows. Hydrates from structuredContent { kind, assets, model, prompt, toolName, toolArgs }.",
+    name: MEDIA_CARD_NAME,
+    description: MEDIA_CARD_DESCRIPTION,
     html: MEDIA_CARD_HTML,
     meta: MEDIA_CARD_RESOURCE_META,
   },
 ];
 
-export function getUiResource(uri: string): UiResourceEntry | undefined {
-  return UI_RESOURCES.find((r) => r.uri === uri);
+export interface UiResourceOptions {
+  profile: Profile;
+  /** Serve the v2 card HTML (config.cardV2Profiles has this profile). */
+  cardV2: boolean;
+}
+
+/** The ui:// resources a server for this profile lists and serves. */
+export function uiResourcesFor(opts: UiResourceOptions): UiResourceEntry[] {
+  return [
+    {
+      uri: MEDIA_CARD_URI,
+      name: MEDIA_CARD_NAME,
+      description: MEDIA_CARD_DESCRIPTION,
+      html: opts.cardV2 ? MEDIA_CARD_V2_HTML : MEDIA_CARD_HTML,
+      meta: opts.profile === "openai" ? OPENAI_MEDIA_CARD_RESOURCE_META : MEDIA_CARD_RESOURCE_META,
+    },
+  ];
+}
+
+export function getUiResource(
+  uri: string,
+  opts: UiResourceOptions = { profile: "full", cardV2: false },
+): UiResourceEntry | undefined {
+  return uiResourcesFor(opts).find((r) => r.uri === uri);
 }
 
 // --- Tool _meta -------------------------------------------------------------
@@ -967,12 +1633,17 @@ export function getUiResource(uri: string): UiResourceEntry | undefined {
  * `visibility` — CSP and permissions live on the resource's _meta,
  * not the tool's. Extra fields here can cause hosts to reject the
  * tool as malformed, so keep this minimal.
+ *
+ * `app: true` is for the tools the card itself polls (get_movie_status,
+ * get_dub, get_workflow_run, get_video_workflow_run): a host that enforces
+ * visibility only lets the card call tools whose list includes "app", and an
+ * explicit ["model"] shuts the card out of its own poll loop.
  */
-export function metaForMediaCard(): Record<string, unknown> {
+export function metaForMediaCard(opts: { app?: boolean } = {}): Record<string, unknown> {
   return {
     ui: {
       resourceUri: MEDIA_CARD_URI,
-      visibility: ["model"],
+      visibility: opts.app ? ["model", "app"] : ["model"],
     },
   };
 }
@@ -981,7 +1652,11 @@ export function metaForMediaCard(): Record<string, unknown> {
 
 export type MediaKind = "image" | "video" | "audio" | "gallery";
 
-export type MediaStatus = "pending" | "completed" | "failed";
+/**
+ * "info" is a terminal, media-less state with a plain `message` (v2 card);
+ * v1 renders it as an empty card.
+ */
+export type MediaStatus = "pending" | "completed" | "failed" | "info";
 
 export interface UiAsset {
   url: string;
@@ -1023,6 +1698,7 @@ export interface MediaCardPayload {
   task_id?: string;
   progress?: number;
   error?: string;
+  message?: string;
   model?: string;
   prompt?: string;
   aspect_ratio?: string;
