@@ -6,7 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — ChatGPT plugin
+
+- **Tool profiles.** `full` (every client so far, 93 tools) and `openai` (the ChatGPT plugin, 48 tools). A backend-signed `ck: "openai"` token always gets `openai`; anyone can narrow to it with `?profile=openai` / `X-Versely-Profile`. Out-of-profile calls fail as unknown tools; sessions are bound to their profile.
+- **Policy table** (`src/tools/_policy.ts`): title, class and MCP annotations for every tool (emitted in both profiles), ChatGPT status strings, and a written justification per hint. The server refuses to start if a tool has no row. `npm run annotations` prints the justifications.
+- **RunPod-only models in the plugin**: `versely_find_models` reads the backend's plugin catalog (falls back to RunPod-discounted catalog models when it isn't deployed), new `versely_get_model_inputs` returns each model's inputs, `versely_list_voices` lists only the RunPod TTS voices, and model pickers that can only name other models are hidden.
+- **Plugin free credits**: `versely_get_credits` reports `{credits, plugin_free_credits, free_account}`; plugin refusals are relayed as plain, link-free text.
+- **Duplicate-call guard** for plugin creation tools: identical calls in flight join, successes are reused for 150s, `confirm_repeat: true` opts out.
+- **Media card v2** for the plugin (single in-flight poll with a stale watchdog, ping/teardown, host theme, `ui/open-link`, `_meta` card state, `info` status). claude.ai keeps v1 unchanged.
+- Server title "Versely", ChatGPT server instructions, `/.well-known/openai-apps-challenge`, `/.well-known/oauth-protected-resource/mcp`.
+
 ### Changed
+
+- Backend requests carry `X-Versely-Proxy` (HMAC, key derived from `OAUTH_JWT_SECRET`), `X-Versely-OpenAI-Subject`, `X-Versely-Client-Profile`, and an `Idempotency-Key` on POSTs. Only GETs are retried; a timed-out write says to check `versely_list_user_media` first. Synchronous endpoints get a 95s timeout.
+- Credit errors no longer upsell ("Top up at …") and 401/403 wording fits OAuth users.
+- Provider safety switches (`enable_safety_checker`, `safety_tolerance`, …) are stripped from every call.
+- Synchronous results (UGC composites, merges) finish as completed cards; card tools always hand the card a state; model-initiated movie/dub/workflow checks carry the poll instruction; the four card poll targets are app-visible.
+
+### Security
+
+- `/debug/recent-calls` requires `MCP_ADMIN_TOKEN` (it accepted any `vsk_`-shaped bearer). `versely_render_test_card` only registers with `MCP_ENABLE_DEBUG_TOOLS=1`.
+
+### Changed (earlier)
 
 - **Transport: stdio → Streamable HTTP.** The server now listens on an HTTP port (default `127.0.0.1:8080`) and speaks the MCP Streamable HTTP transport instead of stdio. Designed to run behind a reverse proxy (nginx + Let's Encrypt) for cloud hosting.
 - **Auth: server-level → per-request.** `VERSELY_API_KEY` is no longer a server env var. Each MCP request must include `Authorization: Bearer vsk_...` from the calling user. The server is now multi-tenant — one deployment can serve multiple users without sharing identity.

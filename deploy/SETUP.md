@@ -56,7 +56,7 @@ Verify locally on the droplet:
 
 ```bash
 curl -s http://127.0.0.1:8080/healthz
-# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":51}
+# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":93,"tools_openai":48}
 ```
 
 ## 6. nginx vhost

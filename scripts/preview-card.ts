@@ -21,12 +21,16 @@
  * no network, no CORS, and dodges the Cloudflare hotlink protection that blocks
  * *.versely.studio media from non-Versely referers.
  *
- * Usage:  npx tsx scripts/preview-card.ts  [outfile]
+ * Usage:  npx tsx scripts/preview-card.ts  [outfile] [--v2]
+ *         --v2 previews the v2 card (the ChatGPT plugin's) instead of v1.
  */
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getUiResource, MEDIA_CARD_URI, buildMediaCardPayload } from "../src/ui/templates.js";
+
+const V2 = process.argv.includes("--v2");
+const OUT_ARG = process.argv.slice(2).find((a) => !a.startsWith("--"));
 
 // The production default, mirrored here only so the toolbar slider can start in
 // the right place. Read from the generated CSS below rather than hardcoding a
@@ -101,6 +105,9 @@ function samplePayloads(): Record<string, unknown> {
     },
   });
 
+  // v2 only: a card tool that had no media to show (v1 renders it empty).
+  out["info"] = { kind: "gallery", assets: [], status: "info", message: "Done. The details are in the reply." };
+
   out["failed"] = {
     status: "failed",
     task_id: "preview-failed",
@@ -111,7 +118,7 @@ function samplePayloads(): Record<string, unknown> {
 }
 
 function build(): string {
-  const resource = getUiResource(MEDIA_CARD_URI);
+  const resource = getUiResource(MEDIA_CARD_URI, { profile: V2 ? "openai" : "full", cardV2: V2 });
   if (!resource) throw new Error(`No UI resource registered at ${MEDIA_CARD_URI}`);
 
   const html = resource.html;
@@ -297,7 +304,7 @@ function build(): string {
     .replace("</body></html>", toolbar + "</body></html>");
 }
 
-const outPath = resolve(process.argv[2] ?? "preview/media-card.html");
+const outPath = resolve(OUT_ARG ?? (V2 ? "preview/media-card-v2.html" : "preview/media-card.html"));
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, build(), "utf8");
 console.log(`Wrote ${outPath}`);
