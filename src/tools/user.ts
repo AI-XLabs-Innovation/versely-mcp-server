@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineTool, defineVariant, type Tool } from "./_types.js";
+import { defineTool, defineVariant, type Tool, type ToolContext } from "./_types.js";
 import { jsonResult, resolveUserId } from "./_helpers.js";
 
 const Empty = z.object({});
@@ -29,30 +29,44 @@ interface PluginBlock {
 // openai: the balance in the plugin's own terms. `trial` / `trial_offer`
 // describe the web app's free trial, which the plugin can't start and must
 // not advertise, so they never appear here.
+/**
+ * The account's plugin status: on the free trial (`free_account`: never paid,
+ * never subscribed, spending the free plugin credits) or not. The backend adds
+ * the `plugin` block only to ChatGPT-plugin requests, so any other caller reads
+ * as not on the trial.
+ */
+export async function loadTrialStatus(ctx: ToolContext): Promise<{ freeAccount: boolean; remaining: number; credits: number }> {
+  const userId = await ctx.client.getCurrentUserId();
+  const data = await ctx.client.get<Record<string, unknown>>(
+    `/api/v1/user/${encodeURIComponent(userId)}/credits`,
+  );
+  const plugin = (data?.plugin && typeof data.plugin === "object" ? data.plugin : {}) as PluginBlock;
+  const freeAccount = plugin.free_account === true;
+  return {
+    freeAccount,
+    // Frozen (unusable) once the account pays, so only reported while free.
+    remaining: freeAccount ? (plugin.free_credits_remaining ?? 0) : 0,
+    credits: typeof data?.credits === "number" ? data.credits : 0,
+  };
+}
+
 const GET_CREDITS_OPENAI = defineVariant({
   description:
     "Get the user's Versely credit balance. `credits` is the main balance. When `free_account` is true the " +
-    "account has not paid yet and works on free plugin credits (`plugin_free_credits`): only the models from " +
-    "versely_find_models can be used and some features are unavailable — tell the user that plainly.",
+    "account is on the free trial and works on free plugin credits (`plugin_free_credits`): it can generate only " +
+    "with the models versely_find_models marks free_trial, and some features are unavailable - tell the user that plainly.",
   inputSchema: z.object({}),
   handler: async (_input, ctx) => {
-    const userId = await ctx.client.getCurrentUserId();
-    const data = await ctx.client.get<Record<string, unknown>>(
-      `/api/v1/user/${encodeURIComponent(userId)}/credits`,
-    );
-    const plugin = (data?.plugin && typeof data.plugin === "object" ? data.plugin : {}) as PluginBlock;
-    const freeAccount = plugin.free_account === true;
-    const credits = typeof data?.credits === "number" ? data.credits : 0;
+    const { freeAccount, remaining, credits } = await loadTrialStatus(ctx);
     return jsonResult({
       credits,
-      // Frozen (unusable) once the account pays, so only reported while free.
-      plugin_free_credits: freeAccount ? (plugin.free_credits_remaining ?? 0) : 0,
+      plugin_free_credits: remaining,
       free_account: freeAccount,
       ...(freeAccount
         ? {
             note:
-              "Free plugin credits cover image, video and voiceover generation with the models from versely_find_models. " +
-              "Other features are not available on free plugin credits.",
+              "Free trial: the free plugin credits cover image, video and voiceover generation with the models " +
+              "versely_find_models marks free_trial. Other models and features are not available on the free trial.",
           }
         : {}),
     });

@@ -162,13 +162,27 @@ export interface CatalogModel {
   slug?: string;
   name?: string;
   display_name?: string;
+  provider?: string;
   content_type?: string;
   categories?: string[];
   credits?: number;
   requires_image?: boolean;
   is_runpod_discounted?: boolean;
   reference_config?: Record<string, unknown> | null;
+  max_reference?: number | null;
   accepts_video_input?: boolean;
+  requires_video_input?: boolean;
+  released_at?: string;
+  /** Best rank across the model's leaderboard categories (1 = best), and its score (ELO). */
+  best_rank_overall?: number | null;
+  best_score_overall?: number | null;
+  /** Rank per category (e.g. {"text-to-video": 3}). */
+  best_rank_by_category?: Record<string, number> | null;
+  price_matrix?: Record<string, unknown> | null;
+  supports_aspect_ratios?: unknown;
+  supports_durations?: unknown;
+  supports_qualities?: unknown;
+  supports_styles?: unknown;
 }
 
 export type CatalogType = PluginModelType | "lipsync";

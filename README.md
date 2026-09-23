@@ -81,7 +81,7 @@ Each request is served one of two tool **profiles**:
 
 - A token the backend signed with `ck: "openai"` (issued to ChatGPT) **always** gets `openai` — the claim is inside the signature, so it can't be widened. Any other caller can restrict itself with `?profile=openai` or `X-Versely-Profile: openai` (handy for testing the plugin surface with an API key).
 - Calls to a tool outside the caller's profile fail as `Unknown tool`. A session is bound to the profile it was opened with (a mismatched request gets 403).
-- The `openai` profile lists **only RunPod-served models** (`versely_find_models` reads the backend's plugin catalog; `versely_get_model_inputs` returns each model's accepted inputs), hides model pickers that could only name other models, never offers blocking `mode: "wait"`, and keeps bulky card data in result `_meta` rather than `structuredContent` (ChatGPT shows `structuredContent` to the model).
+- The `openai` profile shows **every model, ranked** (`versely_find_models` returns the full catalog with leaderboard rank and score, and marks `free_trial: true` on the RunPod-served models from the backend's plugin catalog; `versely_get_model_inputs` returns each model's inputs). An account on the **free trial** (never paid, spending the 100 free plugin credits) may only generate with `free_trial` models, which the backend enforces. The profile never offers blocking `mode: "wait"`, and keeps bulky card data in result `_meta` rather than `structuredContent` (ChatGPT shows `structuredContent` to the model).
 - ChatGPT tends to re-call a tool after ~60 s. For `openai` creation tools, an identical call made while the first is running **joins** it, and one made within 150 s of a success gets that result back, so nothing is generated — or charged — twice. `confirm_repeat: true` makes a deliberate second copy.
 
 Every tool has a row in [`src/tools/_policy.ts`](src/tools/_policy.ts): its title, class (read / create / edit / delete / publish → MCP annotations), profiles, ChatGPT status strings, and a written justification per annotation hint. `npm run annotations -- --profile openai` prints those justifications as Markdown for OpenAI's plugin portal.
@@ -183,7 +183,7 @@ versely-mcp-server/
 │   └── tools/
 │       ├── _policy.ts            # per-tool title, annotations, profiles, justifications
 │       ├── _shaping.ts           # per-profile schema/result shaping
-│       ├── _pluginCatalog.ts     # RunPod-only model catalog client
+│       ├── _pluginCatalog.ts     # plugin (free-trial) + full model catalog client
 │       ├── _types.ts / _helpers.ts / _async.ts / _registry.ts
 │       └── user / generate / slideshow / movie / ugc / social / status /
 │           features / workflows / videoWorkflows / voices / dubbing / debug .ts

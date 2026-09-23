@@ -8,6 +8,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added — ChatGPT plugin
 
+- **Every model in the plugin (2026-09-24).** `versely_find_models` (openai) lists the full catalog ranked by leaderboard with `free_trial` flags and the account's `on_free_trial`; only free-trial accounts are limited to RunPod models. Model pickers are visible again, `versely_list_voices` is the full catalog, and `versely_generate_lipsync` joins the plugin (49 tools).
 - **Tool profiles.** `full` (every client so far, 93 tools) and `openai` (the ChatGPT plugin, 48 tools). A backend-signed `ck: "openai"` token always gets `openai`; anyone can narrow to it with `?profile=openai` / `X-Versely-Profile`. Out-of-profile calls fail as unknown tools; sessions are bound to their profile.
 - **Policy table** (`src/tools/_policy.ts`): title, class and MCP annotations for every tool (emitted in both profiles), ChatGPT status strings, and a written justification per hint. The server refuses to start if a tool has no row. `npm run annotations` prints the justifications.
 - **RunPod-only models in the plugin**: `versely_find_models` reads the backend's plugin catalog (falls back to RunPod-discounted catalog models when it isn't deployed), new `versely_get_model_inputs` returns each model's inputs, `versely_list_voices` lists only the RunPod TTS voices, and model pickers that can only name other models are hidden.

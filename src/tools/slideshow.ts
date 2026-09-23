@@ -26,7 +26,6 @@ const versely_create_slideshow = defineTool({
   meta: metaForMediaCard(),
   // Only a fixed set of non-RunPod image models works here, so the plugin
   // hides the picker and the backend default applies.
-  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       prompt: z.string(),
@@ -74,7 +73,6 @@ const versely_create_automated_slideshow = defineTool({
   meta: metaForMediaCard(),
   // Only a fixed set of non-RunPod image models works here, so the plugin
   // hides the picker and the backend default applies.
-  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       prompt: z
@@ -201,7 +199,6 @@ const versely_add_slideshow_images = defineTool({
   meta: metaForMediaCard(),
   // Only a fixed set of non-RunPod image models works here, so the plugin
   // hides the picker and the backend default applies.
-  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       slideshow_id: z.string(),

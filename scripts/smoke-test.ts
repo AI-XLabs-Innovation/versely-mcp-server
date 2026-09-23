@@ -51,14 +51,7 @@ const OPENAI_TOOLS = [
   "versely_get_movie_status", "versely_generate_movie_scenes", "versely_combine_movie",
   "versely_add_movie_scene", "versely_update_movie_scene", "versely_regenerate_scene", "versely_cancel_movie",
   "versely_create_dub", "versely_get_dub", "versely_list_dubs", "versely_delete_dub",
-  "versely_list_user_media", "versely_delete_generation",
-];
-
-/** Models the plugin must never name (not RunPod-served). */
-const NON_RUNPOD_NAMES = [
-  "Flux Pro Ultra", "Topaz", "Veed", "VEED", "Suno", "Sora", "VEO", "Kling", "Eleven Labs", "ElevenLabs",
-  "elevenlabs", "Gemini", "Qwen", "Grok", "Chatterbox", "Cartesia", "Inworld", "HeyGen", "heygen",
-  "Nano Banana", "GPT Image", "Imagen", "Recraft", "Reve", "Infini Talk", "BRIO", "SeedVR", "Clarity",
+  "versely_list_user_media", "versely_delete_generation", "versely_generate_lipsync",
 ];
 
 const failures: string[] = [];
@@ -408,10 +401,11 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   for (const [tool, prop] of [
     ["versely_create_slideshow", "model"], ["versely_add_slideshow_images", "model"], ["versely_generate_music", "model"],
     ["versely_extend_music", "model"], ["versely_upscale_image", "model"], ["versely_upscale_video", "model"],
-    ["versely_remove_background", "model"], ["versely_create_dub", "engine"],
+    ["versely_remove_background", "model"],
   ] as const) {
-    assert(`openai hides ${tool}.${prop}`, !(prop in (byName(oTools, tool)?.inputSchema.properties ?? {})));
+    assert(`openai shows ${tool}.${prop} (every model is visible)`, prop in (byName(oTools, tool)?.inputSchema.properties ?? {}));
   }
+  assert("openai hides versely_create_dub.engine", !("engine" in (byName(oTools, "versely_create_dub")?.inputSchema.properties ?? {})));
   const noConfirm = oTools.filter((t) => t.annotations?.readOnlyHint === false && t.annotations?.destructiveHint === false && t.annotations?.openWorldHint === false && !("confirm_repeat" in (t.inputSchema.properties ?? {})));
   assert("openai creation tools accept confirm_repeat", noConfirm.length === 0, noConfirm.map((t) => t.name).join(", "));
 
@@ -424,11 +418,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   }
   for (const m of instructions.match(/versely_[a-z0-9_]+/g) ?? []) if (!allowed.has(m)) strays.push(`instructions → ${m}`);
   assert("no openai description names a tool outside the profile", strays.length === 0, strays.join("; "));
-  const named: string[] = [];
-  for (const t of oTools) {
-    for (const d of descriptionsOf(t)) for (const n of NON_RUNPOD_NAMES) if (d.includes(n)) named.push(`${t.name} → ${n}`);
-  }
-  assert("no openai description names a non-RunPod model or provider", named.length === 0, named.join("; "));
+  assert("openai instructions carry the free-trial model rule", instructions.includes("free_trial"));
 
   const oResources = await openai.listResources();
   const oCard = await openai.readResource({ uri: "ui://versely/media-card" });
@@ -441,17 +431,22 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const outOfProfile = await call(openai, "versely_publish_post", { caption: "x", account_ids: ["a"] });
   assert("out-of-profile call is refused", outOfProfile.isError === true && textOf(outOfProfile).includes("Unknown tool"));
 
-  // RunPod-only models (plugin catalog).
-  const fm = JSON.parse(textOf(await call(openai, "versely_find_models", {}))) as { models: Array<{ name: string; params: string }> };
+  // Every model, ranked; free_trial marks exactly the plugin-catalog (RunPod) ones.
+  const fm = JSON.parse(textOf(await call(openai, "versely_find_models", {}))) as {
+    on_free_trial: boolean; models: Array<{ name: string; free_trial: boolean }>; free_trial_models?: Array<{ name: string }>;
+  };
   const catalogNames = new Set(PLUGIN_MODELS.map((m) => m.name));
-  assert("find_models (openai) returns only plugin-catalog models", fm.models.length === PLUGIN_MODELS.length && fm.models.every((m) => catalogNames.has(m.name)), JSON.stringify(fm.models.map((m) => m.name)));
-  assert("find_models (openai) summarises each model's params", fm.models.every((m) => typeof m.params === "string" && m.params.length > 0));
+  const fmNames = fm.models.map((m) => m.name).sort().join(",");
+  assert("find_models (openai) lists every catalog model", fmNames === "Eleven Labs Speech Turbo,Flux Pro Ultra,Minimax Speech,Seedream 4 Text to Image,Sora 2,Wan 2.5 Preview", fmNames);
+  assert("find_models (openai) marks free_trial exactly for the plugin-catalog models", fm.models.every((m) => m.free_trial === catalogNames.has(m.name)), JSON.stringify(fm.models));
+  assert("find_models (openai) with an API key is not on the free trial", fm.on_free_trial === false && fm.free_trial_models === undefined);
   const inputs = JSON.parse(textOf(await call(openai, "versely_get_model_inputs", { model: "Wan 2.5 Preview" }))) as Record<string, unknown>;
   assert("get_model_inputs returns full params + params_by_mode", Array.isArray(inputs.params) && !!inputs.params_by_mode);
-  const notHere = JSON.parse(textOf(await call(openai, "versely_get_model_inputs", { model: "Sora 2" }))) as Record<string, unknown>;
-  assert("get_model_inputs (openai) refuses a non-RunPod model", notHere.found === false);
-  const voices = JSON.parse(textOf(await call(openai, "versely_list_voices", {}))) as { voices: Array<{ id: string }> };
-  assert("list_voices (openai) returns only the RunPod TTS voices", voices.voices.map((v) => v.id).sort().join(",") === "English_Aussie_Bloke,Wise_Woman");
+  const sora = JSON.parse(textOf(await call(openai, "versely_get_model_inputs", { model: "Sora 2" }))) as Record<string, unknown>;
+  assert("get_model_inputs (openai) describes a non-trial model and marks it free_trial:false", sora.found !== false && sora.model === "Sora 2" && sora.free_trial === false, JSON.stringify(sora));
+  assert("get_model_inputs (openai) marks a plugin-catalog model free_trial:true", inputs.free_trial === true);
+  const voices = JSON.parse(textOf(await call(openai, "versely_list_voices", { provider: "minimax" }))) as { voices?: Array<{ id: string }> };
+  assert("list_voices (openai) lists voices per provider (full catalog)", Array.isArray(voices.voices) && voices.voices.length > 0);
 
   // mode / poll_* / user_id stripped at call time; results shaped for ChatGPT.
   const gen = await call(openai, "versely_generate_image", { model: "Seedream 4 Text to Image", prompt: "shape-test", mode: "wait", poll_timeout_ms: 60000, user_id: "someone-else" });
@@ -512,11 +507,17 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const credits = JSON.parse(textOf(await call(chatgpt, "versely_get_credits", {}))) as Record<string, unknown>;
   assert("get_credits (openai) reports the plugin block", credits.free_account === true && credits.plugin_free_credits === 87 && credits.credits === 0, JSON.stringify(credits));
   assert("get_credits (openai) never shows trial / trial_offer", !("trial" in credits) && !("trial_offer" in credits));
-  const fallback = JSON.parse(textOf(await call(chatgpt, "versely_find_models", {}))) as { models: Array<{ name: string; params: string }>; params_note?: string };
+  const fallback = JSON.parse(textOf(await call(chatgpt, "versely_find_models", {}))) as { on_free_trial: boolean; models: Array<{ name: string; free_trial: boolean }> };
   assert(
-    "find_models falls back to RunPod-discounted catalog models when the plugin catalog 404s",
-    fallback.models.map((m) => m.name).sort().join(",") === "Minimax Speech,Seedream 4 Text to Image,Wan 2.5 Preview" && !!fallback.params_note,
-    JSON.stringify(fallback.models.map((m) => m.name)),
+    "find_models for a free-trial ChatGPT user lists the free_trial models first",
+    fallback.on_free_trial === true && fallback.models.slice(0, 3).every((m) => m.free_trial) && fallback.models.slice(3).every((m) => !m.free_trial),
+    JSON.stringify(fallback.models),
+  );
+  assert(
+    "find_models marks free_trial from the catalog RunPod flag when the plugin catalog 404s",
+    fallback.models.length === 6 &&
+      fallback.models.filter((m) => m.free_trial).map((m) => m.name).sort().join(",") === "Minimax Speech,Seedream 4 Text to Image,Wan 2.5 Preview",
+    JSON.stringify(fallback.models),
   );
   backend.setPluginCatalog(true);
   const plainJwt = await connect(MCP_URL, mintJwt(backend.url, {}));

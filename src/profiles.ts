@@ -73,19 +73,21 @@ export const OPENAI_INSTRUCTIONS_LEAD =
   "Versely makes videos, UGC-style ads, voiceovers, images, music, slideshows and dubbed videos. " +
   "Creations run in the background and spend the user's Versely credits: call a creation tool once, never resubmit. " +
   "The card updates itself; results: versely_get_task_status (movies: versely_get_movie_status, dubs: versely_get_dub). " +
-  "Pick models only from versely_find_models, inputs from versely_get_model_inputs. " +
-  "If versely_get_credits shows free_account, say plainly some features are off. Never suggest buying credits.";
+  "Pick models from versely_find_models (all models, ranked). On the free trial use only models marked free_trial. " +
+  "Never suggest buying credits.";
 
 export const OPENAI_INSTRUCTIONS_DETAIL =
-  "Details. Pass a model's `name` from versely_find_models as `model`, and any extra inputs from " +
-  "versely_get_model_inputs as top-level arguments of the same call. Media inputs must be public https " +
+  "Details. versely_find_models lists every Versely model with its leaderboard rank and score, so you can " +
+  "recommend and compare models by quality and price. Pass a model's `name` as `model`, and any extra inputs " +
+  "from versely_get_model_inputs as top-level arguments of the same call. Media inputs must be public https " +
   "URLs; Versely URLs from earlier results work. If a creation call errors with a timeout, the job may " +
   "still have started: check versely_list_user_media before calling again. When a result says it matches " +
   "an earlier request, that earlier job was reused and not charged again; pass confirm_repeat: true only " +
-  "when the user clearly wants another copy. Accounts on free plugin credits (free_account: true) can " +
-  "generate images, videos and voiceovers with the models versely_find_models lists; other features " +
-  "return a message saying they are unavailable, and nothing is charged for them. Do not offer or link " +
-  "to credit purchases.";
+  "when the user clearly wants another copy. An account on the free trial (on_free_trial in " +
+  "versely_find_models, free_account in versely_get_credits) spends free plugin credits and can generate " +
+  "images, videos and voiceovers only with models marked free_trial; if the user asks for another model, " +
+  "say it isn't included in the free trial and suggest the best free_trial one. Other features return a " +
+  "message saying they are unavailable, and nothing is charged for them. Do not offer or link to credit purchases.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

@@ -18,10 +18,12 @@ import {
   type PluginModelType,
 } from "./_pluginCatalog.js";
 import { metaForMediaCard } from "../ui/templates.js";
+import { loadTrialStatus } from "./user.js";
 
-/** Model-field wording for the openai profile: no model names, ever. */
+/** Model-field wording for the openai profile. */
 const OPENAI_MODEL_PARAM = (type: string) =>
-  `A model \`name\` from versely_find_models (type '${type}'). Use versely_get_model_inputs with the same name for the other inputs it accepts.`;
+  `A model \`name\` from versely_find_models (type '${type}'). On the free trial (on_free_trial / free_account) use ` +
+  `only a model marked free_trial. Use versely_get_model_inputs with the same name for the other inputs it accepts.`;
 
 const versely_list_models = defineTool({
   name: "versely_list_models",
@@ -108,62 +110,126 @@ const FIND_MODELS_PATHS: Record<"image" | "video" | "audio" | "lipsync", string>
   lipsync: "/api/v1/ai-models/lipsync",
 };
 
-// openai profile: the plugin lists ONLY RunPod-served models (owner rule — no
-// model the plugin can't serve is ever named to the user or to ChatGPT), from
-// the backend's plugin catalog, with a one-line summary of each model's inputs.
+// openai profile (owner, 2026-09-24): ChatGPT knows EVERY model, ranked, so it
+// can advise on any of them. Only an account on the free trial is limited, to
+// the RunPod-served models the plugin catalog lists (`free_trial: true`) - the
+// backend enforces that on every generation, this just tells ChatGPT so it
+// picks one that will run.
+type FindType = PluginModelType | "lipsync";
+const FIND_TYPES: readonly FindType[] = ["image", "video", "audio", "lipsync"];
+
+function rankValue(m: { best_rank_overall?: number | null }): number {
+  return typeof m.best_rank_overall === "number" ? m.best_rank_overall : Number.POSITIVE_INFINITY;
+}
+
 const FIND_MODELS_OPENAI = defineVariant({
   description:
-    "List the image, video and voiceover models available here, with their price. ALWAYS call this before " +
-    "versely_generate_image / versely_generate_video / versely_generate_audio and pass an entry's `name` as " +
-    "`model` — never guess a model. `modes` says what a model takes (t2i/t2v = prompt only, i2i/i2v = needs an " +
-    "input image, tts = speech); `params` summarises its other inputs. For the full input list call " +
-    "versely_get_model_inputs with the name. " +
+    "List Versely's AI models - every image, video, voiceover and lip-sync model - ranked (rank 1 = best on the " +
+    "latest independent leaderboard, with its score), with price. ALWAYS call this before the generate tools and " +
+    "pass an entry's `name` as `model`; never guess one. `free_trial: true` marks the models an account on the free " +
+    "trial can use: when `on_free_trial` is true, generate ONLY with those (the list `free_trial_models` gives their " +
+    "exact names), though you may still describe any model. Other accounts can use any model. For a model's inputs " +
+    "call versely_get_model_inputs with its name. " +
     PLUGIN_CREDITS_NOTE,
   inputSchema: z.object({
     type: z
-      .enum(["image", "video", "audio"])
+      .enum(["image", "video", "audio", "lipsync"])
       .optional()
-      .describe("image, video or audio (voiceover). Omit to list all three."),
+      .describe("image, video, audio (voiceover) or lipsync. Omit to list all four."),
     q: z
       .string()
       .optional()
       .describe("Case-insensitive words that must all appear in the model's name."),
+    free_trial_only: z.boolean().optional().describe("Only the models an account on the free trial can use."),
     limit: z.number().int().min(1).max(100).optional().describe("Max results returned. Default 30."),
   }),
   handler: async (input, ctx) => {
-    const types: readonly PluginModelType[] = input.type ? [input.type] : PLUGIN_MODEL_TYPES;
-    const listings = await Promise.all(types.map((t) => loadPluginCatalog(ctx, t)));
-    let allDetailed = true;
-    const models: Array<{ model: PluginModel; detailed: boolean }> = [];
-    for (let i = 0; i < types.length; i++) {
-      const listing = listings[i]!;
-      if (listing.available) {
-        for (const model of listing.models) models.push({ model, detailed: true });
-      } else {
-        // Backend without the plugin catalog yet: same model set from the
-        // regular catalog, minus the parameter detail.
-        allDetailed = false;
-        for (const model of await runpodFallbackModels(ctx, types[i]!)) models.push({ model, detailed: false });
-      }
+    const types: readonly FindType[] = input.type ? [input.type] : FIND_TYPES;
+    const [catalogs, pluginListings, trial] = await Promise.all([
+      Promise.all(types.map((t) => loadCatalogModels(ctx, t))),
+      Promise.all(PLUGIN_MODEL_TYPES.map((t) => loadPluginCatalog(ctx, t))),
+      loadTrialStatus(ctx).catch(() => ({ freeAccount: false, remaining: 0, credits: 0 })),
+    ]);
+
+    // The free-trial set: exactly what the plugin catalog lists (RunPod-served,
+    // mode-aware names). Without the endpoint, fall back to the catalog flag.
+    const pluginAvailable = pluginListings.every((l) => l.available);
+    const trialModels: PluginModel[] = pluginListings.flatMap((l) => (l.available ? l.models : []));
+    const trialNames = new Set<string>();
+    for (const m of trialModels) {
+      trialNames.add(m.name.toLowerCase());
+      if (m.display_name) trialNames.add(m.display_name.toLowerCase());
     }
+    const isFreeTrial = (m: { name?: string; is_runpod_discounted?: boolean }): boolean =>
+      pluginAvailable ? trialNames.has((m.name ?? "").toLowerCase()) : m.is_runpod_discounted === true;
+
     const tokens = input.q ? input.q.toLowerCase().trim().split(/\s+/).filter(Boolean) : [];
-    const matched = models.filter(({ model: m }) => {
+    const matchesQuery = (name: string, label?: string) => {
       if (tokens.length === 0) return true;
-      const hay = `${m.name} ${m.display_name}`.toLowerCase().replace(/-/g, " ");
+      const hay = `${name} ${label ?? ""}`.toLowerCase().replace(/-/g, " ");
       return tokens.every((t) => hay.includes(t));
+    };
+
+    const rows: Array<Record<string, unknown> & { __rank: number; __trial: boolean }> = [];
+    catalogs.forEach((list, i) => {
+      for (const m of list) {
+        if (!m.name || !matchesQuery(m.name, m.display_name)) continue;
+        const trialOk = isFreeTrial(m);
+        if (input.free_trial_only && !trialOk) continue;
+        const pm = (m.price_matrix ?? {}) as Record<string, unknown>;
+        rows.push({
+          name: m.name,
+          ...(m.display_name && m.display_name !== m.name ? { display_name: m.display_name } : {}),
+          type: m.content_type ?? types[i],
+          ...(m.provider ? { provider: m.provider } : {}),
+          categories: m.categories ?? [],
+          ...(typeof m.best_rank_overall === "number" ? { rank: m.best_rank_overall } : {}),
+          ...(typeof m.best_score_overall === "number" ? { score: m.best_score_overall } : {}),
+          ...(m.best_rank_by_category && Object.keys(m.best_rank_by_category).length > 0
+            ? { rank_by_category: m.best_rank_by_category }
+            : {}),
+          credits: m.credits,
+          ...(typeof pm.minCredits === "number" ? { min_credits: pm.minCredits } : {}),
+          ...(typeof pm.maxCredits === "number" ? { max_credits: pm.maxCredits } : {}),
+          requires_image: Boolean(m.requires_image),
+          ...(m.released_at ? { released_at: m.released_at } : {}),
+          free_trial: trialOk,
+          __rank: rankValue(m),
+          __trial: trialOk,
+        });
+      }
+    });
+
+    // Ranked within the whole reply; on the free trial the usable models come first.
+    rows.sort((a, b) => {
+      if (trial.freeAccount && a.__trial !== b.__trial) return a.__trial ? -1 : 1;
+      return a.__rank - b.__rank;
     });
     const limit = input.limit ?? 30;
+    const models = rows.slice(0, limit).map(({ __rank, __trial, ...rest }) => rest);
+
+    const wantedTypes = new Set<string>(types);
     return jsonResult({
-      total: matched.length,
-      returned: Math.min(limit, matched.length),
+      on_free_trial: trial.freeAccount,
+      ...(trial.freeAccount
+        ? {
+            free_trial_note:
+              "This account is on the free trial: generate ONLY with models marked free_trial (exact names in " +
+              "free_trial_models). You can still describe or compare any model; suggest the best free_trial one.",
+            free_trial_credits: trial.remaining,
+          }
+        : {}),
+      total: rows.length,
+      returned: models.length,
       credits_note: PLUGIN_CREDITS_NOTE,
-      ...(allDetailed
-        ? {}
-        : {
-            params_note:
-              "Detailed model inputs are unavailable right now; use the generate tool's own inputs (prompt, aspect_ratio, duration, image_url...).",
-          }),
-      models: matched.slice(0, limit).map(({ model, detailed }) => compactModel(model, { withParams: detailed })),
+      models,
+      ...(trial.freeAccount || input.free_trial_only
+        ? {
+            free_trial_models: trialModels
+              .filter((m) => wantedTypes.has(m.type) && matchesQuery(m.name, m.display_name))
+              .map((m) => compactModel(m, { withParams: false })),
+          }
+        : {}),
     });
   },
 });
@@ -383,6 +449,7 @@ const versely_get_model_inputs = defineTool({
         requires_image: m.requires_image,
         credits: m.credits,
         ...(m.credits_note ? { credits_note: m.credits_note } : {}),
+        ...(ctx.profile === "openai" ? { free_trial: true } : {}),
         params: m.params,
         ...(m.params_by_mode ? { params_by_mode: m.params_by_mode } : {}),
         ...(m.voices ? { voices: m.voices } : {}),
@@ -392,18 +459,11 @@ const versely_get_model_inputs = defineTool({
       });
     }
 
-    if (lookup.status === "not_in_catalog" && ctx.profile === "openai") {
-      return jsonResult({
-        found: false,
-        model: wanted,
-        message: `"${wanted}" is not one of the models available here. Pick a model name from versely_find_models.`,
-      });
-    }
-
-    // Either the model isn't RunPod-served (full profile), or the endpoint is
-    // missing: answer from the regular catalog.
+    // Not a free-trial (RunPod) model, or the plugin catalog is unreachable:
+    // answer from the regular catalog, which knows every model's supported
+    // aspect ratios, durations, qualities and reference inputs.
     const entry = await regularCatalogEntry(ctx, wanted);
-    if (!entry || (ctx.profile === "openai" && entry.model.is_runpod_discounted !== true)) {
+    if (!entry) {
       return jsonResult({
         found: false,
         model: wanted,
@@ -411,6 +471,11 @@ const versely_get_model_inputs = defineTool({
       });
     }
     const m = entry.model;
+    const supported: Record<string, unknown> = {};
+    if (m.supports_aspect_ratios) supported.aspect_ratio = m.supports_aspect_ratios;
+    if (m.supports_durations) supported.duration = m.supports_durations;
+    if (m.supports_qualities) supported.resolution = m.supports_qualities;
+    if (m.supports_styles) supported.style = m.supports_styles;
     return jsonResult({
       model: m.name,
       ...(m.display_name && m.display_name !== m.name ? { display_name: m.display_name } : {}),
@@ -418,12 +483,19 @@ const versely_get_model_inputs = defineTool({
       modes: modesFromCategories(m.categories),
       requires_image: Boolean(m.requires_image),
       ...(typeof m.credits === "number" ? { credits: m.credits } : {}),
+      ...(typeof m.best_rank_overall === "number" ? { rank: m.best_rank_overall } : {}),
+      ...(Object.keys(supported).length > 0 ? { supported_values: supported } : {}),
       ...(m.reference_config ? { reference_config: m.reference_config } : {}),
-      params: "unavailable",
-      note:
-        lookup.status === "unavailable"
-          ? "The detailed input list is unavailable right now. Use the generate tool's own inputs (prompt, aspect_ratio, duration, image_url...)."
-          : "A detailed input list exists only for the models the plugin catalog covers. Use the generate tool's own inputs for this one.",
+      ...(typeof m.max_reference === "number" ? { max_reference: m.max_reference } : {}),
+      ...(m.accepts_video_input ? { accepts_video_input: true, requires_video_input: Boolean(m.requires_video_input) } : {}),
+      ...(ctx.profile === "openai" ? { free_trial: false } : {}),
+      usage:
+        "Pass the generate tool's own inputs (prompt, aspect_ratio, duration, resolution, image_url...) using the " +
+        "values in supported_values." +
+        (ctx.profile === "openai" ? " Not available to accounts on the free trial." : ""),
+      ...(lookup.status === "unavailable"
+        ? { note: "The detailed input list is unavailable right now; supported_values comes from the catalog." }
+        : {}),
     });
   },
 });
@@ -443,7 +515,7 @@ async function regularCatalogEntry(
   ctx: ToolContext,
   wanted: string,
 ): Promise<{ type: CatalogType; model: Awaited<ReturnType<typeof loadCatalogModels>>[number] } | undefined> {
-  const types: CatalogType[] = ctx.profile === "openai" ? ["image", "video", "audio"] : ["image", "video", "audio", "lipsync"];
+  const types: CatalogType[] = ["image", "video", "audio", "lipsync"];
   for (const type of types) {
     const hit = findCatalogModel(await loadCatalogModels(ctx, type), wanted);
     if (hit?.name) return { type, model: hit };
@@ -881,7 +953,6 @@ const versely_generate_music = defineTool({
       "Two modes:\n" +
       "• Inspiration (default, `custom_mode: false`) — `prompt` describes the song; lyrics and style are written for you.\n" +
       "• Custom (`custom_mode: true`) — `prompt` is the LITERAL LYRICS, and `style` + `title` are then required.",
-    hide: ["model"],
   },
   inputSchema: z
     .object({
@@ -990,7 +1061,6 @@ const versely_extend_music = defineTool({
       "Extend a music track made with versely_generate_music from a given timestamp. Supplying prompt / style / title / " +
       "continue_at_seconds steers the continuation; omit them all to simply continue the track as it was. " +
       "Spends the user's Versely credits; the inline card updates itself when it finishes.",
-    hide: ["model"],
   },
   inputSchema: z
     .object({
@@ -1117,7 +1187,6 @@ const versely_remove_background = defineTool({
     description:
       "Remove the background from a VIDEO, producing a transparent matte for compositing (video only, not images). " +
       "Spends the user's Versely credits; the inline card updates itself when it finishes.",
-    hide: ["model"],
   },
   inputSchema: z
     .object({
@@ -1158,7 +1227,6 @@ const versely_upscale_image = defineTool({
   name: "versely_upscale_image",
   description: "Upscale an image to a higher resolution.",
   meta: metaForMediaCard(),
-  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       image_url: z.string().url(),
@@ -1211,7 +1279,6 @@ const versely_upscale_video = defineTool({
   name: "versely_upscale_video",
   description: "Upscale a video to a higher resolution.",
   meta: metaForMediaCard(),
-  openai: { hide: ["model"] },
   inputSchema: z
     .object({
       video_url: z.string().url(),
