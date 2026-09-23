@@ -70,12 +70,11 @@ export function parseProfileList(
 // Kept at or under 512 characters (the smoke test enforces it). Every tool name
 // here must exist in the openai profile.
 export const OPENAI_INSTRUCTIONS_LEAD =
-  "Versely makes videos, UGC-style ads, voiceovers, images, music, slideshows, dubbed videos. " +
-  "Background jobs spend the user's Versely credits: call a creation tool once, never resubmit. " +
-  "Cards self-update; results: versely_get_task_status (movies: versely_get_movie_status, dubs: versely_get_dub). " +
-  "Models only from versely_find_models, inputs from versely_get_model_inputs, not the user. " +
-  "free_account in versely_get_credits: plainly say some features are off. " +
-  "Low credits: give the balance, never suggest buying.";
+  "Versely makes videos, UGC-style ads, voiceovers, images, music, slideshows and dubbed videos. " +
+  "Creations run in the background and spend the user's Versely credits: call a creation tool once, never resubmit. " +
+  "The card updates itself; results: versely_get_task_status (movies: versely_get_movie_status, dubs: versely_get_dub). " +
+  "Pick models only from versely_find_models, inputs from versely_get_model_inputs. " +
+  "If versely_get_credits shows free_account, say plainly some features are off. Never suggest buying credits.";
 
 export const OPENAI_INSTRUCTIONS_DETAIL =
   "Details. Pass a model's `name` from versely_find_models as `model`, and any extra inputs from " +
