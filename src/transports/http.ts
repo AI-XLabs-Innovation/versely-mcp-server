@@ -11,7 +11,7 @@ import {
   type Config,
 } from "../config.js";
 import { VerselyClient, isValidApiKeyFormat } from "../client.js";
-import { buildServer, getRegisteredToolCount, validateServerSetup } from "../server.js";
+import { buildServer, getRegisteredToolCount, recentJobChecks, validateServerSetup } from "../server.js";
 import { verifyAccessToken, looksLikeJwt } from "../oauth.js";
 import { resolveProfile, type Profile } from "../profiles.js";
 import { OPENAI_APPS_CHALLENGE_TOKEN } from "../openaiChallenge.js";
@@ -713,6 +713,9 @@ export async function startHttpServer(config: Config): Promise<void> {
       returned: recent.length,
       total_seen: mcpCallLog.length,
       calls: recent,
+      // Job-related tool results: which job each call asked about and the
+      // state that came back (ids / states / counts only).
+      job_checks: recentJobChecks(limit),
     });
   });
 

@@ -71,6 +71,52 @@ function getRegistry(config: Config): ToolRegistry {
 
 type Json = Record<string, unknown>;
 
+// --- Job checks (operator diagnostics) ---------------------------------------
+// The last N job-related tool results - which job was asked about and what
+// state came back - so "the card spins forever" can be traced to the job it
+// is waiting on. Ids, states and counts only: no prompts, media or tokens.
+// Served by GET /debug/recent-calls (operator token only).
+export interface JobCheckRecord {
+  ts: string;
+  profile: Profile;
+  tool: string;
+  job_id?: string;
+  status?: string;
+  assets?: number;
+  is_error?: boolean;
+  note?: string;
+}
+const JOB_CHECK_MAX = 100;
+const jobChecks: JobCheckRecord[] = [];
+
+export function recentJobChecks(limit = 50): JobCheckRecord[] {
+  return jobChecks.slice(-limit).reverse();
+}
+
+function recordJobCheck(profile: Profile, tool: string, args: Json, result: ToolResult): void {
+  try {
+    const sc = (result.structuredContent ?? {}) as Json;
+    const pick = (o: Json, keys: string[]) => {
+      for (const k of keys) if (typeof o[k] === "string" && o[k]) return String(o[k]).slice(0, 80);
+      return undefined;
+    };
+    const idKeys = ["request_id", "task_id", "movie_id", "project_id", "run_id", "workflow_run_id", "slideshow_id", "id"];
+    const firstText = result.content?.find((c) => c.type === "text") as { text?: string } | undefined;
+    jobChecks.push({
+      ts: new Date().toISOString(),
+      profile,
+      tool,
+      ...(pick(args, idKeys) || pick(sc, idKeys) ? { job_id: pick(args, idKeys) ?? pick(sc, idKeys) } : {}),
+      ...(typeof sc.status === "string" ? { status: sc.status } : {}),
+      ...(Array.isArray(sc.assets) ? { assets: sc.assets.length } : {}),
+      ...(result.isError ? { is_error: true, note: String(firstText?.text ?? "").slice(0, 160) } : {}),
+    });
+    if (jobChecks.length > JOB_CHECK_MAX) jobChecks.shift();
+  } catch {
+    /* diagnostics must never break a call */
+  }
+}
+
 /** Status tools the media card calls from inside the host to follow a job. */
 export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_task_status",
@@ -317,6 +363,7 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
 
     if (entry.isCard) result = applyCardSafetyNet(result);
     if (profile === "openai") result = shapeResultForOpenai(result);
+    if (entry.isCard || CARD_POLL_TARGETS.has(entry.name)) recordJobCheck(profile, entry.name, args, result);
     return result;
   }
 
