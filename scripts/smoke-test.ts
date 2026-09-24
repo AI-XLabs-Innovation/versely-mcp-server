@@ -537,6 +537,16 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("a complete Veed Avatars request sends avatar_id and the script as prompt", veedBody.avatar_id === "emily_vertical_primary" && veedBody.prompt === "Hello there, a real one.", JSON.stringify(veedBody));
   const fmLip = JSON.parse(textOf(await call(openai, "versely_find_models", { type: "lipsync" }))) as { models: Array<{ name: string; credits_per_second?: number }> };
   assert("find_models shows the per-second price", fmLip.models.find((m) => m.name === "Veed Avatars")?.credits_per_second === 1, JSON.stringify(fmLip.models));
+  // A finished job's status is fetched from the backend once; repeats (a
+  // looping card) are answered from memory. Pending ones always go through.
+  const statusCalls = (id: string) => backend.count((r) => r.path === `/api/v1/status/${id}`);
+  await call(openai, "versely_get_task_status", { request_id: "done-cache-1" });
+  await call(openai, "versely_get_task_status", { request_id: "done-cache-1" });
+  const again = await call(openai, "versely_get_task_status", { request_id: "done-cache-1" });
+  assert("a finished status is fetched once, then served from memory", statusCalls("done-cache-1") === 1 && JSON.stringify(again).includes("done-cache-1.png"), `backend calls: ${statusCalls("done-cache-1")}`);
+  await call(openai, "versely_get_task_status", { request_id: "pending-cache-1" });
+  await call(openai, "versely_get_task_status", { request_id: "pending-cache-1" });
+  assert("a pending status is always asked again", statusCalls("pending-cache-1") === 2, `backend calls: ${statusCalls("pending-cache-1")}`);
   // ChatGPT caches widget templates by URI, so its tools point at the hashed
   // card URI; claude.ai keeps the plain one.
   const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;

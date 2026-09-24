@@ -117,6 +117,24 @@ function recordJobCheck(profile: Profile, tool: string, args: Json, result: Tool
   }
 }
 
+// --- Finished job statuses --------------------------------------------------------
+// versely_get_task_status results for jobs that are done (completed / failed),
+// per owner + profile + request id. Terminal states don't change, so repeats
+// within the TTL are answered here without a backend call.
+const FINISHED_STATUS_TTL_MS = 10 * 60_000;
+const FINISHED_STATUS_MAX = 2_000;
+const finishedStatusCache = new Map<string, { at: number; result: ToolResult }>();
+
+function rememberFinishedStatus(key: string, result: ToolResult): void {
+  finishedStatusCache.delete(key);
+  finishedStatusCache.set(key, { at: Date.now(), result: structuredClone(result) });
+  while (finishedStatusCache.size > FINISHED_STATUS_MAX) {
+    const oldest = finishedStatusCache.keys().next().value;
+    if (oldest === undefined) break;
+    finishedStatusCache.delete(oldest);
+  }
+}
+
 /** Status tools the media card calls from inside the host to follow a job. */
 export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_task_status",
@@ -355,7 +373,17 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
           }
         });
 
-      if (entry.dedupe && !confirmRepeat) {
+      // A finished job's status never changes: answer repeats from memory.
+      // A card that loops (a stale ChatGPT tab still ran the pre-fix card and
+      // re-polled one finished job 30+ times a minute) then costs no backend call.
+      const finishedKey =
+        entry.name === "versely_get_task_status" && typeof (parsed.data as Json).request_id === "string"
+          ? `${ownerKey}|${profile}|${String((parsed.data as Json).request_id)}`
+          : null;
+      const cachedFinished = finishedKey ? finishedStatusCache.get(finishedKey) : undefined;
+      if (cachedFinished && Date.now() - cachedFinished.at < FINISHED_STATUS_TTL_MS) {
+        result = structuredClone(cachedFinished.result);
+      } else if (entry.dedupe && !confirmRepeat) {
         const key = dedupeKey(ownerKey, entry.name, parsed.data as Json);
         const outcome = await duplicateCallGuard.run(key, run);
         result =
@@ -367,6 +395,10 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
             : outcome.result;
       } else {
         result = await run();
+        const status = (result.structuredContent as Json | undefined)?.status;
+        if (finishedKey && !result.isError && (status === "completed" || status === "failed")) {
+          rememberFinishedStatus(finishedKey, result);
+        }
       }
     }
 
