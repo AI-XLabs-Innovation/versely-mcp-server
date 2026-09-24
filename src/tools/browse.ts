@@ -32,7 +32,9 @@ interface CollectionDef {
   noun: string;
   /** Landscape previews (16:9) instead of portrait. */
   wide?: boolean;
-  load: (ctx: ToolContext, opts: { category?: string }) => Promise<PickItem[]>;
+  /** The backend already searched for q (in more than the title): no second filter here. */
+  serverSearch?: boolean;
+  load: (ctx: ToolContext, opts: { category?: string; q?: string }) => Promise<PickItem[]>;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -75,7 +77,57 @@ function heygenVoices(generation: "v3" | "v5"): CollectionDef {
   };
 }
 
+const compact = (n: unknown): string => {
+  const v = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(v)) return "";
+  return v >= 1e6 ? `${(v / 1e6).toFixed(v >= 1e7 ? 0 : 1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}K` : String(Math.round(v));
+};
+
 const COLLECTIONS: Record<string, CollectionDef> = {
+  inspiration: {
+    title: "Viral outliers",
+    noun: "post",
+    serverSearch: true,
+    load: async (ctx, { category, q }) => {
+      const res = await ctx.client.get<{ posts?: Array<Record<string, any>> }>("/api/v1/inspiration/posts", {
+        query: { outliers: 1, sort: "outlier", limit: 60, ...(category ? { niche: category } : {}), ...(q ? { q } : {}) },
+      });
+      return (res?.posts ?? []).map((p) => {
+        const hook = String(p.hook_text || p.caption || "Untitled").replace(/\s+/g, " ").trim();
+        const score = Number(p.outlier_score);
+        const x = Number.isFinite(score) && score > 0 ? (score >= 10 ? Math.round(score) : Math.round(score * 10) / 10) : null;
+        const slides: string[] = Array.isArray(p.slide_image_urls) ? p.slide_image_urls.filter((u: unknown) => typeof u === "string") : [];
+        return {
+          id: String(p.id),
+          title: hook.slice(0, 90),
+          subtitle: [p.author_handle ? `@${String(p.author_handle).replace(/^@/, "")}` : "", p.plays != null ? `${compact(p.plays)} views` : "", p.content_type]
+            .filter(Boolean).join(" · "),
+          image: str(p.cover_url) ?? slides[0],
+          images: slides.slice(0, 5),
+          badge: x ? `${x}×` : undefined,
+          pick: `Recreate this viral ${p.content_type === "slideshow" ? "slideshow" : "video"} for me: ${quote(hook.slice(0, 120))} (inspiration post_id: ${String(p.id)}).`,
+        };
+      });
+    },
+  },
+  trending_sounds: {
+    title: "Trending sounds",
+    noun: "sound",
+    load: async (ctx) => {
+      const res = await ctx.client.get<{ sounds?: Array<Record<string, any>> }>("/api/v1/inspiration/sounds", { query: { limit: 50 } });
+      return (res?.sounds ?? []).map((snd) => ({
+        id: String(snd.id),
+        title: String(snd.title ?? "Sound"),
+        subtitle: [str(snd.author), `${Number(snd.outlier_uses) || 0} outlier posts`, snd.vibe?.mood ? String(snd.vibe.mood) : ""]
+          .filter(Boolean).join(" · "),
+        audio: str(snd.bed?.url),
+        badge: snd.rank != null ? `#${snd.rank}` : undefined,
+        pick: snd.bed?.url
+          ? `Use the trending sound ${quote(String(snd.title))}: its royalty-free Versely version is ${String(snd.bed.url)} (sound_id: ${String(snd.id)}).`
+          : `Use the trending sound ${quote(String(snd.title))} (sound_id: ${String(snd.id)}); it has no royalty-free version yet.`,
+      }));
+    },
+  },
   slideshow_styles: {
     title: "Slideshow styles",
     noun: "style",
@@ -221,12 +273,15 @@ const USE_HINT: Record<string, string> = {
   workflow_templates: "Copy it to the user's workflows with versely_use_workflow_template.",
   slideshow_templates: "Make it with versely_use_slideshow_template.",
   brands: "Pass it as brand_id / brand_kit_id to the brand tools.",
+  inspiration: "Recreate it with versely_recreate_inspiration (post_id), or break it down with versely_analyze_post (its url).",
+  trending_sounds: "Use the royalty-free bed URL as music (e.g. audio_url of versely_slideshow_to_video).",
 };
 
 const versely_browse = defineTool({
   name: "versely_browse",
   description:
     "Show the user a visual picker to choose from - with previews - instead of listing options in text: " +
+    "inspiration (viral outlier posts; category = niche), trending_sounds (with playable royalty-free versions), " +
     "slideshow_styles (caption styles with example slides), heygen_avatars_v5 / heygen_avatars_v3, " +
     "heygen_voices_v5 / heygen_voices_v3, veed_avatars, avatar_x_avatars, ai_templates, workflow_templates, " +
     "slideshow_templates, brands. The user clicks 'Use this' and their choice arrives as their next message, with " +
@@ -236,15 +291,15 @@ const versely_browse = defineTool({
   inputSchema: z.object({
     collection: z.enum(BROWSE_COLLECTIONS).describe("What to show."),
     q: z.string().optional().describe("Only options whose name or description contains this."),
-    category: z.string().optional().describe("Template category, for ai_templates / workflow_templates / slideshow_templates."),
+    category: z.string().optional().describe("inspiration: a niche slug (versely_list_inspiration_niches); templates: a category."),
     limit: z.number().int().min(1).max(60).optional().describe("How many to show (default 24)."),
     offset: z.number().int().min(0).optional().describe("Skip this many (the picker's Show more uses it)."),
   }),
   handler: async (input, ctx) => {
     const def = COLLECTIONS[input.collection]!;
-    const all = await def.load(ctx, { category: input.category });
+    const all = await def.load(ctx, { category: input.category, q: input.q });
     const q = input.q?.trim().toLowerCase();
-    const matched = q
+    const matched = q && !def.serverSearch
       ? all.filter((it) => `${it.title} ${it.subtitle ?? ""} ${it.id}`.toLowerCase().includes(q))
       : all;
     const offset = input.offset ?? 0;

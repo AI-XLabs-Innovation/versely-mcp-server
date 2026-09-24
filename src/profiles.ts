@@ -99,7 +99,9 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "When the user has to choose a slideshow style, an avatar, a voice, a template or one of their brands, open " +
   "versely_browse (a visual picker; their pick arrives as their next message) instead of listing options in text. " +
   "Brands: read one from its link with versely_analyze_brand, then versely_create_brand_slideshow or a slideshow " +
-  "automation with its brand_kit_id.";
+  "automation with its brand_kit_id. Ideas: show viral outliers with versely_browse (collection 'inspiration', " +
+  "category = niche) and recreate the one the user picks with versely_recreate_inspiration; versely_analyze_post " +
+  "explains why a post worked.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

@@ -411,6 +411,78 @@ const ROWS: Record<string, Row> = {
     },
   },
 
+  // ── Inspiration, outliers, hooks (both profiles; owner, 2026-09-24) ─────
+  versely_list_inspiration_niches: {
+    title: "List inspiration niches", cls: "read", what: "the niches of Versely's viral-post library", openai: true,
+    inv: ["Loading niches", "Loaded niches"],
+  },
+  versely_find_inspiration: {
+    title: "Find viral posts", cls: "read", what: "Versely's library of viral posts and outliers", openai: true,
+    inv: ["Finding viral posts", "Found viral posts"],
+  },
+  versely_get_inspiration_post: {
+    title: "Get viral post", cls: "read", what: "one post in Versely's viral-post library", openai: true,
+    inv: ["Loading the post", "Loaded the post"],
+  },
+  versely_list_trending_sounds: {
+    title: "List trending sounds", cls: "read", what: "the sounds behind today's viral posts", openai: true,
+    inv: ["Loading trending sounds", "Loaded trending sounds"],
+  },
+  versely_recreate_inspiration: {
+    title: "Recreate viral post", cls: "create", what: "recreation of a viral post", openai: true,
+    inv: ["Recreating the post", "Recreation started"],
+  },
+  versely_create_hooks: {
+    title: "Create hook videos", cls: "create", what: "set of hook videos", openai: true,
+    inv: ["Making your hooks", "Hooks started"],
+  },
+  versely_get_hooks: {
+    title: "Check hook videos", cls: "read", what: "one of the user's hook-video batches", openai: true,
+    inv: ["Checking the hooks", "Checked the hooks"],
+  },
+  versely_list_hook_models: {
+    title: "List hook models", cls: "read", what: "the models and settings hook videos can use", openai: true,
+    inv: ["Loading hook models", "Loaded hook models"],
+  },
+  versely_analyze_post: {
+    title: "Analyze why a post worked", cls: "create", what: "breakdown of a social post", openai: true,
+    inv: ["Analyzing the post", "Post analyzed"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Reads a public social post and saves a breakdown of why it worked to the user's account; spends 1 Versely credit.",
+      openWorld: "Fetches the public social post from its platform.",
+    },
+  },
+  versely_get_post_analysis: {
+    title: "Get post breakdown", cls: "read", what: "one of the user's post breakdowns", openai: true,
+    inv: ["Loading the breakdown", "Loaded the breakdown"],
+  },
+  versely_list_post_analyses: {
+    title: "List post breakdowns", cls: "read", what: "the user's post breakdowns", openai: true,
+    inv: ["Loading your breakdowns", "Loaded your breakdowns"],
+  },
+  versely_search_social_posts: {
+    title: "Search social posts", cls: "read", what: "public social posts", openai: true,
+    inv: ["Searching social posts", "Searched social posts"],
+    hints: { openWorldHint: true },
+    why: { openWorld: "Searches public posts on TikTok, YouTube and Instagram." },
+  },
+  versely_get_social_post_info: {
+    title: "Read a social post", cls: "read", what: "one public social post", openai: true,
+    inv: ["Reading the post", "Read the post"],
+    hints: { openWorldHint: true },
+    why: { openWorld: "Reads a public post from its social platform." },
+  },
+  versely_import_social_video: {
+    title: "Import a social video", cls: "create", what: "copy of a public social video in the user's library", openai: true,
+    inv: ["Importing the video", "Video imported"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Downloads a public social video into the user's private Versely library; spends 1 Versely credit.",
+      openWorld: "Fetches the video from its social platform.",
+    },
+  },
+
   // ── Movies ──────────────────────────────────────────────────────────────
   versely_create_movie: {
     title: "Plan a movie", cls: "create", what: "movie plan", openai: true, spends: false,

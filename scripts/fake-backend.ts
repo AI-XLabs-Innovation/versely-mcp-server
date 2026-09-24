@@ -137,6 +137,7 @@ export async function startFakeBackend(opts: {
   const brands = new Map<string, Record<string, unknown>>();
   const slideshowReads = new Map<string, number>();
   const templateRunReads = new Map<string, number>();
+  const quickReads = new Map<string, number>();
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -352,6 +353,60 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- inspiration library, trending sounds, quick hooks, trend analysis, feed ---
+    const INSPO: Record<string, Record<string, unknown>> = {
+      "insp-s1": {
+        id: "insp-s1", content_type: "slideshow", platform: "tiktok", url: "https://www.tiktok.com/@a/photo/1",
+        author_handle: "a", author_followers: 1000, plays: 65000, is_outlier: true, outlier_score: 65, niche: "fitness",
+        hook_text: "5 habits that changed my mornings", slide_texts: ["Wake at 6", "No phone", "Walk"], caption: "try these",
+        cover_url: "https://img.versely.studio/ref/inspiration/1/cover.jpg",
+      },
+      "insp-v1": {
+        id: "insp-v1", content_type: "video", platform: "tiktok", url: "https://www.tiktok.com/@b/video/2",
+        author_handle: "b", author_followers: 2000, plays: 900000, is_outlier: true, outlier_score: 450, niche: "tech",
+        hook_text: "girls you need this camera app", caption: "link in bio", cover_url: "https://img.versely.studio/ref/inspiration/2/cover.jpg",
+      },
+    };
+    if (method === "GET" && path === "/api/v1/inspiration/niches") {
+      return send(res, 200, { success: true, niches: [{ slug: "fitness", label: "Fitness", count: 120, outlier_count: 40 }], mediums: [{ medium: "mobile_app", count: 30 }], total: 500 });
+    }
+    if (method === "GET" && path === "/api/v1/inspiration/posts") {
+      return send(res, 200, { success: true, posts: Object.values(INSPO), next_cursor: "c2", total: 2 });
+    }
+    const inspo = /^\/api\/v1\/inspiration\/posts\/([^/]+)$/.exec(path);
+    if (method === "GET" && inspo) {
+      const p = INSPO[decodeURIComponent(inspo[1]!)];
+      return p ? send(res, 200, { success: true, post: p }) : send(res, 404, { success: false, error: "not found" });
+    }
+    if (method === "GET" && path === "/api/v1/inspiration/sounds") {
+      return send(res, 200, { success: true, sounds: [{ id: "snd-1", rank: 1, title: "September", author: "EWF", outlier_uses: 2, vibe: { mood: "joyful" }, bed: { id: "bed-1", title: "September (Versely bed)", url: "https://audio.versely.studio/hooks/beds/trending/september.mp3" } }] });
+    }
+    if (method === "POST" && path === "/api/v1/hooks/quick") {
+      quickReads.set("qb-1", 0);
+      return send(res, 202, { success: true, data: { batch_id: "qb-1", credits_charged: 40, hooks: [{ id: "h1", batch_id: "qb-1", status: "queued" }] } });
+    }
+    if (method === "GET" && path === "/api/v1/hooks/quick/models") {
+      return send(res, 200, { success: true, data: { models: [{ name: "VEO 3.1 Fast", durations: [4, 6, 8] }] } });
+    }
+    const qb = /^\/api\/v1\/hooks\/quick\/([^/]+)$/.exec(path);
+    if (method === "GET" && qb) {
+      const reads = (quickReads.get(qb[1]!) ?? 0) + 1;
+      quickReads.set(qb[1]!, reads);
+      const hook = reads > 1
+        ? { id: "h1", batch_id: qb[1], status: "completed", hook_line: "You need this app", video_url: "https://videos.versely.studio/hooks/h1.mp4" }
+        : { id: "h1", batch_id: qb[1], status: "video", hook_line: "You need this app", video_url: null };
+      return send(res, 200, { success: true, data: { batch_id: qb[1], hooks: [hook] } });
+    }
+    if (method === "POST" && path === "/api/v1/trend-analysis/analyze") {
+      return send(res, 202, { success: true, id: "ta-1", status: "scraping", credits_used: 1 });
+    }
+    if (method === "GET" && path === "/api/v1/trend-analysis/ta-1") {
+      return send(res, 200, { success: true, id: "ta-1", status: "completed", platform: "tiktok", originalUrl: "https://www.tiktok.com/@b/video/2", analysis: { hook: { text: "girls you need this", technique: "direct address" } }, stats: { plays: 900000 } });
+    }
+    if (method === "POST" && path === "/api/v1/trending-feed/import") {
+      return send(res, 200, { success: true, credits_used: 1, video: { url: "https://videos.versely.studio/usr/imported-1.mp4", title: "Imported", platform: "tiktok" } });
     }
 
     // --- picker sources: caption styles, AI / workflow / slideshow templates ---

@@ -75,6 +75,10 @@ const OPENAI_TOOLS = [
   "versely_set_default_brand", "versely_archive_brand", "versely_create_brand_slideshow",
   "versely_browse", "versely_run_ai_template", "versely_get_ai_template_run", "versely_use_workflow_template",
   "versely_use_slideshow_template", "versely_apply_caption_style",
+  "versely_list_inspiration_niches", "versely_find_inspiration", "versely_get_inspiration_post",
+  "versely_list_trending_sounds", "versely_recreate_inspiration", "versely_create_hooks", "versely_get_hooks",
+  "versely_list_hook_models", "versely_analyze_post", "versely_get_post_analysis", "versely_list_post_analyses",
+  "versely_search_social_posts", "versely_get_social_post_info", "versely_import_social_video",
 ];
 
 const failures: string[] = [];
@@ -609,6 +613,30 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("use_slideshow_template makes it with the template's own prompt and settings", tplBody.prompt === "5 morning habits that changed my life" && tplBody.num_images === 4 && tplBody.content_type === "story" && tplBody.model === "Nano Banana Pro" && tplBody.caption_style === "pink-pop" && (fromTpl.structuredContent as Record<string, any>)?.status === "pending", JSON.stringify(tplBody));
   const restyled = await call(openai, "versely_apply_caption_style", { slideshow_id: "ss-restyle-1", caption_style: "keyline-plate" });
   assert("apply_caption_style re-bakes the captions in the chosen style", lastBody("/api/v1/slideshow/ss-restyle-1/caption-style").caption_style === "keyline-plate", textOf(restyled));
+  // Inspiration: outliers first by default, shown in the picker with their
+  // "65x" chip; a slideshow post is recreated as a slideshow, a video post as hooks.
+  const found = JSON.parse(textOf(await call(openai, "versely_find_inspiration", { niche: "fitness" }))) as { posts?: Array<Record<string, any>>; next_cursor?: string };
+  const lastInspoQuery = backend.requests.filter((r) => r.path === "/api/v1/inspiration/posts").at(-1)?.query ?? {};
+  assert("find_inspiration asks for outliers by default and labels them", lastInspoQuery.outliers === "1" && found.posts?.[0]?.outlier === "65× more views than followers" && found.next_cursor === "c2", JSON.stringify({ lastInspoQuery, first: found.posts?.[0] }));
+  const inspoPick = ((await call(openai, "versely_browse", { collection: "inspiration", category: "fitness" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ badge?: string; pick: string; image?: string }> } | undefined;
+  assert("browse inspiration shows covers with the outlier chip and a recreate pick", inspoPick?.items?.[0]?.badge === "65×" && inspoPick?.items?.[0]?.pick.includes("post_id: insp-s1") && String(inspoPick?.items?.[0]?.image).includes("img.versely.studio"), JSON.stringify(inspoPick?.items?.[0]));
+  const soundPick = ((await call(openai, "versely_browse", { collection: "trending_sounds" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ audio?: string; pick: string }> } | undefined;
+  assert("browse trending_sounds plays the royalty-free bed", String(soundPick?.items?.[0]?.audio).endsWith("september.mp3") && soundPick?.items?.[0]?.pick.includes("royalty-free"), JSON.stringify(soundPick?.items?.[0]));
+  const recS = await call(openai, "versely_recreate_inspiration", { post_id: "insp-s1", brand_id: "brand-1", twist: "for busy parents" });
+  const recBody = lastBody("/api/v1/slideshow/create-automated");
+  assert("recreating a slideshow post keeps its hook and slides, for the brand", String(recBody.prompt).startsWith("5 habits that changed my mornings") && String(recBody.prompt).includes("1. Wake at 6") && String(recBody.prompt).includes("for busy parents") && recBody.num_images === 3 && String(recBody.brand_context).includes("Acme Coffee") && (recS.structuredContent as Record<string, any>)?.status === "pending", JSON.stringify(recBody));
+  const recV = await call(openai, "versely_recreate_inspiration", { post_id: "insp-v1", count: 2 });
+  const hookBody = lastBody("/api/v1/hooks/quick");
+  const recVSc = recV.structuredContent as Record<string, any> | undefined;
+  assert("recreating a video post makes hook videos from its hook", String(hookBody.brief).startsWith("girls you need this camera app") && hookBody.count === 2 && recVSc?.poll?.tool_name === "versely_get_hooks", JSON.stringify({ hookBody, poll: recVSc?.poll }));
+  const hooksMid = (await call(openai, "versely_get_hooks", { batch_id: "qb-1" })).structuredContent as Record<string, any> | undefined;
+  assert("get_hooks reports a batch still rendering as pending", hooksMid?.status === "pending" && hooksMid?.poll?.tool_name === "versely_get_hooks", JSON.stringify(hooksMid));
+  const hooksDone = (await call(openai, "versely_get_hooks", { batch_id: "qb-1" })).structuredContent as Record<string, any> | undefined;
+  assert("get_hooks ends with the hook videos", hooksDone?.status === "completed" && hooksDone?.assets?.[0]?.url === "https://videos.versely.studio/hooks/h1.mp4", JSON.stringify(hooksDone));
+  const analyzed2 = JSON.parse(textOf(await call(openai, "versely_analyze_post", { url: "https://www.tiktok.com/@b/video/2" }))) as { status?: string; analysis?: Record<string, unknown> };
+  assert("analyze_post waits for and returns the breakdown", analyzed2.status === "completed" && !!analyzed2.analysis, JSON.stringify(analyzed2));
+  const imported = await call(openai, "versely_import_social_video", { url: "https://www.tiktok.com/@b/video/2" });
+  assert("import_social_video lands the video in the library with a card", JSON.stringify(imported).includes("imported-1.mp4") && !imported.isError, textOf(imported));
   // ChatGPT caches widget templates by URI, so its tools point at the hashed
   // card URI; claude.ai keeps the plain one.
   const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;

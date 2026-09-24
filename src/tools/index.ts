@@ -19,6 +19,7 @@ import { avatarTools } from "./avatars.js";
 import { brandTools } from "./brands.js";
 import { browseTools } from "./browse.js";
 import { templateTools } from "./templates.js";
+import { inspirationTools } from "./inspiration.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
@@ -31,6 +32,7 @@ export const standardTools: Tool[] = [
   ...brandTools,
   ...browseTools,
   ...templateTools,
+  ...inspirationTools,
   ...movieTools,
   ...ugcTools,
   ...socialTools,
