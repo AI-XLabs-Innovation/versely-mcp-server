@@ -110,6 +110,55 @@ const COLLECTIONS: Record<string, CollectionDef> = {
       });
     },
   },
+  hook_library: {
+    title: "Hook clips",
+    noun: "hook",
+    serverSearch: true,
+    load: async (ctx, { category, q }) => {
+      const res = await ctx.client.get<{ hooks?: Array<Record<string, any>> }>("/api/v1/hooks/deck", {
+        query: { limit: 60, ...(category ? { vibe: category } : {}), ...(q ? { brief: q } : {}) },
+      });
+      return (res?.hooks ?? []).map((h) => {
+        const lineText = String(h.line || h.suggested_hook_line || h.title || "Hook").replace(/\s+/g, " ").trim();
+        return {
+          id: String(h.id),
+          title: lineText.slice(0, 90),
+          subtitle: [str(h.vibe), str(h.emotion), h.duration_sec ? `${h.duration_sec}s` : ""].filter(Boolean).join(" · ") || undefined,
+          image: str(h.thumbnail_url),
+          video: str(h.preview_url) ?? str(h.video_url),
+          pick: `Use this hook clip ${quote(lineText.slice(0, 120))} (hook_id: ${String(h.id)}).`,
+        };
+      });
+    },
+  },
+  hook_characters: {
+    title: "Your characters",
+    noun: "character",
+    load: async (ctx) => {
+      const res = await ctx.client.get<{ characters?: Array<Record<string, any>> }>("/api/v1/hooks/characters");
+      return (res?.characters ?? []).map((c) => ({
+        id: String(c.id),
+        title: String(c.name ?? "Character"),
+        subtitle: [str(c.description)?.slice(0, 80), c.status && c.status !== "ready" ? String(c.status) : ""].filter(Boolean).join(" · ") || undefined,
+        image: str(c.image_url) ?? (Array.isArray(c.images) ? str(c.images[0]?.url ?? c.images[0]) : undefined) ?? str(c.reference_image_url),
+        pick: `Use my character ${quote(String(c.name ?? "character"))} (character_id: ${String(c.id)}).`,
+      }));
+    },
+  },
+  music_beds: {
+    title: "Music beds",
+    noun: "track",
+    load: async (ctx) => {
+      const res = await ctx.client.get<{ beds?: Array<Record<string, any>> }>("/api/v1/hooks/music-beds");
+      return (res?.beds ?? []).map((b) => ({
+        id: String(b.id),
+        title: String(b.title ?? "Track"),
+        subtitle: [str(b.mood), str(b.energy), b.bpm ? `${b.bpm} BPM` : ""].filter(Boolean).join(" · ") || undefined,
+        audio: str(b.url),
+        pick: `Use the music bed ${quote(String(b.title ?? "track"))} (music_bed_id: ${String(b.id)}, url: ${String(b.url)}).`,
+      }));
+    },
+  },
   trending_sounds: {
     title: "Trending sounds",
     noun: "sound",
@@ -275,6 +324,9 @@ const USE_HINT: Record<string, string> = {
   brands: "Pass it as brand_id / brand_kit_id to the brand tools.",
   inspiration: "Recreate it with versely_recreate_inspiration (post_id), or break it down with versely_analyze_post (its url).",
   trending_sounds: "Use the royalty-free bed URL as music (e.g. audio_url of versely_slideshow_to_video).",
+  hook_library: "Reuse picked clips with versely_reuse_hooks (hook_ids), with the user's own lines.",
+  hook_characters: "Use it as character_id in versely_create_character_hook_pack.",
+  music_beds: "Pass music_bed_id to versely_reuse_hooks, or the url as music elsewhere.",
 };
 
 const versely_browse = defineTool({
@@ -282,6 +334,7 @@ const versely_browse = defineTool({
   description:
     "Show the user a visual picker to choose from - with previews - instead of listing options in text: " +
     "inspiration (viral outlier posts; category = niche), trending_sounds (with playable royalty-free versions), " +
+    "hook_library (ready-made hook clips; category = vibe, q = what they're for), hook_characters, music_beds, " +
     "slideshow_styles (caption styles with example slides), heygen_avatars_v5 / heygen_avatars_v3, " +
     "heygen_voices_v5 / heygen_voices_v3, veed_avatars, avatar_x_avatars, ai_templates, workflow_templates, " +
     "slideshow_templates, brands. The user clicks 'Use this' and their choice arrives as their next message, with " +

@@ -26,6 +26,7 @@ import { brandTools } from "../src/tools/brands.js";
 import { browseTools } from "../src/tools/browse.js";
 import { templateTools } from "../src/tools/templates.js";
 import { inspirationTools } from "../src/tools/inspiration.js";
+import { hooksStudioTools } from "../src/tools/hooksStudio.js";
 
 // Every registered tool, in tools/list order. (The env-gated debug tool is
 // left out: it isn't registered unless MCP_ENABLE_DEBUG_TOOLS=1.)
@@ -40,6 +41,7 @@ const categories: Array<[string, Tool[]]> = [
   ["Browse (visual picker)", browseTools],
   ["Templates + styles", templateTools],
   ["Inspiration, outliers + hooks", inspirationTools],
+  ["Hooks studio + post analytics", hooksStudioTools],
   ["Movie (multi-scene)", movieTools],
   ["UGC (overlays + captions)", ugcTools],
   ["Social media", socialTools],

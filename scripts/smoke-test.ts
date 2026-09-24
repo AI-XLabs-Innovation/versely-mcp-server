@@ -79,6 +79,13 @@ const OPENAI_TOOLS = [
   "versely_list_trending_sounds", "versely_recreate_inspiration", "versely_create_hooks", "versely_get_hooks",
   "versely_list_hook_models", "versely_analyze_post", "versely_get_post_analysis", "versely_list_post_analyses",
   "versely_search_social_posts", "versely_get_social_post_info", "versely_import_social_video",
+  "versely_list_hook_library", "versely_save_hook", "versely_list_saved_hooks", "versely_unsave_hook",
+  "versely_list_music_beds", "versely_quote_hooks", "versely_reuse_hooks", "versely_create_hook_pack",
+  "versely_create_character_hook_pack", "versely_get_hook_collection", "versely_list_hook_collections",
+  "versely_cancel_hook_collection", "versely_schedule_hook_collection", "versely_list_hook_characters",
+  "versely_create_hook_character", "versely_upload_hook_character", "versely_get_hook_character",
+  "versely_pick_character_portrait", "versely_delete_hook_character", "versely_get_social_analytics_overview",
+  "versely_get_post_analytics", "versely_get_post_analytics_history",
 ];
 
 const failures: string[] = [];
@@ -637,6 +644,31 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("analyze_post waits for and returns the breakdown", analyzed2.status === "completed" && !!analyzed2.analysis, JSON.stringify(analyzed2));
   const imported = await call(openai, "versely_import_social_video", { url: "https://www.tiktok.com/@b/video/2" });
   assert("import_social_video lands the video in the library with a card", JSON.stringify(imported).includes("imported-1.mp4") && !imported.isError, textOf(imported));
+  // Hooks studio: pick library clips in the picker, reuse them with the
+  // brand's lines, follow the collection to its videos, schedule it.
+  const clipPicker = ((await call(openai, "versely_browse", { collection: "hook_library", category: "cafe" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ video?: string; pick: string }> } | undefined;
+  assert("browse hook_library previews the clips and picks by hook_id", String(clipPicker?.items?.[0]?.video).endsWith("plate-1.mp4") && clipPicker?.items?.[0]?.pick.includes("hook_id: plate-1"), JSON.stringify(clipPicker?.items?.[0]));
+  const reuse = await call(openai, "versely_reuse_hooks", { hook_ids: ["plate-1"], brand_id: "brand-1", lines: { "plate-1": "My line" } });
+  const reuseBody = lastBody("/api/v1/hooks/collections");
+  const reuseSc = reuse.structuredContent as Record<string, any> | undefined;
+  assert("reuse_hooks sends the clips, lines and brand, and follows the collection", reuseBody.kind === "reuse" && JSON.stringify(reuseBody.hook_ids) === '["plate-1"]' && String(reuseBody.brand_context).includes("Acme Coffee") && reuseSc?.poll?.tool_name === "versely_get_hook_collection", JSON.stringify({ reuseBody, sc: reuseSc }));
+  await call(openai, "versely_get_hook_collection", { collection_id: "col-1" });
+  const colDone = (await call(openai, "versely_get_hook_collection", { collection_id: "col-1" })).structuredContent as Record<string, any> | undefined;
+  assert("a hook collection ends with its videos", colDone?.status === "completed" && colDone?.assets?.[0]?.url === "https://videos.versely.studio/hooks/col-1-1.mp4", JSON.stringify(colDone));
+  const collectionsBefore = backend.count((r) => r.method === "POST" && r.path === "/api/v1/hooks/collections");
+  const noBrief = await call(openai, "versely_create_hook_pack", { count: 3 });
+  assert("a hook pack needs a brand or a brief (refused before any call)", noBrief.isError === true && backend.count((r) => r.method === "POST" && r.path === "/api/v1/hooks/collections") === collectionsBefore, textOf(noBrief));
+  await call(openai, "versely_create_character_hook_pack", { character_id: "char-1", brief: "a budgeting app for students", count: 5 });
+  const charBody = lastBody("/api/v1/hooks/collections");
+  assert("create_character_hook_pack asks for a character pack", charBody.kind === "character_pack" && charBody.character_id === "char-1" && charBody.brand_context === "a budgeting app for students", JSON.stringify(charBody));
+  const sched = JSON.parse(textOf(await call(openai, "versely_schedule_hook_collection", { collection_id: "col-1", account_ids: ["acct-db-1"], every_hours: 12 }))) as { scheduled?: number };
+  assert("schedule_hook_collection schedules the posts", sched.scheduled === 1 && lastBody("/api/v1/hooks/collections/col-1/schedule").every_hours === 12, JSON.stringify(sched));
+  const beds = ((await call(openai, "versely_browse", { collection: "music_beds" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ audio?: string; pick: string }> } | undefined;
+  assert("browse music_beds plays each bed", String(beds?.items?.[0]?.audio).endsWith("sunny.mp3") && beds?.items?.[0]?.pick.includes("music_bed_id: bed-9"), JSON.stringify(beds?.items?.[0]));
+  const chars = ((await call(openai, "versely_browse", { collection: "hook_characters" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ image?: string; pick: string }> } | undefined;
+  assert("browse hook_characters shows their portraits", String(chars?.items?.[0]?.image).endsWith("mia.png") && chars?.items?.[0]?.pick.includes("character_id: char-1"), JSON.stringify(chars?.items?.[0]));
+  const stats = JSON.parse(textOf(await call(openai, "versely_get_post_analytics", { post_id: "post-db-9", refresh: true }))) as { stats?: Record<string, unknown> };
+  assert("get_post_analytics refreshes then reads the stats", stats.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 1, JSON.stringify(stats));
   // ChatGPT caches widget templates by URI, so its tools point at the hashed
   // card URI; claude.ai keeps the plain one.
   const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;

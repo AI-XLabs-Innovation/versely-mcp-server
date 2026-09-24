@@ -141,6 +141,7 @@ export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_slideshow",
   "versely_get_ai_template_run",
   "versely_get_hooks",
+  "versely_get_hook_collection",
   "versely_get_movie_status",
   "versely_get_workflow_run",
   "versely_get_video_workflow_run",

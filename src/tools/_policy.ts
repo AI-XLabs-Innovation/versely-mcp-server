@@ -483,6 +483,105 @@ const ROWS: Record<string, Row> = {
     },
   },
 
+  // ── Hooks studio + post analytics (both profiles; owner, 2026-09-24) ────
+  versely_list_hook_library: {
+    title: "List hook clips", cls: "read", what: "Versely's library of ready-made hook clips", openai: true,
+    inv: ["Loading hook clips", "Loaded hook clips"],
+  },
+  versely_save_hook: {
+    title: "Save hook clip", cls: "create", what: "saved hook", spends: false, openai: true,
+    inv: ["Saving the hook", "Hook saved"],
+  },
+  versely_list_saved_hooks: {
+    title: "List saved hooks", cls: "read", what: "the user's saved hooks", openai: true,
+    inv: ["Loading saved hooks", "Loaded saved hooks"],
+  },
+  versely_unsave_hook: {
+    title: "Remove saved hook", cls: "delete", what: "saved hook", openai: true,
+    inv: ["Removing the hook", "Hook removed"],
+  },
+  versely_list_music_beds: {
+    title: "List music beds", cls: "read", what: "Versely's royalty-free music beds", openai: true,
+    inv: ["Loading music", "Loaded music"],
+  },
+  versely_quote_hooks: {
+    title: "Price hook collection", cls: "read", what: "the price of a hook collection", openai: true,
+    inv: ["Pricing the hooks", "Priced the hooks"],
+  },
+  versely_reuse_hooks: {
+    title: "Reuse hook clips", cls: "create", what: "set of hooks with the user's lines", openai: true,
+    inv: ["Making your hooks", "Hooks started"],
+  },
+  versely_create_hook_pack: {
+    title: "Create hook pack", cls: "create", what: "pack of hook videos", openai: true,
+    inv: ["Making your hook pack", "Hook pack started"],
+  },
+  versely_create_character_hook_pack: {
+    title: "Create character hook pack", cls: "create", what: "pack of hook videos with a character", openai: true,
+    inv: ["Making your character hooks", "Character hooks started"],
+  },
+  versely_get_hook_collection: {
+    title: "Check hook collection", cls: "read", what: "one of the user's hook collections", openai: true,
+    inv: ["Checking the hooks", "Checked the hooks"],
+  },
+  versely_list_hook_collections: {
+    title: "List hook collections", cls: "read", what: "the user's hook collections", openai: true,
+    inv: ["Loading hook collections", "Loaded hook collections"],
+  },
+  versely_cancel_hook_collection: {
+    title: "Cancel hook collection", cls: "delete", what: "hook collection in progress", openai: true,
+    inv: ["Cancelling the hooks", "Hooks cancelled"],
+    why: {
+      readOnly: "Stops one of the user's hook collections that is still being made.",
+      destructive: "Hooks not yet made are not made; finished hooks are kept.",
+    },
+  },
+  versely_schedule_hook_collection: {
+    title: "Schedule hook collection", cls: "publish", what: "scheduled posts of a hook collection", openai: true,
+    inv: ["Scheduling your hooks", "Hooks scheduled"],
+    why: {
+      readOnly: "Schedules each hook of a collection as a post to the user's connected social accounts; posts are charged like any social post.",
+    },
+  },
+  versely_list_hook_characters: {
+    title: "List hook characters", cls: "read", what: "the user's hook characters", openai: true,
+    inv: ["Loading your characters", "Loaded your characters"],
+  },
+  versely_create_hook_character: {
+    title: "Create hook character", cls: "create", what: "hook character (with portraits)", openai: true,
+    inv: ["Creating the character", "Character started"],
+  },
+  versely_upload_hook_character: {
+    title: "Add character from photo", cls: "create", what: "hook character from a photo", spends: false, openai: true,
+    inv: ["Adding the character", "Character added"],
+  },
+  versely_get_hook_character: {
+    title: "Get hook character", cls: "read", what: "one of the user's hook characters", openai: true,
+    inv: ["Loading the character", "Loaded the character"],
+  },
+  versely_pick_character_portrait: {
+    title: "Pick character portrait", cls: "edit", what: "character's chosen portrait", openai: true,
+    inv: ["Choosing the portrait", "Portrait chosen"],
+    hints: { destructiveHint: false, idempotentHint: true },
+    why: { destructive: "Only changes which of the character's portraits is used; nothing is removed." },
+  },
+  versely_delete_hook_character: {
+    title: "Remove hook character", cls: "delete", what: "hook character", openai: true,
+    inv: ["Removing the character", "Character removed"],
+  },
+  versely_get_social_analytics_overview: {
+    title: "Get posting analytics", cls: "read", what: "the performance of the user's published posts", openai: true,
+    inv: ["Loading your analytics", "Loaded your analytics"],
+  },
+  versely_get_post_analytics: {
+    title: "Get post analytics", cls: "read", what: "one published post's live stats", openai: true,
+    inv: ["Loading the post's stats", "Loaded the post's stats"],
+  },
+  versely_get_post_analytics_history: {
+    title: "Get post stats history", cls: "read", what: "one published post's stats over time", openai: true,
+    inv: ["Loading the stats history", "Loaded the stats history"],
+  },
+
   // ── Movies ──────────────────────────────────────────────────────────────
   versely_create_movie: {
     title: "Plan a movie", cls: "create", what: "movie plan", openai: true, spends: false,

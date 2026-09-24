@@ -101,7 +101,9 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "Brands: read one from its link with versely_analyze_brand, then versely_create_brand_slideshow or a slideshow " +
   "automation with its brand_kit_id. Ideas: show viral outliers with versely_browse (collection 'inspiration', " +
   "category = niche) and recreate the one the user picks with versely_recreate_inspiration; versely_analyze_post " +
-  "explains why a post worked.";
+  "explains why a post worked. Hook videos: show ready-made clips with versely_browse (collection 'hook_library') " +
+  "and remake the picks with versely_reuse_hooks, or write new ones for a brand with versely_create_hook_pack; " +
+  "quote the cost first with versely_quote_hooks.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

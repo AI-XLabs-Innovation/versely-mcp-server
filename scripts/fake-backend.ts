@@ -138,6 +138,7 @@ export async function startFakeBackend(opts: {
   const slideshowReads = new Map<string, number>();
   const templateRunReads = new Map<string, number>();
   const quickReads = new Map<string, number>();
+  const collectionReads = new Map<string, number>();
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -353,6 +354,40 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- hooks studio: library deck, collections, characters, beds; analytics ---
+    if (method === "GET" && path === "/api/v1/hooks/deck") {
+      return send(res, 200, { success: true, hooks: [{ id: "plate-1", title: "Cafe reaction", video_url: "https://videos.versely.studio/hooks/plate-1.mp4", preview_url: "https://videos.versely.studio/hooks/plate-1.mp4", thumbnail_url: "https://img.versely.studio/hooks/plate-1.jpg", vibe: "cafe", emotion: "surprised", line: "You won't believe this app", duration_sec: 4 }], total_active: 1 });
+    }
+    if (method === "POST" && path === "/api/v1/hooks/collections") {
+      collectionReads.set("col-1", 0);
+      return send(res, 202, { success: true, collection: { id: "col-1", kind: b.kind, status: "queued", title: b.title ?? null }, items: [] });
+    }
+    const hcol = /^\/api\/v1\/hooks\/collections\/([^/]+)$/.exec(path);
+    if (method === "GET" && hcol) {
+      const reads = (collectionReads.get(hcol[1]!) ?? 0) + 1;
+      collectionReads.set(hcol[1]!, reads);
+      const done = reads > 2;
+      return send(res, 200, {
+        success: true,
+        collection: { id: hcol[1], kind: "reuse", status: done ? "completed" : "processing", count: 1 },
+        items: [{ id: "it-1", sort: 0, status: done ? "completed" : "processing", hook_line: "You won't believe this app", video_url: done ? "https://videos.versely.studio/hooks/col-1-1.mp4" : null }],
+      });
+    }
+    const hsched = /^\/api\/v1\/hooks\/collections\/([^/]+)\/schedule$/.exec(path);
+    if (method === "POST" && hsched) return send(res, 200, { success: true, scheduled: 1, first_at: b.start_at ?? null });
+    if (method === "GET" && path === "/api/v1/hooks/music-beds") {
+      return send(res, 200, { success: true, beds: [{ id: "bed-9", title: "Sunny", url: "https://audio.versely.studio/beds/sunny.mp3", mood: "happy", energy: "mid", bpm: 110 }] });
+    }
+    if (method === "GET" && path === "/api/v1/hooks/characters") {
+      return send(res, 200, { success: true, characters: [{ id: "char-1", name: "Mia", status: "ready", image_url: "https://img.versely.studio/c/mia.png" }] });
+    }
+    const analyticsCollect = /^\/api\/v1\/social-analytics\/([^/]+)\/collect$/.exec(path);
+    if (method === "POST" && analyticsCollect) return send(res, 200, { success: true });
+    const analyticsPost = /^\/api\/v1\/social-analytics\/([^/]+)$/.exec(path);
+    if (method === "GET" && analyticsPost && analyticsPost[1] !== "overview") {
+      return send(res, 200, { success: true, post_id: analyticsPost[1], stats: { views: 1200, likes: 90 } });
     }
 
     // --- inspiration library, trending sounds, quick hooks, trend analysis, feed ---
