@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { VerselyConfigError } from "./errors.js";
 import { parseProfileList, type Profile } from "./profiles.js";
 
@@ -92,7 +93,12 @@ export function loadConfig(): Config {
     process.env.OAUTH_AUTH_SERVER_URL?.trim() || apiUrl,
   );
 
-  const rawAdminToken = process.env.MCP_ADMIN_TOKEN?.trim() || null;
+  // MCP_ADMIN_TOKEN when set; otherwise a token derived from the OAuth secret
+  // the server already holds, so the operator can read /debug/recent-calls
+  // without new configuration (and nobody without that secret can).
+  const rawAdminToken =
+    process.env.MCP_ADMIN_TOKEN?.trim() ||
+    (oauthJwtSecret ? createHmac("sha256", oauthJwtSecret).update("versely-mcp-debug-v1").digest("hex") : null);
 
   cached = {
     apiUrl,

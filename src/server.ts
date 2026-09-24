@@ -71,6 +71,15 @@ function getRegistry(config: Config): ToolRegistry {
 
 type Json = Record<string, unknown>;
 
+/** Status tools the media card calls from inside the host to follow a job. */
+export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
+  "versely_get_task_status",
+  "versely_get_movie_status",
+  "versely_get_workflow_run",
+  "versely_get_video_workflow_run",
+  "versely_get_dub",
+]);
+
 interface ListedTool {
   name: string;
   title: string;
@@ -149,6 +158,15 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
       ? { "openai/toolInvocation/invoked": policy.invoked }
       : {}),
   };
+  // The tools the media card polls from inside ChatGPT. ChatGPT only lets a
+  // widget call a tool that is explicitly open to it: say so both ways - the
+  // MCP Apps visibility list and ChatGPT's own widgetAccessible flag - or the
+  // card's polls are refused and it spins on "Generating" forever.
+  if (profile === "openai" && appsUi && CARD_POLL_TARGETS.has(tool.name)) {
+    const ui = (meta.ui && typeof meta.ui === "object" ? (meta.ui as Json) : {}) as Json;
+    meta.ui = { ...ui, visibility: ["model", "app"] };
+    meta["openai/widgetAccessible"] = true;
+  }
 
   return {
     name: tool.name,

@@ -388,6 +388,10 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     return !(typeof a === "string" && typeof b === "string" && a.length > 0 && a.length <= 64 && b.length > 0 && b.length <= 64);
   });
   assert("every openai tool has invocation strings <= 64 chars", inv.length === 0, inv.map((t) => t.name).join(", "));
+  for (const target of ["versely_get_task_status", "versely_get_movie_status", "versely_get_dub"]) {
+    const m = (byName(oTools, target) as { _meta?: Record<string, unknown> } | undefined)?._meta ?? {};
+    assert(`openai ${target} is widgetAccessible for the card`, m["openai/widgetAccessible"] === true);
+  }
   for (const target of ["versely_get_movie_status", "versely_get_dub"]) {
     assert(`openai poll target ${target} is visible to the app`, visibility(byName(oTools, target)).includes("app"));
   }

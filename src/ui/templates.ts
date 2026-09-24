@@ -1328,8 +1328,28 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
     if (!poll.active || poll.inflightId != null) return;
     var id = nextId();
     poll.inflightId = id;
-    send({ jsonrpc: '2.0', id: id, method: 'tools/call',
-           params: { name: poll.spec.tool_name, arguments: poll.spec.args || {} } });
+    // ChatGPT's own bridge first: window.openai.callTool is its supported way
+    // for a widget to call a tool, and the MCP Apps tools/call message is not
+    // answered on every surface. Anything else gets the standard message.
+    var oa = window.openai;
+    if (oa && typeof oa.callTool === 'function') {
+      try {
+        Promise.resolve(oa.callTool(poll.spec.tool_name, poll.spec.args || {})).then(function (res) {
+          if (poll.inflightId !== id) return;
+          var r = res && res.result && typeof res.result === 'object' ? res.result : res;
+          onPollResponse({ id: id, result: r || {} });
+        }, function (err) {
+          if (poll.inflightId !== id) return;
+          onPollResponse({ id: id, error: { message: String((err && err.message) || err) } });
+        });
+      } catch (e) {
+        send({ jsonrpc: '2.0', id: id, method: 'tools/call',
+               params: { name: poll.spec.tool_name, arguments: poll.spec.args || {} } });
+      }
+    } else {
+      send({ jsonrpc: '2.0', id: id, method: 'tools/call',
+             params: { name: poll.spec.tool_name, arguments: poll.spec.args || {} } });
+    }
     poll.staleTimer = setTimeout(function () {
       if (poll.inflightId !== id) return;
       poll.inflightId = null;
