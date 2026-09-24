@@ -122,6 +122,7 @@ export async function startFakeBackend(opts: {
   let pluginCatalog = true;
   let seq = 0;
   const socialPosts: Array<Record<string, unknown>> = [];
+  const automations = new Map<string, Record<string, unknown>>();
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -334,6 +335,40 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- automations (the real envelope: { success, data: { automation } }) ---
+    if (method === "POST" && path === "/api/v1/automations/estimate") {
+      return send(res, 200, { success: true, data: { summary: "AI Generate · Fitness", credits_per_run: 20 } });
+    }
+    if (method === "POST" && path === "/api/v1/automations") {
+      seq += 1;
+      const row = {
+        id: `auto-${seq}`, kind: b.kind, name: b.name, config: b.config,
+        interval_seconds: b.interval_seconds ?? 300, status: b.start === true ? "active" : "paused",
+      };
+      automations.set(row.id, row);
+      return send(res, 201, { success: true, data: { automation: row } });
+    }
+    if (method === "GET" && path === "/api/v1/automations") {
+      return send(res, 200, { success: true, data: { automations: [...automations.values()] } });
+    }
+    const auto = /^\/api\/v1\/automations\/([^/]+)$/.exec(path);
+    if (auto && (method === "GET" || method === "PATCH")) {
+      const row = automations.get(decodeURIComponent(auto[1]!));
+      if (!row) return send(res, 404, { success: false, error: "Automation not found" });
+      if (method === "PATCH") {
+        if (b.config !== undefined) row.config = b.config;
+        if (b.name !== undefined) row.name = b.name;
+        if (b.interval_seconds !== undefined) row.interval_seconds = b.interval_seconds;
+      }
+      return send(res, 200, { success: true, data: { automation: row } });
+    }
+
+    // --- workflows: auto mode echoes what it stored ---
+    const wfMode = /^\/api\/v1\/workflows\/([^/]+)\/mode$/.exec(path);
+    if (method === "PATCH" && wfMode) {
+      return send(res, 200, { success: true, workflow: { id: wfMode[1], mode: b.mode, auto_post_account_ids: b.auto_post_account_ids ?? null } });
     }
 
     return send(res, 404, { success: false, error: `fake backend: no route for ${method} ${path}` });

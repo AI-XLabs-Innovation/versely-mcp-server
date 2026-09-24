@@ -1,6 +1,38 @@
 import { z } from "zod";
-import { defineTool, type Tool } from "./_types.js";
+import { defineTool, type Tool, type ToolContext } from "./_types.js";
 import { jsonResult } from "./_helpers.js";
+
+/**
+ * Automations and workflow auto-posting match accounts by the provider's id
+ * (`external_account_id`), while versely_list_social_accounts' `id` - what
+ * publish_post takes - is Versely's own. A Versely id sent there matched
+ * nothing, so the automation never posted. Accept either: Versely ids are
+ * mapped to provider ids, provider ids are kept, anything else is refused.
+ */
+export async function toProviderAccountIds(ctx: ToolContext, ids: readonly string[]): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const data = await ctx.client.get<{
+    accounts?: Array<{ id?: unknown; external_account_id?: unknown }>;
+  }>("/api/v1/social/accounts");
+  const accounts = Array.isArray(data?.accounts) ? data.accounts : [];
+  const byVerselyId = new Map(accounts.map((a) => [String(a.id), String(a.external_account_id)]));
+  const providerIds = new Set(accounts.map((a) => String(a.external_account_id)));
+  const out: string[] = [];
+  const unknown: string[] = [];
+  for (const raw of ids) {
+    const id = String(raw).trim();
+    const mapped = byVerselyId.get(id);
+    if (mapped) out.push(mapped);
+    else if (providerIds.has(id)) out.push(id);
+    else unknown.push(id);
+  }
+  if (unknown.length > 0) {
+    throw new Error(
+      `Not a connected social account: ${unknown.join(", ")}. Use the ids from versely_list_social_accounts.`,
+    );
+  }
+  return [...new Set(out)];
+}
 
 /** Platforms a user can connect (versely-web lib/autoPost CONNECTABLE). `twitter` is X's old name. */
 const CONNECTABLE = [

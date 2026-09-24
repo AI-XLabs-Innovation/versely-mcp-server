@@ -53,6 +53,12 @@ export interface ProfileVariant {
    */
   hide?: readonly string[];
   /**
+   * Inputs kept although OPENAI_STRIPPED_INPUTS names them: a tool whose own
+   * setting shares a name with the submit/wait switch (update_workflow_mode's
+   * `mode` is manual | auto, and stripping it made the tool unusable).
+   */
+  keep?: readonly string[];
+  /**
    * Replacement descriptions, keyed by property path in the input schema:
    * "model", or "scenes[].model" for a property of an array's items.
    */

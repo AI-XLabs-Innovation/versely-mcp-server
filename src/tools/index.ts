@@ -12,6 +12,7 @@ import { videoWorkflowTools } from "./videoWorkflows.js";
 import { debugTools } from "./debug.js";
 import { voiceTools } from "./voices.js";
 import { dubbingTools } from "./dubbing.js";
+import { automationTools } from "./automations.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
@@ -27,6 +28,7 @@ export const standardTools: Tool[] = [
   ...videoWorkflowTools,
   ...voiceTools,
   ...dubbingTools,
+  ...automationTools,
 ];
 
 export { debugTools };

@@ -92,7 +92,10 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "message saying they are unavailable, and nothing is charged for them. Do not offer or link to credit purchases. " +
   "Social posting: to connect an account, give the user the link from versely_get_social_auth_url; once they " +
   "say they connected, call versely_refresh_social_accounts, then versely_list_social_accounts for the account " +
-  "ids. Confirm the caption, media and accounts with the user before versely_publish_post.";
+  "ids. Confirm the caption, media and accounts with the user before versely_publish_post. " +
+  "Recurring content: slideshow automations (versely_create_slideshow_automation; options from " +
+  "versely_list_slideshow_options) or scheduled workflows (versely_update_workflow_mode). Every run spends " +
+  "credits: tell the user the cost per run (versely_estimate_slideshow_automation) and the schedule before starting one.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

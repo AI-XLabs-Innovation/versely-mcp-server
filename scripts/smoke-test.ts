@@ -55,6 +55,19 @@ const OPENAI_TOOLS = [
   "versely_get_social_auth_url", "versely_list_social_accounts", "versely_refresh_social_accounts",
   "versely_disconnect_social_account", "versely_preview_post", "versely_publish_post", "versely_list_posts",
   "versely_get_post", "versely_update_post", "versely_delete_post",
+  "versely_create_workflow", "versely_list_workflows", "versely_get_workflow", "versely_update_workflow",
+  "versely_delete_workflow", "versely_duplicate_workflow", "versely_export_workflow", "versely_update_workflow_mode",
+  "versely_update_workflow_schedule", "versely_update_workflow_dates", "versely_update_workflow_assets",
+  "versely_run_workflow", "versely_list_workflow_runs", "versely_get_workflow_run", "versely_list_active_workflow_runs",
+  "versely_list_failed_workflow_runs", "versely_summarize_workflow", "versely_list_scheduled_workflows",
+  "versely_create_workflow_asset", "versely_list_workflow_assets", "versely_get_workflow_asset",
+  "versely_update_workflow_asset", "versely_add_workflow_asset_images", "versely_delete_workflow_asset",
+  "versely_prepare_workflow_assets",
+  "versely_list_video_workflow_runs", "versely_get_video_workflow_run", "versely_cancel_video_workflow_run",
+  "versely_combine_video_workflow_run", "versely_retry_video_workflow_scene",
+  "versely_list_slideshow_options", "versely_estimate_slideshow_automation", "versely_create_slideshow_automation",
+  "versely_list_automations", "versely_get_automation", "versely_update_automation", "versely_start_automation",
+  "versely_pause_automation", "versely_run_automation_now", "versely_delete_automation", "versely_list_automation_runs",
 ];
 
 const failures: string[] = [];
@@ -399,8 +412,11 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     assert(`openai poll target ${target} is visible to the app`, visibility(byName(oTools, target)).includes("app"));
   }
 
+  // update_workflow_mode keeps `mode`: there it is manual | auto, not the submit/wait switch.
   const hiddenLeaks = oTools.filter((t) =>
-    ["mode", "poll_timeout_ms", "poll_interval_ms", "user_id"].some((k) => k in (t.inputSchema.properties ?? {})),
+    ["mode", "poll_timeout_ms", "poll_interval_ms", "user_id"].some(
+      (k) => k in (t.inputSchema.properties ?? {}) && !(k === "mode" && t.name === "versely_update_workflow_mode"),
+    ),
   );
   assert("openai schemas hide mode / poll_* / user_id", hiddenLeaks.length === 0, hiddenLeaks.map((t) => t.name).join(", "));
   const deprecatedLeaks = oTools.filter((t) => hasDeprecatedProperty(t.inputSchema));
@@ -413,7 +429,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     assert(`openai shows ${tool}.${prop} (every model is visible)`, prop in (byName(oTools, tool)?.inputSchema.properties ?? {}));
   }
   assert("openai hides versely_create_dub.engine", !("engine" in (byName(oTools, "versely_create_dub")?.inputSchema.properties ?? {})));
-  const noConfirm = oTools.filter((t) => t.annotations?.readOnlyHint === false && t.annotations?.destructiveHint === false && t.annotations?.openWorldHint === false && !("confirm_repeat" in (t.inputSchema.properties ?? {})));
+  const noConfirm = oTools.filter((t) => t.annotations?.readOnlyHint === false && t.annotations?.destructiveHint === false && t.annotations?.openWorldHint === false && t.annotations?.idempotentHint === false && !("confirm_repeat" in (t.inputSchema.properties ?? {})));
   assert("openai creation tools accept confirm_repeat", noConfirm.length === 0, noConfirm.map((t) => t.name).join(", "));
 
   const allowed = new Set(OPENAI_TOOLS);
@@ -452,6 +468,23 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("a re-sent publish_post is not posted twice", after === before && textOf(pub2).includes("confirm_repeat"), `posts ${before} -> ${after}`);
   const del = JSON.parse(textOf(await call(openai, "versely_delete_post", { post_id: String(pub1.post_id) }))) as { refunded?: number };
   assert("delete_post reaches the post by Versely's id", del.refunded === 1, JSON.stringify(del));
+
+  // Automations and workflow auto-post take Versely's account ids and send the
+  // provider ids the backend matches on; an edit keeps the settings not named.
+  const auto = JSON.parse(textOf(await call(openai, "versely_create_slideshow_automation", {
+    name: "Daily fitness", every_minutes: 1440, category: "fitness", model: "Flux Pro Ultra", post_account_ids: ["acct-db-1"],
+  }))) as { id?: string; config?: Record<string, unknown>; interval_seconds?: number; status?: string };
+  assert("create_slideshow_automation maps account ids to provider ids", JSON.stringify(auto.config?.post_account_ids) === '["spc_ext_1"]' && auto.config?.source === "ai", JSON.stringify(auto));
+  assert("create_slideshow_automation sends the schedule in seconds and starts paused", auto.interval_seconds === 86400 && auto.status === "paused", JSON.stringify(auto));
+  const edited = JSON.parse(textOf(await call(openai, "versely_update_automation", { automation_id: String(auto.id), num_images: 8 }))) as { config?: Record<string, unknown> };
+  assert("update_automation merges into the stored settings", edited.config?.num_images === 8 && edited.config?.category === "fitness" && JSON.stringify(edited.config?.post_account_ids) === '["spc_ext_1"]', JSON.stringify(edited));
+  const badAcct = await call(openai, "versely_create_slideshow_automation", { name: "x", every_minutes: 60, category: "fitness", model: "Flux Pro Ultra", post_account_ids: ["nope"] });
+  assert("an unknown account id is refused before anything is created", badAcct.isError === true && textOf(badAcct).includes("versely_list_social_accounts"), textOf(badAcct));
+  const wfAuto = JSON.parse(textOf(await call(openai, "versely_update_workflow_mode", {
+    workflow_id: "wf-1", mode: "auto", schedule_cron: "0 9 * * *", auto_post: true, auto_post_account_ids: ["acct-db-1"],
+  }))) as { workflow?: { auto_post_account_ids?: string[] } };
+  assert("openai keeps update_workflow_mode.mode (manual | auto)", "mode" in (byName(oTools, "versely_update_workflow_mode")?.inputSchema.properties ?? {}));
+  assert("update_workflow_mode maps auto_post_account_ids to provider ids", JSON.stringify(wfAuto.workflow?.auto_post_account_ids) === '["spc_ext_1"]', JSON.stringify(wfAuto));
 
   // Every model, ranked; free_trial marks exactly the plugin-catalog (RunPod) ones.
   const fm = JSON.parse(textOf(await call(openai, "versely_find_models", {}))) as {

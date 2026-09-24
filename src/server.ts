@@ -181,7 +181,8 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
     for (const key of variant?.hide ?? []) {
       if (!(key in props)) throw new Error(`${tool.name}: openai hides unknown input "${key}"`);
     }
-    hidden.push(...OPENAI_STRIPPED_INPUTS, ...(variant?.hide ?? []));
+    const keep = new Set(variant?.keep ?? []);
+    hidden.push(...OPENAI_STRIPPED_INPUTS.filter((k) => !keep.has(k)), ...(variant?.hide ?? []));
     hideProperties(schema, hidden);
     dropDeprecatedProperties(schema);
   }

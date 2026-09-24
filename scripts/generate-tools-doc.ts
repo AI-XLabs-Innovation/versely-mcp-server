@@ -18,6 +18,7 @@ import { workflowTools } from "../src/tools/workflows.js";
 import { videoWorkflowTools } from "../src/tools/videoWorkflows.js";
 import { voiceTools } from "../src/tools/voices.js";
 import { dubbingTools } from "../src/tools/dubbing.js";
+import { automationTools } from "../src/tools/automations.js";
 
 // Every registered tool, in tools/list order. (The env-gated debug tool is
 // left out: it isn't registered unless MCP_ENABLE_DEBUG_TOOLS=1.)
@@ -34,6 +35,7 @@ const categories: Array<[string, Tool[]]> = [
   ["Video-workflow runs", videoWorkflowTools],
   ["Voices", voiceTools],
   ["Dubbing", dubbingTools],
+  ["Automations", automationTools],
 ];
 
 interface JsonSchemaProp {

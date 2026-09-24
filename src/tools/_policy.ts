@@ -444,70 +444,224 @@ const ROWS: Record<string, Row> = {
     inv: ["Captioning your video", "Captioning started"],
   },
 
-  // ── Workflows (full profile only) ───────────────────────────────────────
-  versely_create_workflow: { title: "Create workflow", cls: "create", what: "workflow", spends: false },
-  versely_list_workflows: { title: "List workflows", cls: "read", what: "the user's workflows" },
-  versely_get_workflow: { title: "Get workflow", cls: "read", what: "one of the user's workflows" },
-  versely_update_workflow: { title: "Edit workflow", cls: "edit", what: "workflow" },
-  versely_delete_workflow: { title: "Delete workflow", cls: "delete", what: "workflow" },
-  versely_duplicate_workflow: { title: "Duplicate workflow", cls: "create", what: "copy of a workflow", spends: false },
-  versely_export_workflow: { title: "Export workflow", cls: "read", what: "one of the user's workflows as portable JSON" },
+  // ── Workflows (both profiles; owner, 2026-09-24) ────────────────────────
+  versely_create_workflow: {
+    title: "Create workflow", cls: "create", what: "workflow", spends: false, openai: true,
+    inv: ["Creating your workflow", "Workflow created"],
+  },
+  versely_list_workflows: {
+    title: "List workflows", cls: "read", what: "the user's workflows", openai: true,
+    inv: ["Loading your workflows", "Loaded your workflows"],
+  },
+  versely_get_workflow: {
+    title: "Get workflow", cls: "read", what: "one of the user's workflows", openai: true,
+    inv: ["Loading the workflow", "Loaded the workflow"],
+  },
+  versely_update_workflow: {
+    title: "Edit workflow", cls: "edit", what: "workflow", openai: true,
+    inv: ["Updating the workflow", "Workflow updated"],
+  },
+  versely_delete_workflow: {
+    title: "Delete workflow", cls: "delete", what: "workflow", openai: true,
+    inv: ["Deleting the workflow", "Workflow deleted"],
+  },
+  versely_duplicate_workflow: {
+    title: "Duplicate workflow", cls: "create", what: "copy of a workflow", spends: false, openai: true,
+    inv: ["Duplicating the workflow", "Workflow duplicated"],
+  },
+  versely_export_workflow: {
+    title: "Export workflow", cls: "read", what: "one of the user's workflows as portable JSON", openai: true,
+    inv: ["Exporting the workflow", "Workflow exported"],
+  },
   versely_update_workflow_mode: {
-    title: "Set workflow mode", cls: "edit", what: "workflow schedule and auto-post settings",
+    title: "Set workflow mode", cls: "edit", what: "workflow schedule and auto-post settings", openai: true,
+    inv: ["Updating the workflow schedule", "Workflow schedule updated"],
     hints: { openWorldHint: true },
     why: {
       openWorld:
         "Can switch on automatic posting, after which future scheduled runs publish to the user's connected social platforms.",
     },
   },
-  versely_update_workflow_schedule: { title: "Set workflow schedule", cls: "edit", what: "workflow schedule" },
-  versely_update_workflow_dates: { title: "Set workflow run dates", cls: "edit", what: "workflow run dates" },
-  versely_update_workflow_assets: { title: "Set workflow media", cls: "edit", what: "workflow media list" },
+  versely_update_workflow_schedule: {
+    title: "Set workflow schedule", cls: "edit", what: "workflow schedule", openai: true,
+    inv: ["Updating the schedule", "Schedule updated"],
+  },
+  versely_update_workflow_dates: {
+    title: "Set workflow run dates", cls: "edit", what: "workflow run dates", openai: true,
+    inv: ["Updating the run dates", "Run dates updated"],
+  },
+  versely_update_workflow_assets: {
+    title: "Set workflow media", cls: "edit", what: "workflow media list", openai: true,
+    inv: ["Updating the workflow media", "Workflow media updated"],
+  },
   versely_run_workflow: {
-    title: "Run workflow", cls: "publish", what: "workflow results",
+    title: "Run workflow", cls: "publish", what: "workflow results", openai: true,
+    inv: ["Starting your workflow", "Workflow started"],
     why: {
       readOnly: "Runs one of the user's saved workflows, which generates media and spends the user's Versely credits.",
       destructive: "Only creates new media (and posts, when the workflow auto-posts); never edits or deletes existing content.",
       openWorld: "When the workflow is set to auto-post, its results are published to the user's connected social platforms.",
     },
   },
-  versely_list_workflow_runs: { title: "List workflow runs", cls: "read", what: "the run history of one of the user's workflows" },
-  versely_get_workflow_run: { title: "Check workflow run", cls: "read", what: "the progress of one of the user's workflow runs" },
-  versely_list_active_workflow_runs: { title: "List running workflows", cls: "read", what: "the user's workflow runs still in progress" },
-  versely_list_failed_workflow_runs: { title: "List failed workflow runs", cls: "read", what: "the user's failed or cancelled workflow runs" },
-  versely_summarize_workflow: { title: "Summarize workflow", cls: "read", what: "run statistics for one of the user's workflows" },
-  versely_list_scheduled_workflows: { title: "List scheduled workflows", cls: "read", what: "the user's scheduled workflows" },
-  versely_create_workflow_asset: { title: "Create workflow asset", cls: "create", what: "workflow asset", spends: false },
-  versely_list_workflow_assets: { title: "List workflow assets", cls: "read", what: "the user's workflow assets" },
-  versely_get_workflow_asset: { title: "Get workflow asset", cls: "read", what: "one of the user's workflow assets" },
-  versely_update_workflow_asset: { title: "Edit workflow asset", cls: "edit", what: "workflow asset" },
+  versely_list_workflow_runs: {
+    title: "List workflow runs", cls: "read", what: "the run history of one of the user's workflows", openai: true,
+    inv: ["Loading the runs", "Loaded the runs"],
+  },
+  versely_get_workflow_run: {
+    title: "Check workflow run", cls: "read", what: "the progress of one of the user's workflow runs", openai: true,
+    inv: ["Checking the run", "Checked the run"],
+  },
+  versely_list_active_workflow_runs: {
+    title: "List running workflows", cls: "read", what: "the user's workflow runs still in progress", openai: true,
+    inv: ["Loading running workflows", "Loaded running workflows"],
+  },
+  versely_list_failed_workflow_runs: {
+    title: "List failed workflow runs", cls: "read", what: "the user's failed or cancelled workflow runs", openai: true,
+    inv: ["Loading failed runs", "Loaded failed runs"],
+  },
+  versely_summarize_workflow: {
+    title: "Summarize workflow", cls: "read", what: "run statistics for one of the user's workflows", openai: true,
+    inv: ["Summarizing the workflow", "Workflow summarized"],
+  },
+  versely_list_scheduled_workflows: {
+    title: "List scheduled workflows", cls: "read", what: "the user's scheduled workflows", openai: true,
+    inv: ["Loading scheduled workflows", "Loaded scheduled workflows"],
+  },
+  versely_create_workflow_asset: {
+    title: "Create workflow asset", cls: "create", what: "workflow asset", spends: false, openai: true,
+    inv: ["Creating the asset", "Asset created"],
+  },
+  versely_list_workflow_assets: {
+    title: "List workflow assets", cls: "read", what: "the user's workflow assets", openai: true,
+    inv: ["Loading your assets", "Loaded your assets"],
+  },
+  versely_get_workflow_asset: {
+    title: "Get workflow asset", cls: "read", what: "one of the user's workflow assets", openai: true,
+    inv: ["Loading the asset", "Loaded the asset"],
+  },
+  versely_update_workflow_asset: {
+    title: "Edit workflow asset", cls: "edit", what: "workflow asset", openai: true,
+    inv: ["Updating the asset", "Asset updated"],
+  },
   versely_add_workflow_asset_images: {
     title: "Add workflow asset images", cls: "create", what: "set of reference images on a workflow asset", spends: false,
+    openai: true, inv: ["Adding the images", "Images added"],
     why: { destructive: "Only appends images; the asset's existing images are kept." },
   },
-  versely_delete_workflow_asset: { title: "Delete workflow asset", cls: "delete", what: "workflow asset" },
-  versely_prepare_workflow_assets: { title: "Prepare workflow assets", cls: "create", what: "batch of workflow assets", spends: false },
+  versely_delete_workflow_asset: {
+    title: "Delete workflow asset", cls: "delete", what: "workflow asset", openai: true,
+    inv: ["Deleting the asset", "Asset deleted"],
+  },
+  versely_prepare_workflow_assets: {
+    title: "Prepare workflow assets", cls: "create", what: "batch of workflow assets", spends: false, openai: true,
+    inv: ["Preparing the assets", "Assets prepared"],
+  },
 
-  // ── Video-workflow runs (full profile only) ─────────────────────────────
-  versely_list_video_workflow_runs: { title: "List video workflow runs", cls: "read", what: "the user's video-workflow runs" },
-  versely_get_video_workflow_run: { title: "Check video workflow run", cls: "read", what: "the progress of one of the user's video-workflow runs" },
+  // ── Video-workflow runs (both profiles) ─────────────────────────────────
+  versely_list_video_workflow_runs: {
+    title: "List video workflow runs", cls: "read", what: "the user's video-workflow runs", openai: true,
+    inv: ["Loading video workflow runs", "Loaded video workflow runs"],
+  },
+  versely_get_video_workflow_run: {
+    title: "Check video workflow run", cls: "read", what: "the progress of one of the user's video-workflow runs", openai: true,
+    inv: ["Checking the run", "Checked the run"],
+  },
   versely_cancel_video_workflow_run: {
-    title: "Cancel video workflow run", cls: "delete", what: "video-workflow run",
+    title: "Cancel video workflow run", cls: "delete", what: "video-workflow run", openai: true,
+    inv: ["Cancelling the run", "Run cancelled"],
     why: {
       readOnly: "Cancels one of the user's video-workflow runs that is still in progress.",
       destructive: "Stops the scenes that have not finished; a cancelled run cannot be resumed. Finished scenes are kept.",
     },
   },
   versely_combine_video_workflow_run: {
-    title: "Recombine video workflow run", cls: "edit", what: "video-workflow run",
+    title: "Recombine video workflow run", cls: "edit", what: "video-workflow run", openai: true,
+    inv: ["Combining the video", "Video combined"],
     why: {
       readOnly: "Re-renders the final video of one of the user's video-workflow runs from its finished scenes.",
       destructive: "Replaces the run's final combined video; the scene videos are kept.",
     },
   },
   versely_retry_video_workflow_scene: {
-    title: "Retry video workflow scene", cls: "edit", what: "video-workflow run", spends: true,
+    title: "Retry video workflow scene", cls: "edit", what: "video-workflow run", spends: true, openai: true,
+    inv: ["Retrying the scene", "Scene retry started"],
     why: { destructive: "Re-renders the failed scene and the scenes that depend on it, replacing their earlier output." },
+  },
+
+  // ── Automations (both profiles; owner, 2026-09-24) ──────────────────────
+  versely_list_slideshow_options: {
+    title: "List slideshow options", cls: "read", openai: true,
+    what: "the slideshow models, caption styles and categories, and the user's brands",
+    inv: ["Loading slideshow options", "Loaded slideshow options"],
+  },
+  versely_estimate_slideshow_automation: {
+    title: "Estimate automation cost", cls: "read", openai: true,
+    what: "the credit cost of one run of a slideshow automation",
+    inv: ["Estimating the cost", "Estimated the cost"],
+    why: { readOnly: "Only computes what one run would cost; nothing is created, changed or charged." },
+  },
+  versely_create_slideshow_automation: {
+    title: "Create slideshow automation", cls: "create", what: "slideshow automation", spends: false, openai: true,
+    inv: ["Setting up your automation", "Automation set up"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly:
+        "Creates a recurring slideshow automation in the user's Versely account. Creating it spends nothing; each run it makes spends the user's Versely credits.",
+      openWorld: "When it is set to post, each run publishes its slideshow to the user's connected social accounts.",
+    },
+  },
+  versely_list_automations: {
+    title: "List automations", cls: "read", what: "the user's automations", openai: true,
+    inv: ["Loading your automations", "Loaded your automations"],
+  },
+  versely_get_automation: {
+    title: "Get automation", cls: "read", what: "one of the user's automations", openai: true,
+    inv: ["Loading the automation", "Loaded the automation"],
+  },
+  versely_update_automation: {
+    title: "Edit automation", cls: "edit", what: "automation", openai: true,
+    inv: ["Updating the automation", "Automation updated"],
+    hints: { openWorldHint: true },
+    why: {
+      openWorld: "Can change which connected social accounts its future runs post to.",
+    },
+  },
+  versely_start_automation: {
+    title: "Start automation", cls: "edit", what: "automation", openai: true,
+    inv: ["Starting the automation", "Automation started"],
+    hints: { destructiveHint: false, openWorldHint: true, idempotentHint: true },
+    why: {
+      readOnly: "Starts one of the user's automations; its runs spend the user's Versely credits.",
+      destructive: "Only switches the automation on; nothing is deleted or overwritten.",
+      openWorld: "When it is set to post, each run publishes to the user's connected social accounts.",
+    },
+  },
+  versely_pause_automation: {
+    title: "Pause automation", cls: "edit", what: "automation", openai: true,
+    inv: ["Pausing the automation", "Automation paused"],
+    hints: { destructiveHint: false, idempotentHint: true },
+    why: {
+      readOnly: "Pauses one of the user's automations so it stops running.",
+      destructive: "Only stops future runs; nothing is deleted, and it can be started again.",
+    },
+  },
+  versely_run_automation_now: {
+    title: "Run automation now", cls: "publish", what: "automation run", openai: true,
+    inv: ["Running the automation", "Automation run started"],
+    why: {
+      readOnly: "Runs one of the user's automations now, which makes a new slideshow and spends the user's Versely credits.",
+      destructive: "Only creates new content; nothing existing is changed or deleted.",
+      openWorld: "When the automation is set to post, the new slideshow is published to the user's connected social accounts.",
+    },
+  },
+  versely_delete_automation: {
+    title: "Delete automation", cls: "delete", what: "automation", openai: true,
+    inv: ["Deleting the automation", "Automation deleted"],
+    why: { destructive: "Permanently removes the automation; the slideshows it already made are kept." },
+  },
+  versely_list_automation_runs: {
+    title: "List automation runs", cls: "read", what: "the run history of one of the user's automations", openai: true,
+    inv: ["Loading the runs", "Loaded the runs"],
   },
 
   // ── Voices & dubbing ────────────────────────────────────────────────────

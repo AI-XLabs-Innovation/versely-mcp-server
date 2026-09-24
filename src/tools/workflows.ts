@@ -13,6 +13,7 @@ import { defineTool, type Tool } from "./_types.js";
 import { jsonResult } from "./_helpers.js";
 import { metaForMediaCard } from "../ui/templates.js";
 import { workflowRunToCardPayload } from "./_workflowRun.js";
+import { toProviderAccountIds } from "./social.js";
 
 const Empty = z.object({});
 
@@ -477,23 +478,34 @@ const versely_update_workflow_mode = defineTool({
         .describe(
           "Theme anchor for recurring runs. Required for mode='auto' unless the workflow already has a non-empty description.",
         ),
-      auto_post: z.boolean().optional(),
+      auto_post: z
+        .boolean()
+        .optional()
+        .describe("Publish each finished run to the user's connected social accounts (charges per account)."),
       auto_post_platforms: z
         .array(z.string())
         .optional()
-        .describe("Platform slugs (instagram, tiktok, youtube, twitter, etc.)."),
-      auto_post_account_ids: z.array(z.string()).optional(),
-      auto_post_caption_prompt: z.string().optional(),
+        .describe("Post to every connected account on these platforms (instagram, tiktok, youtube, x, ...)."),
+      auto_post_account_ids: z
+        .array(z.string())
+        .optional()
+        .describe("Specific accounts to post to: ids from versely_list_social_accounts. Wins over auto_post_platforms."),
+      auto_post_caption_prompt: z.string().optional().describe("Guidance for the auto-written post caption."),
     })
     .passthrough(),
   handler: async (input, ctx) => {
     const { workflow_id, ...body } = input;
+    if (Array.isArray(body.auto_post_account_ids) && body.auto_post_account_ids.length > 0) {
+      body.auto_post_account_ids = await toProviderAccountIds(ctx, body.auto_post_account_ids);
+    }
     const data = await ctx.client.patch(
       `/api/v1/workflows/${encodeURIComponent(workflow_id)}/mode`,
       body,
     );
     return jsonResult(data);
   },
+  // `mode` here is manual | auto, not the submit/wait switch the plugin strips.
+  openai: { keep: ["mode"] },
 });
 
 const versely_update_workflow_schedule = defineTool({
