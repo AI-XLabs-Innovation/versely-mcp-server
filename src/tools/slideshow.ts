@@ -5,33 +5,31 @@ import { SYNC_TIMEOUT_MS } from "../client.js";
 import { metaForMediaCard } from "../ui/templates.js";
 
 /**
- * The slideshow endpoints accept only this fixed set of image models
- * (SLIDESHOW_IMAGE_MODELS server-side) — anything else 400s. This is a much
- * narrower list than the general image catalog from versely_find_models.
+ * The slideshow endpoints draw with their own model list (slideshowModelNames
+ * server-side: seven hand-wired models plus every fal text-to-image endpoint
+ * the payload builder can drive - 52 on 2026-09-24). It changes with the
+ * catalog, so it is read live (versely_list_slideshow_options) rather than
+ * frozen here: the frozen enum still offered the retired "Imagen 4 Ultra" and
+ * refused the other 45. An unknown name is refused by the backend before any
+ * charge, with the supported list.
  */
-const SlideshowImageModel = z.enum([
-  "Flux Pro Ultra",
-  "Recraft V3 Image",
-  "Reve Text to Image",
-  "Imagen 4 Ultra",
-  "Nano Banana Pro",
-  "GPT Image 2",
-  "Gemini",
-]);
+const SlideshowImageModel = z
+  .string()
+  .min(1)
+  .describe(
+    "Slideshow image model (default 'Flux Pro Ultra'): a name from versely_list_slideshow_options `models` (e.g. " +
+      "'Nano Banana Pro', 'GPT Image 2', 'Seedream 5.0 Pro'). Slideshows have their own list: not every model from versely_find_models works here.",
+  );
 
 const versely_create_slideshow = defineTool({
   name: "versely_create_slideshow",
   description:
     "Create a slideshow by generating multiple AI images from a prompt (no automation, no overlays).",
   meta: metaForMediaCard(),
-  // Only a fixed set of non-RunPod image models works here, so the plugin
-  // hides the picker and the backend default applies.
   inputSchema: z
     .object({
       prompt: z.string(),
-      model: SlideshowImageModel.optional().describe(
-        "Slideshow image model (default 'Flux Pro Ultra'). Only these are accepted — do NOT pass an arbitrary model from versely_find_models.",
-      ),
+      model: SlideshowImageModel.optional(),
       num_images: z
         .number()
         .int()
@@ -71,8 +69,6 @@ const versely_create_automated_slideshow = defineTool({
   description:
     "Full automation: AI plans the slideshow, generates the images, and burns text overlays in one request.",
   meta: metaForMediaCard(),
-  // Only a fixed set of non-RunPod image models works here, so the plugin
-  // hides the picker and the backend default applies.
   inputSchema: z
     .object({
       prompt: z
@@ -86,9 +82,7 @@ const versely_create_automated_slideshow = defineTool({
         .max(20)
         .optional()
         .describe("How many slides to generate (default 5, max 20). Each is charged."),
-      model: SlideshowImageModel.optional().describe(
-        "Slideshow image model (default 'Flux Pro Ultra'). Only the fixed slideshow set is accepted.",
-      ),
+      model: SlideshowImageModel.optional(),
       aspect_ratio: z.string().optional(),
       content_type: z.string().optional().describe("Output framing, e.g. 'reel' (default)."),
       style: z.string().optional(),
@@ -197,8 +191,6 @@ const versely_add_slideshow_images = defineTool({
   name: "versely_add_slideshow_images",
   description: "Generate and append more AI images to an existing slideshow.",
   meta: metaForMediaCard(),
-  // Only a fixed set of non-RunPod image models works here, so the plugin
-  // hides the picker and the backend default applies.
   inputSchema: z
     .object({
       slideshow_id: z.string(),
@@ -217,9 +209,7 @@ const versely_add_slideshow_images = defineTool({
         .max(10)
         .optional()
         .describe("Deprecated alias for num_images — prefer num_images."),
-      model: SlideshowImageModel.optional().describe(
-        "Slideshow image model. Only the fixed slideshow set is accepted.",
-      ),
+      model: SlideshowImageModel.optional(),
     })
     .passthrough(),
   handler: async (input, ctx) => {

@@ -496,7 +496,7 @@ Create a slideshow by generating multiple AI images from a prompt (no automation
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `prompt` | string | **yes** |  |
-| `model` | enum("Flux Pro Ultra" \| "Recraft V3 Image" \| "Reve Text to Image" \| "Imagen 4 Ultra" \| "Nano Banana Pro" \| "GPT Image 2" \| "Gemini") | — | Slideshow image model (default 'Flux Pro Ultra'). Only these are accepted — do NOT pass an arbitrary model from versely_find_models. |
+| `model` | string | — | Slideshow image model (default 'Flux Pro Ultra'): a name from versely_list_slideshow_options `models` (e.g. 'Nano Banana Pro', 'GPT Image 2', 'Seedream 5.0 Pro'). Slideshows have their own list: not every model from versely_find_models works here. |
 | `num_images` | integer | — | How many images to generate (default 5). Each image is charged. |
 | `n` | integer | — | Deprecated alias for num_images — prefer num_images. |
 | `aspect_ratio` | string | — |  |
@@ -511,7 +511,7 @@ Full automation: AI plans the slideshow, generates the images, and burns text ov
 |-------|------|----------|-------------|
 | `prompt` | string | — | Topic / theme for the slideshow. Required (or pass the legacy `topic`). |
 | `num_images` | integer | — | How many slides to generate (default 5, max 20). Each is charged. |
-| `model` | enum("Flux Pro Ultra" \| "Recraft V3 Image" \| "Reve Text to Image" \| "Imagen 4 Ultra" \| "Nano Banana Pro" \| "GPT Image 2" \| "Gemini") | — | Slideshow image model (default 'Flux Pro Ultra'). Only the fixed slideshow set is accepted. |
+| `model` | string | — | Slideshow image model (default 'Flux Pro Ultra'): a name from versely_list_slideshow_options `models` (e.g. 'Nano Banana Pro', 'GPT Image 2', 'Seedream 5.0 Pro'). Slideshows have their own list: not every model from versely_find_models works here. |
 | `aspect_ratio` | string | — |  |
 | `content_type` | string | — | Output framing, e.g. 'reel' (default). |
 | `style` | string | — |  |
@@ -563,7 +563,7 @@ Generate and append more AI images to an existing slideshow.
 | `prompt` | string | **yes** |  |
 | `num_images` | integer | — | How many images to append (default 3). Each image is charged. |
 | `n` | integer | — | Deprecated alias for num_images — prefer num_images. |
-| `model` | enum("Flux Pro Ultra" \| "Recraft V3 Image" \| "Reve Text to Image" \| "Imagen 4 Ultra" \| "Nano Banana Pro" \| "GPT Image 2" \| "Gemini") | — | Slideshow image model. Only the fixed slideshow set is accepted. |
+| `model` | string | — | Slideshow image model (default 'Flux Pro Ultra'): a name from versely_list_slideshow_options `models` (e.g. 'Nano Banana Pro', 'GPT Image 2', 'Seedream 5.0 Pro'). Slideshows have their own list: not every model from versely_find_models works here. |
 
 ### `versely_add_text_overlay`
 
