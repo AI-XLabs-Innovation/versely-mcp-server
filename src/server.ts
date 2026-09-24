@@ -139,11 +139,15 @@ function rememberFinishedStatus(key: string, result: ToolResult): void {
 export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_task_status",
   "versely_get_slideshow",
+  "versely_get_ai_template_run",
   "versely_get_movie_status",
   "versely_get_workflow_run",
   "versely_get_video_workflow_run",
   "versely_get_dub",
 ]);
+
+/** Tools the cards call from inside the host: the poll targets, and versely_browse (the picker's Show more). */
+const APP_CALLABLE_TOOLS: ReadonlySet<string> = new Set([...CARD_POLL_TARGETS, "versely_browse"]);
 
 interface ListedTool {
   name: string;
@@ -236,7 +240,7 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
   // widget call a tool that is explicitly open to it: say so both ways - the
   // MCP Apps visibility list and ChatGPT's own widgetAccessible flag - or the
   // card's polls are refused and it spins on "Generating" forever.
-  if (profile === "openai" && appsUi && CARD_POLL_TARGETS.has(tool.name)) {
+  if (profile === "openai" && appsUi && APP_CALLABLE_TOOLS.has(tool.name)) {
     const ui = (meta.ui && typeof meta.ui === "object" ? (meta.ui as Json) : {}) as Json;
     meta.ui = { ...ui, visibility: ["model", "app"] };
     meta["openai/widgetAccessible"] = true;

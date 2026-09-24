@@ -136,6 +136,7 @@ export async function startFakeBackend(opts: {
   const automations = new Map<string, Record<string, unknown>>();
   const brands = new Map<string, Record<string, unknown>>();
   const slideshowReads = new Map<string, number>();
+  const templateRunReads = new Map<string, number>();
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -352,6 +353,59 @@ export async function startFakeBackend(opts: {
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
     }
+
+    // --- picker sources: caption styles, AI / workflow / slideshow templates ---
+    if (method === "GET" && path === "/api/v1/slideshow/caption-styles") {
+      return send(res, 200, {
+        success: true,
+        data: ["pink-pop", "keyline-plate", "butter-notes"].map((id) => ({
+          id, label: id.split("-").map((w) => w[0]!.toUpperCase() + w.slice(1)).join(" "), blurb: `The ${id} look`,
+          example: { topic: "x", slides: [1, 2, 3, 4, 5].map((n) => `https://img.versely.studio/ref/slideshow-styles/${id}-${n}.webp`) },
+        })),
+      });
+    }
+    if (method === "GET" && path === "/api/v1/templates") {
+      return send(res, 200, {
+        success: true,
+        data: [{
+          id: "finger_snap", name: "Finger Snap", description: "Snap into a character", category: "Trending",
+          thumbnailUrl: "https://videos.versely.studio/finger-snap/input-character.png",
+          previewVideoUrl: "https://videos.versely.studio/finger-snap/finger-snap.mp4", estimatedCreditCost: 68,
+          inputs: [{ field: "user_image_url", type: "image_url", label: "Your photo", required: true }],
+        }],
+      });
+    }
+    if (method === "POST" && path === "/api/v1/templates/runs") {
+      templateRunReads.set("run-1", 0);
+      return send(res, 200, { success: true, data: { runId: "run-1" } });
+    }
+    const tRun = /^\/api\/v1\/templates\/runs\/([^/]+)$/.exec(path);
+    if (method === "GET" && tRun) {
+      const reads = (templateRunReads.get(tRun[1]!) ?? 0) + 1;
+      templateRunReads.set(tRun[1]!, reads);
+      return send(res, 200, {
+        success: true,
+        data: reads > 1
+          ? { id: tRun[1], template_id: "finger_snap", status: "completed", final_asset_url: "https://videos.versely.studio/templates/run-1.mp4" }
+          : { id: tRun[1], template_id: "finger_snap", status: "running" },
+      });
+    }
+    if (method === "GET" && path === "/api/v1/public-workflows") {
+      return send(res, 200, { success: true, templates: [{ id: "wt-1", slug: "ugc-hook", title: "UGC hook", description: "A hook, a demo, a CTA", thumbnail_url: "https://img.versely.studio/t/ugc.png", estimated_credit_cost: 120 }] });
+    }
+    const wClone = /^\/api\/v1\/public-workflows\/([^/]+)\/clone$/.exec(path);
+    if (method === "POST" && wClone) return send(res, 201, { success: true, workflow_id: "wf-9", name: "UGC hook" });
+    if (method === "GET" && path === "/api/v1/public-slideshows") {
+      return send(res, 200, { success: true, templates: [{ id: "st-1", slug: "morning-routine", title: "Morning routine", thumbnail_url: "https://img.versely.studio/t/morning.png", num_images: 4, estimated_credit_cost: 20 }] });
+    }
+    const sTpl = /^\/api\/v1\/public-slideshows\/([^/]+)$/.exec(path);
+    if (method === "GET" && sTpl && sTpl[1] !== "categories") {
+      return send(res, 200, { success: true, template: { slug: sTpl[1], title: "Morning routine", recreate_prompt: "5 morning habits that changed my life", num_images: 4, content_type: "story", model: "Nano Banana Pro" } });
+    }
+    const sRecreate = /^\/api\/v1\/public-slideshows\/([^/]+)\/recreate$/.exec(path);
+    if (method === "POST" && sRecreate) return send(res, 200, { success: true });
+    const restyle = /^\/api\/v1\/slideshow\/([^/]+)\/caption-style$/.exec(path);
+    if (method === "POST" && restyle) return send(res, 200, { success: true, data: { slideshow_id: restyle[1], caption_style: b.caption_style } });
 
     // --- brand kits (agenticContext.controller) ---
     if (method === "POST" && path === "/api/v1/agentic/brand-kit/analyze") {

@@ -23,6 +23,8 @@ import { audioTools } from "../src/tools/audio.js";
 import { billingTools } from "../src/tools/billing.js";
 import { avatarTools } from "../src/tools/avatars.js";
 import { brandTools } from "../src/tools/brands.js";
+import { browseTools } from "../src/tools/browse.js";
+import { templateTools } from "../src/tools/templates.js";
 
 // Every registered tool, in tools/list order. (The env-gated debug tool is
 // left out: it isn't registered unless MCP_ENABLE_DEBUG_TOOLS=1.)
@@ -34,6 +36,8 @@ const categories: Array<[string, Tool[]]> = [
   ["Avatars (for avatar lip-sync)", avatarTools],
   ["Slideshow", slideshowTools],
   ["Brands", brandTools],
+  ["Browse (visual picker)", browseTools],
+  ["Templates + styles", templateTools],
   ["Movie (multi-scene)", movieTools],
   ["UGC (overlays + captions)", ugcTools],
   ["Social media", socialTools],

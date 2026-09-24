@@ -17,6 +17,8 @@ import { audioTools } from "./audio.js";
 import { billingTools } from "./billing.js";
 import { avatarTools } from "./avatars.js";
 import { brandTools } from "./brands.js";
+import { browseTools } from "./browse.js";
+import { templateTools } from "./templates.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
@@ -27,6 +29,8 @@ export const standardTools: Tool[] = [
   ...avatarTools,
   ...slideshowTools,
   ...brandTools,
+  ...browseTools,
+  ...templateTools,
   ...movieTools,
   ...ugcTools,
   ...socialTools,

@@ -33,6 +33,7 @@
 
 import { createHash } from "node:crypto";
 import type { Profile } from "../profiles.js";
+import { PICKER_DESCRIPTION, PICKER_HTML, PICKER_NAME, PICKER_URI, PICKER_URI_BASE } from "./picker.js";
 
 const MEDIA_CARD_HTML = String.raw`<!doctype html>
 <html><head><meta charset="utf-8"/>
@@ -1695,31 +1696,65 @@ export function mediaCardUriFor(opts: { cardV2: boolean }): string {
   return opts.cardV2 ? MEDIA_CARD_V2_URI : MEDIA_CARD_URI;
 }
 
+/**
+ * The picker shows previews from more hosts than the media card: HeyGen's own
+ * avatar and voice previews, and the AI templates bucket.
+ */
+const PICKER_CSP = {
+  ...MEDIA_CARD_CSP,
+  resourceDomains: [
+    ...MEDIA_CARD_CSP.resourceDomains,
+    "https://templates.versely.studio",
+    "https://files2.heygen.ai",
+    "https://resource.heygen.ai",
+    "https://static.heygen.ai",
+  ],
+};
+
 /** The ui:// resources a server for this profile lists and serves. */
 export function uiResourcesFor(opts: UiResourceOptions): UiResourceEntry[] {
+  const openai = opts.profile === "openai";
   return [
     {
       uri: mediaCardUriFor(opts),
       name: MEDIA_CARD_NAME,
       description: MEDIA_CARD_DESCRIPTION,
       html: opts.cardV2 ? MEDIA_CARD_V2_HTML : MEDIA_CARD_HTML,
-      meta: opts.profile === "openai" ? OPENAI_MEDIA_CARD_RESOURCE_META : MEDIA_CARD_RESOURCE_META,
+      meta: openai ? OPENAI_MEDIA_CARD_RESOURCE_META : MEDIA_CARD_RESOURCE_META,
+    },
+    {
+      uri: PICKER_URI,
+      name: PICKER_NAME,
+      description: PICKER_DESCRIPTION,
+      html: PICKER_HTML,
+      meta: {
+        ui: openai
+          ? { csp: PICKER_CSP, domain: "https://mcp.versely.studio", prefersBorder: false }
+          : { csp: PICKER_CSP },
+      },
     },
   ];
 }
 
 /**
- * The resource for a URI. Any earlier card URI (the plain one, or an older
- * hash a host still holds in a cached tool list) gets the CURRENT card, so a
- * stale descriptor can't pin a broken template.
+ * The resource for a URI. Any earlier card or picker URI (the plain one, or an
+ * older hash a host still holds in a cached tool list) gets the CURRENT one,
+ * so a stale descriptor can't pin a broken template.
  */
 export function resolveUiResource(resources: readonly UiResourceEntry[], uri: string): UiResourceEntry | undefined {
   const exact = resources.find((r) => r.uri === uri);
   if (exact) return exact;
-  if (uri === MEDIA_CARD_URI || uri.startsWith(`${MEDIA_CARD_URI}-`)) {
-    return resources.find((r) => r.uri === MEDIA_CARD_URI || r.uri.startsWith(`${MEDIA_CARD_URI}-`));
+  for (const base of [MEDIA_CARD_URI, PICKER_URI_BASE]) {
+    if (uri === base || uri.startsWith(`${base}-`)) {
+      return resources.find((r) => r.uri === base || r.uri.startsWith(`${base}-`));
+    }
   }
   return undefined;
+}
+
+/** Tool _meta for a tool that opens the picker (the card itself calls versely_browse for "Show more"). */
+export function metaForPicker(): Record<string, unknown> {
+  return { ui: { resourceUri: PICKER_URI, visibility: ["model", "app"] } };
 }
 
 export function getUiResource(

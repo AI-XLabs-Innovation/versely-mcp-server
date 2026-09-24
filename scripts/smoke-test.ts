@@ -73,6 +73,8 @@ const OPENAI_TOOLS = [
   "versely_list_avatars",
   "versely_analyze_brand", "versely_list_brands", "versely_get_brand", "versely_update_brand",
   "versely_set_default_brand", "versely_archive_brand", "versely_create_brand_slideshow",
+  "versely_browse", "versely_run_ai_template", "versely_get_ai_template_run", "versely_use_workflow_template",
+  "versely_use_slideshow_template", "versely_apply_caption_style",
 ];
 
 const failures: string[] = [];
@@ -574,13 +576,47 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("a brand automation can start from the brand's link", typeof brandAuto.config?.brand_kit_id === "string" && String(brandAuto.config?.brand_kit_id).startsWith("brand-"), JSON.stringify(brandAuto));
   const brandEdited = JSON.parse(textOf(await call(openai, "versely_update_brand", { brand_id: "brand-1", voice_tone: "playful" }))) as { brand?: { brand_id?: string } };
   assert("update_brand edits one brand and answers with it", brandEdited.brand?.brand_id === "brand-1", JSON.stringify(brandEdited));
+  // The visual picker: versely_browse opens it (and the card calls it again
+  // for Show more); a pick is worded with the id to use.
+  const browseTool = byName(oTools, "versely_browse");
+  const browseUi = (browseTool?._meta?.ui ?? {}) as { resourceUri?: string; visibility?: string[] };
+  assert("versely_browse opens the picker, which may call it back", String(browseUi.resourceUri).startsWith("ui://versely/picker-") && (browseUi.visibility ?? []).includes("app") && browseTool?._meta?.["openai/widgetAccessible"] === true, JSON.stringify(browseTool?._meta));
+  const pickerListed = (await openai.listResources()).resources.map((r) => r.uri);
+  assert("resources/list serves the picker", pickerListed.includes(String(browseUi.resourceUri)), JSON.stringify(pickerListed));
+  const oldPicker = await openai.readResource({ uri: "ui://versely/picker" });
+  assert("an older picker URI still gets the current picker", String((oldPicker.contents[0] as { text?: string }).text ?? "").includes("Versely Picker"));
+  const styles = await call(openai, "versely_browse", { collection: "slideshow_styles" });
+  const stylePicker = ((styles._meta ?? {})["studio.versely/picker"] ?? {}) as { items?: Array<{ id: string; pick: string; images?: string[] }> };
+  assert("browse slideshow_styles: items with example slides and a pick naming the caption_style", stylePicker.items?.length === 3 && stylePicker.items?.[0]?.pick.includes("(caption_style: pink-pop)") && stylePicker.items?.[0]?.images?.length === 5, JSON.stringify(stylePicker).slice(0, 300));
+  assert("browse tells the model not to list the options", textOf(styles).includes("Don't list these") && textOf(styles).includes("pink-pop = Pink Pop"), textOf(styles));
+  const paged = await call(openai, "versely_browse", { collection: "veed_avatars", limit: 10 });
+  const pagedPicker = ((paged._meta ?? {})["studio.versely/picker"] ?? {}) as { items?: unknown[]; more?: boolean; total?: number };
+  assert("browse pages a big collection (Show more)", pagedPicker.items?.length === 10 && pagedPicker.more === true && pagedPicker.total === 28, JSON.stringify({ n: pagedPicker.items?.length, more: pagedPicker.more, total: pagedPicker.total }));
+  const tpl = await call(openai, "versely_browse", { collection: "ai_templates" });
+  assert("an AI template pick says which inputs it needs", textOf(tpl).includes("finger_snap = Finger Snap") && JSON.stringify(tpl._meta).includes("It needs: Your photo (user_image_url)"), JSON.stringify(tpl._meta).slice(0, 300));
+
+  // Templates and styles act on a pick.
+  const runStarted = await call(openai, "versely_run_ai_template", { template_id: "finger_snap", inputs: { user_image_url: "https://img.versely.studio/in/me.png" } });
+  const runSc = runStarted.structuredContent as Record<string, any> | undefined;
+  assert("run_ai_template starts the run and returns a card that follows it", lastBody("/api/v1/templates/runs").templateId === "finger_snap" && runSc?.poll?.tool_name === "versely_get_ai_template_run", JSON.stringify(runSc));
+  await call(openai, "versely_get_ai_template_run", { run_id: "run-1" });
+  const runDone = (await call(openai, "versely_get_ai_template_run", { run_id: "run-1" })).structuredContent as Record<string, any> | undefined;
+  assert("an AI template run ends with its video", runDone?.status === "completed" && runDone?.assets?.[0]?.url === "https://videos.versely.studio/templates/run-1.mp4", JSON.stringify(runDone));
+  const cloned = JSON.parse(textOf(await call(openai, "versely_use_workflow_template", { template: "ugc-hook" }))) as { workflow_id?: string };
+  assert("use_workflow_template copies it into the user's workflows", cloned.workflow_id === "wf-9", JSON.stringify(cloned));
+  const fromTpl = await call(openai, "versely_use_slideshow_template", { template: "morning-routine", caption_style: "pink-pop" });
+  const tplBody = lastBody("/api/v1/slideshow/create-automated");
+  assert("use_slideshow_template makes it with the template's own prompt and settings", tplBody.prompt === "5 morning habits that changed my life" && tplBody.num_images === 4 && tplBody.content_type === "story" && tplBody.model === "Nano Banana Pro" && tplBody.caption_style === "pink-pop" && (fromTpl.structuredContent as Record<string, any>)?.status === "pending", JSON.stringify(tplBody));
+  const restyled = await call(openai, "versely_apply_caption_style", { slideshow_id: "ss-restyle-1", caption_style: "keyline-plate" });
+  assert("apply_caption_style re-bakes the captions in the chosen style", lastBody("/api/v1/slideshow/ss-restyle-1/caption-style").caption_style === "keyline-plate", textOf(restyled));
   // ChatGPT caches widget templates by URI, so its tools point at the hashed
   // card URI; claude.ai keeps the plain one.
   const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;
-  const openaiUris = [...new Set(oTools.map(uriOf).filter(Boolean))];
+  const isCardUri = (u: string | undefined) => !!u && u.startsWith("ui://versely/media-card");
+  const openaiUris = [...new Set(oTools.map(uriOf).filter(isCardUri))];
   const listedUris = (await openai.listResources()).resources.map((r) => r.uri);
   assert("ChatGPT tools point at the hashed card URI that resources/list serves", openaiUris.length === 1 && openaiUris[0]!.startsWith("ui://versely/media-card-") && listedUris.includes(openaiUris[0]!), JSON.stringify({ openaiUris, listedUris }));
-  const fullUris = [...new Set(fullTools.map(uriOf).filter(Boolean))];
+  const fullUris = [...new Set(fullTools.map(uriOf).filter(isCardUri))];
   assert("claude.ai tools keep the plain card URI", fullUris.length === 1 && fullUris[0] === "ui://versely/media-card", JSON.stringify(fullUris));
   // Account: ChatGPT reads status and history; plans, checkout and the
   // subscription lifecycle are Claude-only (OpenAI's commerce rules).

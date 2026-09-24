@@ -95,7 +95,11 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "ids. Confirm the caption, media and accounts with the user before versely_publish_post. " +
   "Recurring content: slideshow automations (versely_create_slideshow_automation; options from " +
   "versely_list_slideshow_options) or scheduled workflows (versely_update_workflow_mode). Every run spends " +
-  "credits: tell the user the cost per run (versely_estimate_slideshow_automation) and the schedule before starting one.";
+  "credits: tell the user the cost per run (versely_estimate_slideshow_automation) and the schedule before starting one. " +
+  "When the user has to choose a slideshow style, an avatar, a voice, a template or one of their brands, open " +
+  "versely_browse (a visual picker; their pick arrives as their next message) instead of listing options in text. " +
+  "Brands: read one from its link with versely_analyze_brand, then versely_create_brand_slideshow or a slideshow " +
+  "automation with its brand_kit_id.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

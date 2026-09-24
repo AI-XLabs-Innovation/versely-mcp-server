@@ -380,6 +380,37 @@ const ROWS: Record<string, Row> = {
     why: { openWorld: "When given the brand's link, reads that public page first; the slideshow stays private." },
   },
 
+  // ── Visual picker + templates + styles (both profiles; owner, 2026-09-24) ──
+  versely_browse: {
+    title: "Show options to pick from", cls: "read", openai: true,
+    what: "Versely's slideshow styles, avatars, voices, templates or the user's brands",
+    inv: ["Opening the picker", "Picker ready"],
+  },
+  versely_run_ai_template: {
+    title: "Run AI template", cls: "create", what: "AI template video", openai: true,
+    inv: ["Starting the template", "Template started"],
+  },
+  versely_get_ai_template_run: {
+    title: "Check AI template run", cls: "read", what: "one of the user's AI template runs", openai: true,
+    inv: ["Checking the template", "Checked the template"],
+  },
+  versely_use_workflow_template: {
+    title: "Use workflow template", cls: "create", what: "copy of a workflow template", spends: false, openai: true,
+    inv: ["Copying the template", "Template copied"],
+  },
+  versely_use_slideshow_template: {
+    title: "Use slideshow template", cls: "create", what: "slideshow from a template", openai: true,
+    inv: ["Making the slideshow", "Slideshow started"],
+  },
+  versely_apply_caption_style: {
+    title: "Restyle slideshow captions", cls: "edit", what: "slideshow captions", openai: true,
+    inv: ["Restyling the captions", "Captions restyled"],
+    why: {
+      readOnly: "Re-bakes the captions of one of the user's slideshows in another style.",
+      destructive: "Replaces the slideshow's previous caption style; the slide pictures are kept.",
+    },
+  },
+
   // ── Movies ──────────────────────────────────────────────────────────────
   versely_create_movie: {
     title: "Plan a movie", cls: "create", what: "movie plan", openai: true, spends: false,
