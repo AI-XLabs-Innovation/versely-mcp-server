@@ -194,11 +194,34 @@ const CATALOG_PATHS: Record<CatalogType, string> = {
   lipsync: "/api/v1/ai-models/lipsync",
 };
 
+/**
+ * Voice models the /generate/audio dispatcher can't serve but this server
+ * routes itself (versely_generate_audio sends Gemini 3.8 TTS to
+ * /audio/tts-gemini). `dispatcher_only` hides them, so they are added back.
+ */
+export const MCP_ROUTED_AUDIO = /^gemini[\s-]*3[.-]8\b/i;
+
+/** The catalog rows matching MCP_ROUTED_AUDIO that `have` lacks. */
+export async function mcpRoutedAudioModels<T extends { name?: string }>(
+  ctx: ToolContext,
+  have: readonly T[],
+): Promise<T[]> {
+  try {
+    const res = await ctx.client.get<{ data?: { models?: T[] } }>(CATALOG_PATHS.audio);
+    const all = Array.isArray(res?.data?.models) ? res.data!.models! : [];
+    const known = new Set(have.map((m) => m.name));
+    return all.filter((m) => typeof m.name === "string" && MCP_ROUTED_AUDIO.test(m.name) && !known.has(m.name));
+  } catch {
+    return [];
+  }
+}
+
 export function loadCatalogModels(ctx: ToolContext, type: CatalogType): Promise<CatalogModel[]> {
   return cached<CatalogModel[]>(cacheKey(ctx, "catalog", type), async () => {
     const query: Record<string, string> = type === "audio" ? { dispatcher_only: "true" } : { pickable: "true" };
     const res = await ctx.client.get<{ data?: { models?: CatalogModel[] } }>(CATALOG_PATHS[type], { query });
     const models = Array.isArray(res?.data?.models) ? res.data!.models! : [];
+    if (type === "audio") models.push(...(await mcpRoutedAudioModels(ctx, models)));
     return { value: models, ttl: CACHE_TTL_MS };
   });
 }

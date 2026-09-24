@@ -92,6 +92,11 @@ const CATALOG: Record<string, Array<Record<string, unknown>>> = {
   lipsync: [],
 };
 
+const GEMINI_38 = {
+  slug: "gemini-3-8-flash-tts", name: "Gemini 3.8 Flash TTS", content_type: "audio",
+  categories: ["text-to-audio"], credits: 3, is_runpod_discounted: false,
+};
+
 const PLUGIN_BLOCK_FREE = {
   free_account: true,
   free_credits_granted: 100,
@@ -217,7 +222,10 @@ export async function startFakeBackend(opts: {
     }
     const cat = /^\/api\/v1\/ai-models\/(images|videos|audio|lipsync)$/.exec(path);
     if (method === "GET" && cat) {
-      return send(res, 200, { success: true, data: { models: CATALOG[cat[1]!] ?? [] } });
+      // Like the real catalog: Gemini 3.8 TTS is active but not a dispatcher
+      // model, so ?dispatcher_only=true leaves it out.
+      const extra = cat[1] === "audio" && rec.query.dispatcher_only !== "true" ? [GEMINI_38] : [];
+      return send(res, 200, { success: true, data: { models: [...(CATALOG[cat[1]!] ?? []), ...extra] } });
     }
 
     // --- generation ---
@@ -335,6 +343,31 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- music, sound effects, Gemini TTS (each controller's real reply shape) ---
+    if (method === "POST" && (path === "/api/v1/suno/generate" || path === "/api/v1/suno/generate-sounds")) {
+      seq += 1;
+      return send(res, 200, { success: true, data: { taskId: `suno-${seq}`, dbRecordId: `rec-${seq}` } });
+    }
+    if (method === "POST" && /^\/api\/v1\/lyria\/generate-(3-5|pro|clip)$/.test(path)) {
+      seq += 1;
+      return send(res, 200, {
+        success: true,
+        data: { file_url: `https://audio.versely.studio/lyria/track-${seq}.mp3`, lyrics: "la la la", model: "Lyria 3.5", request_id: `lyria-${seq}`, record_id: `r-${seq}`, credits_used: 8 },
+      });
+    }
+    if (method === "POST" && (path === "/api/v1/audio/minimax/music-3" || path === "/api/v1/audio/elevenlabs/music-v2-5" || path.startsWith("/api/v1/audio/sonilo/"))) {
+      seq += 1;
+      return send(res, 200, { success: true, message: "Music generation started", data: { taskId: `fal-music-${seq}` } });
+    }
+    if (method === "POST" && path === "/api/v1/audio/sound-effect") {
+      seq += 1;
+      return send(res, 200, { message: "Sound effect generation started", taskId: `sfx-${seq}`, data: { id: `row-${seq}` } });
+    }
+    if (method === "POST" && path === "/api/v1/audio/tts-gemini") {
+      seq += 1;
+      return send(res, 200, { success: true, file_url: `https://audio.versely.studio/gemini/speech-${seq}.wav`, model: b.model, voice: b.voice, credits_used: 2 });
     }
 
     // --- automations (the real envelope: { success, data: { automation } }) ---

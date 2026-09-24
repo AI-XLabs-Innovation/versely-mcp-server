@@ -1,7 +1,10 @@
 import { z } from "zod";
-import { defineTool, defineVariant, type Tool, type ToolContext } from "./_types.js";
+import { defineTool, defineVariant, type Tool, type ToolContext, type ToolResult } from "./_types.js";
 import { AsyncFields, handleAsync, type AsyncMode } from "./_async.js";
-import { jsonResult } from "./_helpers.js";
+import { jsonResult, mediaResult } from "./_helpers.js";
+import { SYNC_TIMEOUT_MS } from "../client.js";
+import { isMusicModelName, isSoundEffectModelName } from "./audio.js";
+import { GEMINI_VOICE_IDS } from "./voices.js";
 import { resolveCanonicalModel } from "./_modelResolver.js";
 import {
   PLUGIN_CREDITS_NOTE,
@@ -11,6 +14,8 @@ import {
   loadCatalogModels,
   loadPluginCatalog,
   loadPluginModel,
+  MCP_ROUTED_AUDIO,
+  mcpRoutedAudioModels,
   modesFromCategories,
   runpodFallbackModels,
   type CatalogType,
@@ -313,6 +318,14 @@ const versely_find_models = defineTool({
     for (const r of responses) {
       const list = r?.data?.models;
       if (Array.isArray(list)) merged.push(...list);
+    }
+    // Gemini 3.8 TTS: not in the dispatcher's roster, but versely_generate_audio routes it.
+    if (
+      types.includes("audio") &&
+      (!input.category || input.category === "text-to-audio") &&
+      input.is_featured === undefined
+    ) {
+      merged.push(...(await mcpRoutedAudioModels(ctx, merged)));
     }
 
     // Tokenize q: split on whitespace, require every token to appear in the haystack.
@@ -831,7 +844,46 @@ function buildAudioToolDescription(): string {
   lines.push(
     "Cartesia and Inworld TTS: same — fetch IDs via versely_list_voices.",
   );
+  lines.push(
+    "Gemini 3.8 Flash TTS / Gemini 3.8 Flash Lite TTS / Gemini 3.1 Flash TTS → voice: a Gemini voice (default 'Kore'; versely_list_voices provider='gemini'). style_prompt sets the delivery (tone, pace, emotion).",
+  );
+  lines.push("");
+  lines.push("Music and sound effects are not speech: use versely_generate_music and versely_generate_sound_effect.");
   return lines.join("\n");
+}
+
+/** Gemini 3.8 TTS runs at /audio/tts-gemini, not through the /generate/audio dispatcher (which 400s it). */
+function isGeminiDirectTts(model: string): boolean {
+  return MCP_ROUTED_AUDIO.test(model.trim());
+}
+
+async function geminiSpeech(
+  ctx: ToolContext,
+  body: Record<string, unknown>,
+  text: string,
+): Promise<ToolResult> {
+  const supplied = String(body.voice ?? body.voice_id ?? "").trim();
+  let voice = "Kore";
+  if (supplied) {
+    const match = GEMINI_VOICE_IDS.find((v) => v.toLowerCase() === supplied.toLowerCase());
+    if (!match) {
+      throw new Error(
+        `Voice "${supplied}" is not a Gemini voice. Valid voices: ${GEMINI_VOICE_IDS.join(", ")}. Omit voice for the default ("Kore").`,
+      );
+    }
+    voice = match;
+  }
+  const payload: Record<string, unknown> = { text, voice, model: body.model };
+  if (typeof body.language === "string" && body.language.trim()) payload.language = body.language.trim();
+  if (typeof body.style_prompt === "string" && body.style_prompt.trim()) payload.style_prompt = body.style_prompt.trim();
+  // Synchronous: the reply carries the finished file.
+  const data = await ctx.client.post("/api/v1/audio/tts-gemini", payload, { timeoutMs: SYNC_TIMEOUT_MS });
+  return mediaResult(data, {
+    kind: "audio",
+    toolName: "versely_generate_audio",
+    toolArgs: payload,
+    extra: { status: "completed", model: body.model, prompt: text },
+  });
 }
 
 const versely_generate_audio = defineTool({
@@ -840,10 +892,12 @@ const versely_generate_audio = defineTool({
   meta: metaForMediaCard(),
   openai: {
     description:
-      "Generate a voiceover (text to speech) with a voice model from versely_find_models (type 'audio'). " +
+      "Generate a voiceover (text to speech) with a voice model from versely_find_models (type 'audio'), or " +
+      "'Gemini 3.8 Flash TTS' (most expressive; style_prompt sets the delivery) / 'Gemini 3.8 Flash Lite TTS'. " +
       "Pick the voice yourself with versely_list_voices (or the voices in versely_get_model_inputs) instead of " +
-      "asking the user; omit it to use the model's default voice. The job runs in the background and spends the " +
-      "user's Versely credits; the inline card updates itself when it finishes. Call it once per request.",
+      "asking the user; omit it to use the model's default voice. Spends the user's Versely credits; the inline " +
+      "card updates itself when it finishes. Call it once per request. For music use versely_generate_music, for " +
+      "sound effects versely_generate_sound_effect.",
     params: {
       model: OPENAI_MODEL_PARAM("audio"),
       voice:
@@ -872,12 +926,27 @@ const versely_generate_audio = defineTool({
           "Alternative voice field for models that use voice_id (e.g. Minimax Speech). Treated as equivalent to `voice` by the MCP — pass whichever feels natural.",
         ),
       language: z.string().optional(),
+      style_prompt: z
+        .string()
+        .optional()
+        .describe("Gemini TTS only: how to say it — tone, pace, emotion (e.g. 'warm and upbeat, a little faster')."),
       ...AsyncFields,
     })
     .passthrough(),
   handler: async (input, ctx) => {
     const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
     body.model = await resolveCanonicalModel(ctx, "audio", body.model);
+    // Music and sound-effect rows share the audio catalog but not this route.
+    if (isMusicModelName(body.model)) {
+      throw new Error(`${body.model} makes music, not speech: call versely_generate_music with model "${body.model}".`);
+    }
+    if (isSoundEffectModelName(body.model)) {
+      throw new Error(
+        `${body.model} makes sound effects, not speech: call versely_generate_sound_effect with model "${body.model}".`,
+      );
+    }
+    if (isGeminiDirectTts(body.model)) return geminiSpeech(ctx, body, input.text);
+    if (!/^gemini/i.test(body.model)) delete body.style_prompt;
 
     const profile = lookupAudioProfile(body.model);
     if (profile) {
@@ -932,226 +1001,71 @@ const versely_generate_audio = defineTool({
   },
 });
 
-/** Suno model versions the backend accepts (VALID_MODELS in sunoApi.controller). */
-const SunoModel = z.enum(["V3_5", "V4", "V4_5", "V4_5PLUS", "V4_5ALL", "V5", "V5_5"]);
+/** Lip-sync models whose endpoint declares `resolution` required with no default (versely-web lib/lipsync). */
+const LIPSYNC_RESOLUTION_REQUIRED = new Set(["VEED Fabric 1.0", "VEED Fabric 1.0 Fast", "VEED Fabric 1.0 Text"]);
 
-const versely_generate_music = defineTool({
-  name: "versely_generate_music",
-  description:
-    "Generate music with Suno. Returns a task id right away while the track renders in the background; hosts that show the inline media card update it by themselves, otherwise check it with versely_get_task_status.\n\n" +
-    "Two modes:\n" +
-    "• **Inspiration** (default, `custom_mode: false`) — `prompt` is a free-form description of the song; Suno writes the lyrics and picks the style.\n" +
-    "• **Custom** (`custom_mode: true`) — `prompt` becomes the LITERAL LYRICS, and `style` + `title` are then required.\n\n" +
-    "There is no separate lyrics field: to supply your own lyrics, set custom_mode:true and put them in `prompt`.",
-  meta: metaForMediaCard(),
-  // The music model picker can only name non-RunPod models, so the plugin
-  // hides it and the backend default applies.
-  openai: {
-    description:
-      "Generate a song or instrumental track. The job runs in the background and spends the user's Versely credits; " +
-      "the inline card updates itself when it finishes.\n\n" +
-      "Two modes:\n" +
-      "• Inspiration (default, `custom_mode: false`) — `prompt` describes the song; lyrics and style are written for you.\n" +
-      "• Custom (`custom_mode: true`) — `prompt` is the LITERAL LYRICS, and `style` + `title` are then required.",
-  },
-  inputSchema: z
-    .object({
-      prompt: z
-        .string()
-        .describe(
-          "In default mode: a description of the song. In custom_mode: the literal lyrics to sing.",
-        ),
-      model: SunoModel.optional().describe(
-        "Suno model version (default V5) — required by the backend. Underscored form (V4_5PLUS), not 'V4.5+'.",
-      ),
-      instrumental: z
-        .boolean()
-        .default(false)
-        .describe("No vocals. Required by the backend and must be a boolean."),
-      custom_mode: z
-        .boolean()
-        .optional()
-        .describe("Treat `prompt` as literal lyrics. Requires `style` and `title`."),
-      style: z
-        .string()
-        .optional()
-        .describe("Musical style, e.g. 'pop, upbeat, electronic'. Required when custom_mode is true."),
-      title: z.string().optional().describe("Track title. Required when custom_mode is true."),
-      negative_tags: z.string().optional().describe("Styles to avoid."),
-      vocal_gender: z.enum(["m", "f"]).optional(),
-      style_weight: z.number().min(0).max(1).optional(),
-      weirdness_constraint: z.number().min(0).max(1).optional(),
-      audio_weight: z.number().min(0).max(1).optional(),
-      persona_id: z.string().optional(),
-      model_version: z
-        .string()
-        .optional()
-        .describe("Deprecated alias for model (e.g. 'V4') — prefer model."),
-      tags: z.string().optional().describe("Deprecated alias for style — prefer style."),
-      ...AsyncFields,
-    })
-    .passthrough(),
-  handler: async (input, ctx) => {
-    const {
-      mode,
-      poll_timeout_ms,
-      poll_interval_ms,
-      model_version,
-      tags,
-      custom_mode,
-      negative_tags,
-      vocal_gender,
-      style_weight,
-      weirdness_constraint,
-      audio_weight,
-      persona_id,
-      ...rest
-    } = input;
-    const body: Record<string, unknown> = { ...rest };
-
-    // The controller reads customMode/model/style/personaId/negativeTags/vocalGender/
-    // styleWeight/weirdnessConstraint/audioWeight — camelCase, and hard-400s unless
-    // `model` is a VALID_MODELS member and `instrumental` is a real boolean.
-    // The old model_version / lyrics / tags fields were read nowhere.
-    // Precedence: explicit `model` > normalized legacy `model_version` > V5 default.
-    if (body.model === undefined && model_version) {
-      const normalized = model_version
-        .trim()
-        .toUpperCase()
-        .replace(/\+/g, "PLUS")
-        .replace(/[.\s-]/g, "_");
-      if (SunoModel.safeParse(normalized).success) body.model = normalized;
-    }
-    if (body.model === undefined) body.model = "V5";
-    if (body.style === undefined && tags !== undefined) body.style = tags;
-    if (custom_mode !== undefined) body.customMode = custom_mode;
-    if (negative_tags !== undefined) body.negativeTags = negative_tags;
-    if (vocal_gender !== undefined) body.vocalGender = vocal_gender;
-    if (style_weight !== undefined) body.styleWeight = style_weight;
-    if (weirdness_constraint !== undefined) body.weirdnessConstraint = weirdness_constraint;
-    if (audio_weight !== undefined) body.audioWeight = audio_weight;
-    if (persona_id !== undefined) body.personaId = persona_id;
-
-    const submission = await ctx.client.post("/api/v1/suno/generate", body);
-    return handleAsync({
-      ctx,
-      submitResponse: submission,
-      mode: mode as AsyncMode,
-      pollTimeoutMs: poll_timeout_ms,
-      pollIntervalMs: poll_interval_ms,
-      kind: "audio",
-      toolName: "versely_generate_music",
-      toolArgs: body,
-      extra: {
-        model: `Suno ${String(body.model ?? "V5")}`,
-        prompt: input.prompt,
-        ...(body.title ? { title: body.title } : {}),
-      },
-    });
-  },
-});
-
-const versely_extend_music = defineTool({
-  name: "versely_extend_music",
-  description:
-    "Extend an existing Suno track from a given timestamp. Supplying prompt / style / title / continue_at_seconds automatically switches Suno into custom-parameter mode; omit them all to simply continue the source track with its original parameters.",
-  meta: metaForMediaCard(),
-  openai: {
-    description:
-      "Extend a music track made with versely_generate_music from a given timestamp. Supplying prompt / style / title / " +
-      "continue_at_seconds steers the continuation; omit them all to simply continue the track as it was. " +
-      "Spends the user's Versely credits; the inline card updates itself when it finishes.",
-  },
-  inputSchema: z
-    .object({
-      audio_id: z
-        .string()
-        .describe("Audio variant ID of the source track (NOT the task_id)."),
-      model: SunoModel.default("V5").describe(
-        "Suno model version — required by the backend.",
-      ),
-      continue_at_seconds: z
-        .number()
-        .nonnegative()
-        .optional()
-        .describe("Position in seconds to continue from."),
-      prompt: z.string().optional(),
-      style: z.string().optional(),
-      title: z.string().optional(),
-      ...AsyncFields,
-    })
-    .passthrough(),
-  handler: async (input, ctx) => {
-    const {
-      mode,
-      poll_timeout_ms,
-      poll_interval_ms,
-      audio_id,
-      continue_at_seconds,
-      ...rest
-    } = input;
-    const body: Record<string, unknown> = { ...rest };
-    // Controller reads audioId / continueAt (camelCase) and requires `model`.
-    // The old audio_id / continue_at_seconds / task_id fields were read nowhere.
-    body.audioId = audio_id;
-    if (continue_at_seconds !== undefined) body.continueAt = continue_at_seconds;
-    // Deliberately do NOT send defaultParamFlag: the backend now auto-enables
-    // custom params when any of prompt/style/title/continueAt is present, and
-    // passing false would silently revert to a plain re-extend.
-    delete body.defaultParamFlag;
-    const submission = await ctx.client.post("/api/v1/suno/extend", body);
-    return handleAsync({
-      ctx,
-      submitResponse: submission,
-      mode: mode as AsyncMode,
-      pollTimeoutMs: poll_timeout_ms,
-      pollIntervalMs: poll_interval_ms,
-      kind: "audio",
-      toolName: "versely_extend_music",
-      toolArgs: body,
-    });
-  },
-});
+const LIPSYNC_DESCRIPTION =
+  "Make a talking or lip-synced video with a lip-sync model from versely_find_models (type 'lipsync'); " +
+  "`model` is required. What the models take (versely_get_model_inputs has the details):\n" +
+  "• A photo that speaks: image_url + audio_url (Kling Avatar, VEED Fabric, Wan 2.2 Speech, HeyGen Image to Video, LTX Audio to Video).\n" +
+  "• A video whose mouth is re-synced to new speech: video_url + audio_url (Sync Lipsync 2.0 / Pro, Sync React 1, Kling Lipsync, VEED Lipsync).\n" +
+  "• A stock avatar: avatar_id + audio_url, or avatar_id + script (Veed Avatars, HeyGen Avatar V3 / V5, Avatar X).\n" +
+  "A voiceover from versely_generate_audio works as audio_url. Spends the user's Versely credits; the inline card " +
+  "updates itself when it finishes.";
 
 const versely_generate_lipsync = defineTool({
   name: "versely_generate_lipsync",
-  description:
-    "Generate a lipsync video from a still image and an audio clip. `model` is required — call versely_find_models with type='lipsync' to discover valid names.",
+  description: LIPSYNC_DESCRIPTION,
   meta: metaForMediaCard(),
-  // Ready for when the plugin catalog serves a lip-sync model (tools/_policy.ts).
   openai: {
-    description:
-      "Generate a lip-sync video from a still image and an audio clip, with a lip-sync model from versely_find_models. " +
-      "Spends the user's Versely credits; the inline card updates itself when it finishes.",
-    params: {
-      image_url: "The character still to animate.",
-      model: "A lip-sync model `name` from versely_find_models.",
-    },
+    params: { model: "A lip-sync model `name` from versely_find_models (type 'lipsync')." },
   },
   inputSchema: z
     .object({
-      image_url: z
-        .string()
-        .url()
-        .describe("Character still. Required by image-driven lipsync models (Infini Talk, Wan 2.2 Speech Turbo)."),
-      audio_url: z.string().url(),
       model: z
         .string()
         .describe(
-          "Lipsync model — required (the backend 400s without it). Pass the slug or canonical name; discover via versely_find_models with type='lipsync'.",
+          "Lip-sync model — required. Pass the name from versely_find_models with type='lipsync'.",
         ),
+      image_url: z.string().url().optional().describe("The face photo to animate (photo models)."),
+      audio_url: z.string().url().optional().describe("The speech to sync to."),
+      video_url: z.string().url().optional().describe("The video whose mouth is re-synced (video-to-lipsync models)."),
+      script: z.string().optional().describe("Text to speak, for text-driven avatar models; also used as the prompt."),
+      prompt: z.string().optional().describe("Scene or motion direction, for models that take one."),
+      avatar_id: z.string().optional().describe("Stock avatar id (Veed Avatars, HeyGen Avatar, Avatar X)."),
+      voice_id: z.string().optional().describe("HeyGen voice, when the avatar speaks a script."),
+      resolution: z.string().optional().describe("Output resolution, where the model offers a choice."),
       ...AsyncFields,
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { mode, poll_timeout_ms, poll_interval_ms, ...body } = input;
-    body.model = await resolveCanonicalModel(ctx, "lipsync", body.model);
-    // Model-requirement validation reads image_urls | images only — a bare
-    // image_url made image-driven lipsync models 400 with "Image required for lipsync".
-    if (body.image_url && !Array.isArray(body.image_urls)) {
-      body.image_urls = [body.image_url];
+    const { mode, poll_timeout_ms, poll_interval_ms, script, ...rest } = input;
+    const model = await resolveCanonicalModel(ctx, "lipsync", rest.model);
+    const body: Record<string, unknown> = { ...rest, model };
+    const text = typeof script === "string" ? script.trim() : "";
+    if (text && body.prompt === undefined) body.prompt = text;
+    // Model-requirement validation reads image_urls | images; some dispatch
+    // branches read img_url. Send the photo every way the web app does.
+    if (typeof body.image_url === "string" && body.image_url) {
+      if (!Array.isArray(body.image_urls)) body.image_urls = [body.image_url];
+      body.img_url = body.image_url;
     }
-    const submission = await ctx.client.post("/api/v1/generate/lipsync", body);
+    // The shapes the dispatcher's per-model branches read (versely-web
+    // lib/lipsync buildLipsyncRequest - the app's own lip-sync path).
+    if (model === "Avatar X Text to Video") {
+      if (body.avatar_id !== undefined) body.avatar = body.avatar_id;
+      body.script = text || body.prompt;
+    } else if (model === "Avatar X Reference to Video") {
+      if (!body.video_url && !body.image_url && body.avatar_id !== undefined) body.avatar = body.avatar_id;
+    } else if (model === "Wan 2.2 Speech Turbo") {
+      body.num_frames ??= "30";
+      body.frames_per_second ??= "30";
+    }
+    if (LIPSYNC_RESOLUTION_REQUIRED.has(model) && !body.resolution) body.resolution = "HD";
+    // /generate/video, like the app: /generate/lipsync has no route for Kling
+    // Avatar Pro or the LTX audio-to-video models, which it answered with
+    // "not available in any provider".
+    const submission = await ctx.client.post("/api/v1/generate/video", body);
     return handleAsync({
       ctx,
       submitResponse: submission,
@@ -1311,8 +1225,6 @@ export const generateTools: Tool[] = [
   versely_generate_image,
   versely_generate_video,
   versely_generate_audio,
-  versely_generate_music,
-  versely_extend_music,
   versely_generate_lipsync,
   versely_remove_background,
   versely_upscale_image,

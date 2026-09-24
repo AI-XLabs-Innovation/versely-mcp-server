@@ -72,7 +72,7 @@ export function parseProfileList(
 // Kept at or under 512 characters (the smoke test enforces it). Every tool name
 // here must exist in the openai profile.
 export const OPENAI_INSTRUCTIONS_LEAD =
-  "Versely makes videos, UGC-style ads, voiceovers, images, music, slideshows and dubbed videos. " +
+  "Versely makes videos, UGC-style ads, voiceovers, images, music, sound effects, slideshows and dubbed videos. " +
   "Creations run in the background and spend the user's Versely credits: call a creation tool once, never resubmit. " +
   "The card updates itself; results: versely_get_task_status (movies: versely_get_movie_status, dubs: versely_get_dub). " +
   "Pick models from versely_find_models (all models, ranked). On the free trial use only models marked free_trial. " +

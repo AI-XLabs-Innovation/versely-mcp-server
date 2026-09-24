@@ -107,11 +107,12 @@ const PROVIDER_META: Record<VoiceProvider, ProviderMeta> = {
   },
   gemini: {
     voiceField: "voice",
-    // Only "Gemini 3.1 Flash TTS" exists in the dispatcher's audio roster. The
-    // old names ("Gemini Flash TTS" / "Flash Lite" / "Pro TTS") are catalog-only
-    // labels — passing them to versely_generate_audio 400s "Model not supported".
-    models: ["Gemini 3.1 Flash TTS"],
-    blurb: "Gemini TTS prebuilt voices (30 voices). Callable via versely_generate_audio with model 'Gemini 3.1 Flash TTS'.",
+    // 3.1 Flash runs through the /generate/audio dispatcher; the 3.8 pair
+    // through /audio/tts-gemini, which versely_generate_audio routes to itself.
+    models: ["Gemini 3.8 Flash TTS", "Gemini 3.8 Flash Lite TTS", "Gemini 3.1 Flash TTS"],
+    blurb:
+      "Gemini TTS prebuilt voices (30 voices). Callable via versely_generate_audio with model 'Gemini 3.8 Flash TTS' " +
+      "(most expressive; style_prompt sets the delivery), 'Gemini 3.8 Flash Lite TTS' or 'Gemini 3.1 Flash TTS'.",
   },
   suno: {
     voiceField: "voice",
@@ -224,6 +225,9 @@ const GEMINI_VOICES: NormalizedVoice[] = [
   { id: "Umbriel", name: "Umbriel", gender: "male" }, { id: "Vindemiatrix", name: "Vindemiatrix", gender: "female" },
   { id: "Zephyr", name: "Zephyr", gender: "female" }, { id: "Zubenelgenubi", name: "Zubenelgenubi", gender: "male" },
 ];
+
+/** Gemini TTS voice ids, for pre-submit validation in versely_generate_audio. */
+export const GEMINI_VOICE_IDS: readonly string[] = GEMINI_VOICES.map((v) => v.id);
 
 const MINIMAX_VOICES: NormalizedVoice[] = (() => {
   const entries: { id: string; name: string; language: string }[] = [

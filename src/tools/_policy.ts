@@ -178,6 +178,10 @@ const ROWS: Record<string, Row> = {
     title: "Extend music track", cls: "create", what: "extended version of a music track", openai: true,
     inv: ["Extending your track", "Track extension started"],
   },
+  versely_generate_sound_effect: {
+    title: "Generate sound effect", cls: "create", what: "sound effect", openai: true,
+    inv: ["Making your sound effect", "Sound effect started"],
+  },
   // On in the plugin for paying accounts (owner, 2026-09-24: ChatGPT knows every
   // model). No lip-sync model is RunPod-served, so the free trial refuses it.
   versely_generate_lipsync: {

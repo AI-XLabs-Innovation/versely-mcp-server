@@ -68,6 +68,7 @@ const OPENAI_TOOLS = [
   "versely_list_slideshow_options", "versely_estimate_slideshow_automation", "versely_create_slideshow_automation",
   "versely_list_automations", "versely_get_automation", "versely_update_automation", "versely_start_automation",
   "versely_pause_automation", "versely_run_automation_now", "versely_delete_automation", "versely_list_automation_runs",
+  "versely_generate_sound_effect",
 ];
 
 const failures: string[] = [];
@@ -484,6 +485,37 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     workflow_id: "wf-1", mode: "auto", schedule_cron: "0 9 * * *", auto_post: true, auto_post_account_ids: ["acct-db-1"],
   }))) as { workflow?: { auto_post_account_ids?: string[] } };
   assert("openai keeps update_workflow_mode.mode (manual | auto)", "mode" in (byName(oTools, "versely_update_workflow_mode")?.inputSchema.properties ?? {}));
+  // Music, sound effects, voices, lip-sync: each model reaches the route that serves it.
+  const lastBody = (p: string) => (backend.requests.filter((r) => r.method === "POST" && r.path === p).at(-1)?.body ?? {}) as Record<string, unknown>;
+  const song = await call(openai, "versely_generate_music", { prompt: "an upbeat synth-pop song about summer" });
+  const sunoBody = lastBody("/api/v1/suno/generate");
+  assert("generate_music defaults to Suno V6 (a version the backend sells)", sunoBody.model === "V6" && sunoBody.instrumental === false && sunoBody.customMode === false && !song.isError, JSON.stringify(sunoBody));
+  await call(openai, "versely_generate_music", { prompt: "a slow blues", model: "V4_5PLUS" });
+  assert("a retired Suno version is sent as V6", lastBody("/api/v1/suno/generate").model === "V6");
+  await call(openai, "versely_generate_music", { prompt: "indie folk, warm", lyrics: "[verse] hello sun", model: "Suno V6 Wild" });
+  const custom = lastBody("/api/v1/suno/generate");
+  assert("Suno with lyrics uses custom mode (lyrics as prompt, prompt as style)", custom.customMode === true && custom.prompt === "[verse] hello sun" && custom.style === "indie folk, warm" && custom.title === "Untitled" && custom.model === "V6_WILD", JSON.stringify(custom));
+  const lyria = await call(openai, "versely_generate_music", { prompt: "cinematic orchestral build", model: "Lyria 3.5" });
+  assert("Lyria answers with a finished track and its lyrics", JSON.stringify(lyria).includes("https://audio.versely.studio/lyria/track-") && textOf(lyria).includes("la la la") && !lyria.isError, textOf(lyria));
+  const beforeMinimax = backend.count((r) => r.path === "/api/v1/audio/minimax/music-3");
+  const noLyrics = await call(openai, "versely_generate_music", { prompt: "rock ballad", model: "MiniMax Music 3" });
+  assert("MiniMax Music 3 without lyrics is refused before any charge", noLyrics.isError === true && textOf(noLyrics).includes("lyrics") && backend.count((r) => r.path === "/api/v1/audio/minimax/music-3") === beforeMinimax, textOf(noLyrics));
+  const sfx = await call(openai, "versely_generate_sound_effect", { prompt: "glass shattering on a tile floor" });
+  const sfxBody = lastBody("/api/v1/audio/sound-effect");
+  assert("generate_sound_effect defaults to ElevenLabs for 10 s and returns a pending card", sfxBody.duration_seconds === 10 && JSON.stringify(sfx).includes("sfx-"), JSON.stringify(sfxBody));
+  await call(openai, "versely_generate_sound_effect", { prompt: "lofi drum loop", model: "Suno Sounds V6 Wild", bpm: 90, loop: true });
+  const sounds = lastBody("/api/v1/suno/generate-sounds");
+  assert("Suno Sounds get their version, tempo and loop", sounds.model === "V6_WILD" && sounds.soundTempo === 90 && sounds.soundLoop === true, JSON.stringify(sounds));
+  const gemini = await call(openai, "versely_generate_audio", { model: "Gemini 3.8 Flash TTS", text: "Welcome back!", style_prompt: "warm" });
+  const gBody = lastBody("/api/v1/audio/tts-gemini");
+  assert("Gemini 3.8 TTS goes to /audio/tts-gemini with the default voice and a finished card", gBody.voice === "Kore" && gBody.style_prompt === "warm" && JSON.stringify(gemini).includes("https://audio.versely.studio/gemini/speech-") && !gemini.isError, JSON.stringify(gBody));
+  const badVoice = await call(openai, "versely_generate_audio", { model: "Gemini 3.8 Flash TTS", text: "hi", voice: "Adam" });
+  assert("a non-Gemini voice is refused with the valid list", badVoice.isError === true && textOf(badVoice).includes("Kore"), textOf(badVoice));
+  const musicAsSpeech = await call(openai, "versely_generate_audio", { model: "MiniMax Music 3", text: "la" });
+  assert("a music model on generate_audio points to generate_music", musicAsSpeech.isError === true && textOf(musicAsSpeech).includes("versely_generate_music"), textOf(musicAsSpeech));
+  await call(openai, "versely_generate_lipsync", { model: "Kling Avatar Pro", image_url: "https://img.versely.studio/in/face.png", audio_url: "https://audio.versely.studio/in/line.mp3" });
+  const lip = lastBody("/api/v1/generate/video");
+  assert("generate_lipsync goes through /generate/video with the photo every way the app sends it", lip.model === "Kling Avatar Pro" && Array.isArray(lip.image_urls) && lip.img_url === "https://img.versely.studio/in/face.png" && backend.count((r) => r.path === "/api/v1/generate/lipsync") === 0, JSON.stringify(lip));
   assert("update_workflow_mode maps auto_post_account_ids to provider ids", JSON.stringify(wfAuto.workflow?.auto_post_account_ids) === '["spc_ext_1"]', JSON.stringify(wfAuto));
 
   // Every model, ranked; free_trial marks exactly the plugin-catalog (RunPod) ones.
@@ -492,7 +524,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   };
   const catalogNames = new Set(PLUGIN_MODELS.map((m) => m.name));
   const fmNames = fm.models.map((m) => m.name).sort().join(",");
-  assert("find_models (openai) lists every catalog model", fmNames === "Eleven Labs Speech Turbo,Flux Pro Ultra,Minimax Speech,Seedream 4 Text to Image,Sora 2,Wan 2.5 Preview", fmNames);
+  assert("find_models (openai) lists every catalog model", fmNames === "Eleven Labs Speech Turbo,Flux Pro Ultra,Gemini 3.8 Flash TTS,Minimax Speech,Seedream 4 Text to Image,Sora 2,Wan 2.5 Preview", fmNames);
   assert("find_models (openai) marks free_trial exactly for the plugin-catalog models", fm.models.every((m) => m.free_trial === catalogNames.has(m.name)), JSON.stringify(fm.models));
   assert("find_models (openai) with an API key is not on the free trial", fm.on_free_trial === false && fm.free_trial_models === undefined);
   const inputs = JSON.parse(textOf(await call(openai, "versely_get_model_inputs", { model: "Wan 2.5 Preview" }))) as Record<string, unknown>;
@@ -570,7 +602,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   );
   assert(
     "find_models marks free_trial from the catalog RunPod flag when the plugin catalog 404s",
-    fallback.models.length === 6 &&
+    fallback.models.length === 7 &&
       fallback.models.filter((m) => m.free_trial).map((m) => m.name).sort().join(",") === "Minimax Speech,Seedream 4 Text to Image,Wan 2.5 Preview",
     JSON.stringify(fallback.models),
   );

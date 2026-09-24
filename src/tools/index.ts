@@ -13,11 +13,13 @@ import { debugTools } from "./debug.js";
 import { voiceTools } from "./voices.js";
 import { dubbingTools } from "./dubbing.js";
 import { automationTools } from "./automations.js";
+import { audioTools } from "./audio.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
   ...userTools,
   ...generateTools,
+  ...audioTools,
   ...slideshowTools,
   ...movieTools,
   ...ugcTools,
