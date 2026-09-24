@@ -43,8 +43,12 @@ interface VeedAvatar {
   name: string;
   orientation: "portrait" | "landscape";
   gender?: "male" | "female";
-  preview_image_url: string | null;
+  preview_video_url?: string;
+  preview_image_url?: string;
 }
+
+/** The bucket's VEED previews are short .mp4 clips (2026-09-24: 10 of the 28 ids have one). */
+const VIDEO_EXT = /\.(mp4|webm|mov|m4v)(\?.*)?$/i;
 
 function describeVeed(id: string, preview: string | undefined): VeedAvatar {
   const parts = id.split("_");
@@ -56,7 +60,7 @@ function describeVeed(id: string, preview: string | undefined): VeedAvatar {
     name: `${who.charAt(0).toUpperCase()}${who.slice(1)}${variant ? ` (${variant})` : ""}`,
     orientation: id.includes("vertical") ? "portrait" : "landscape",
     ...(gender ? { gender } : {}),
-    preview_image_url: preview ?? null,
+    ...(preview ? (VIDEO_EXT.test(preview) ? { preview_video_url: preview } : { preview_image_url: preview }) : {}),
   };
 }
 
@@ -85,7 +89,7 @@ const versely_list_avatars = defineTool({
     "• HeyGen Avatar V3 / V5 → `avatar_id` and `voice_id` (V3 needs both; V5 falls back to a default without them; " +
     "the two generations have different avatars).\n" +
     "• Avatar X → `avatar_id` (the `avatar` value).\n" +
-    "Each entry has a preview image link you can show the user.",
+    "Entries carry a preview link (image or short video) where one exists; you can show it to the user.",
   inputSchema: z.object({
     model: z.enum(AVATAR_MODELS).describe("Which avatar model's catalog: Veed Avatars, HeyGen Avatar V3, HeyGen Avatar V5, or Avatar X."),
     q: z.string().optional().describe("Only avatars (and voices) whose name contains this."),

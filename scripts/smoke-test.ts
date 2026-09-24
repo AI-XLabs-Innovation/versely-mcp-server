@@ -521,9 +521,9 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   // Avatars: the list offers exactly the ids fal accepts (previews where the
   // bucket has one), and an avatar model without its avatar is refused before
   // any charge (fal used to take it, queue it and 422 it: 2026-09-24).
-  const veed = JSON.parse(textOf(await call(openai, "versely_list_avatars", { model: "Veed Avatars" }))) as { total: number; avatars: Array<{ id: string; preview_image_url: string | null }> };
+  const veed = JSON.parse(textOf(await call(openai, "versely_list_avatars", { model: "Veed Avatars" }))) as { total: number; avatars: Array<{ id: string; preview_video_url?: string; preview_image_url?: string }> };
   const emily = veed.avatars.find((a) => a.id === "emily_vertical_primary");
-  assert("list_avatars (Veed) offers the 28 ids fal accepts, with previews", veed.total === 28 && emily?.preview_image_url === "https://avatars.versely.studio/veed-avatars-2/emily_vertical_primary.png", JSON.stringify(veed).slice(0, 300));
+  assert("list_avatars (Veed) offers the 28 ids fal accepts, with video previews labelled as video", veed.total === 28 && emily?.preview_video_url === "https://avatars.versely.studio/veed-avatars-2/emily_vertical_primary.mp4" && !("preview_image_url" in (emily ?? {})), JSON.stringify(veed).slice(0, 300));
   const hey = JSON.parse(textOf(await call(openai, "versely_list_avatars", { model: "HeyGen Avatar V5" }))) as { avatars: unknown[]; voices: unknown[] };
   assert("list_avatars (HeyGen) returns avatars and voices", hey.avatars.length === 1 && hey.voices.length === 1, JSON.stringify(hey));
   const videoPosts = () => backend.count((r) => r.method === "POST" && r.path === "/api/v1/generate/video");

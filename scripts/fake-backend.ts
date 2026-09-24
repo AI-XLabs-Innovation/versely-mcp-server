@@ -356,7 +356,7 @@ export async function startFakeBackend(opts: {
       return send(res, 200, {
         success: true,
         data: [
-          "https://avatars.versely.studio/veed-avatars-2/emily_vertical_primary.png",
+          "https://avatars.versely.studio/veed-avatars-2/emily_vertical_primary.mp4",
           "https://avatars.versely.studio/veed-avatars-2/marcus_primary.png",
         ],
       });

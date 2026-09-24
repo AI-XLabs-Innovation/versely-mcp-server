@@ -496,7 +496,7 @@ The stock avatars (and HeyGen voices) the avatar lip-sync models take, so you ca
 • Veed Avatars → `avatar_id` (e.g. 'emily_vertical_primary'; 'vertical' ones are 9:16 portrait).
 • HeyGen Avatar V3 / V5 → `avatar_id` and `voice_id` (V3 needs both; V5 falls back to a default without them; the two generations have different avatars).
 • Avatar X → `avatar_id` (the `avatar` value).
-Each entry has a preview image link you can show the user.
+Entries carry a preview link (image or short video) where one exists; you can show it to the user.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
