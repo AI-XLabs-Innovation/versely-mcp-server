@@ -71,6 +71,8 @@ const OPENAI_TOOLS = [
   "versely_generate_sound_effect",
   "versely_get_me", "versely_list_purchases", "versely_get_subscription", "versely_list_credit_history",
   "versely_list_avatars",
+  "versely_analyze_brand", "versely_list_brands", "versely_get_brand", "versely_update_brand",
+  "versely_set_default_brand", "versely_archive_brand", "versely_create_brand_slideshow",
 ];
 
 const failures: string[] = [];
@@ -411,7 +413,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     const m = (byName(oTools, target) as { _meta?: Record<string, unknown> } | undefined)?._meta ?? {};
     assert(`openai ${target} is widgetAccessible for the card`, m["openai/widgetAccessible"] === true);
   }
-  for (const target of ["versely_get_movie_status", "versely_get_dub"]) {
+  for (const target of ["versely_get_movie_status", "versely_get_dub", "versely_get_slideshow"]) {
     assert(`openai poll target ${target} is visible to the app`, visibility(byName(oTools, target)).includes("app"));
   }
 
@@ -547,6 +549,31 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   await call(openai, "versely_get_task_status", { request_id: "pending-cache-1" });
   await call(openai, "versely_get_task_status", { request_id: "pending-cache-1" });
   assert("a pending status is always asked again", statusCalls("pending-cache-1") === 2, `backend calls: ${statusCalls("pending-cache-1")}`);
+  // Slideshows render in the background: the tool asks for server-side
+  // captions and returns a card that follows the slideshow to its captioned slides.
+  const autoShow = await call(openai, "versely_create_automated_slideshow", { prompt: "5 easy breakfast ideas" });
+  const autoBody = lastBody("/api/v1/slideshow/create-automated");
+  const autoSc = autoShow.structuredContent as Record<string, any> | undefined;
+  assert("automated slideshow asks for server-side captions (classic style by default)", autoBody.bake_overlays === true && (autoBody.text_style as Record<string, unknown>)?.font_family === "tiktoksans", JSON.stringify(autoBody));
+  assert("automated slideshow returns a card that follows it", autoSc?.status === "pending" && autoSc?.poll?.tool_name === "versely_get_slideshow" && typeof autoSc?.poll?.args?.slideshow_id === "string", JSON.stringify(autoSc));
+  const done = (await call(openai, "versely_get_slideshow", { slideshow_id: String(autoSc?.poll?.args?.slideshow_id) })).structuredContent as Record<string, any> | undefined;
+  assert("get_slideshow shows the captioned slides once done", done?.status === "completed" && done?.assets?.length === 3 && String(done?.assets?.[0]?.url).endsWith("1-captioned.png"), JSON.stringify(done));
+
+  // Brands: read from a link, then a slideshow and an automation for it.
+  const analyzed = JSON.parse(textOf(await call(openai, "versely_analyze_brand", { url: "https://acme-coffee.test" }))) as { brand_id?: string; brand?: { name?: string }; uncertain?: string[] };
+  assert("analyze_brand saves the brand and returns its brand_id", analyzed.brand_id === "brand-1" && analyzed.brand?.name === "Acme Coffee" && analyzed.uncertain?.[0] === "pricing", JSON.stringify(analyzed));
+  const fromLink = await call(openai, "versely_create_brand_slideshow", { url: "https://acme-coffee.test", num_images: 3 });
+  const brandBody = lastBody("/api/v1/slideshow/create-automated");
+  assert("brand slideshow from a link: brand facts to the planner, first content angle as the topic", String(brandBody.brand_context).includes("Name: Acme Coffee") && brandBody.prompt === "pour-over basics at home" && brandBody.bake_overlays === true && (fromLink.structuredContent as Record<string, any>)?.status === "pending", JSON.stringify(brandBody));
+  const pin = await call(openai, "versely_create_brand_slideshow", { brand_id: "brand-1", source: "pinterest", topic: "cozy coffee corners" });
+  const pinBody = lastBody("/api/v1/slideshow/create-pinterest-auto");
+  assert("brand slideshow from Pinterest comes back finished", (pin.structuredContent as Record<string, any>)?.status === "completed" && pinBody.prompt === "cozy coffee corners" && (pinBody.text_style as Record<string, unknown>)?.stroke_width === 6, JSON.stringify(pinBody));
+  const brandAuto = JSON.parse(textOf(await call(openai, "versely_create_slideshow_automation", {
+    name: "Acme weekly", every_minutes: 10080, brand_url: "https://acme-coffee.test", model: "Flux Pro Ultra",
+  }))) as { config?: Record<string, unknown> };
+  assert("a brand automation can start from the brand's link", typeof brandAuto.config?.brand_kit_id === "string" && String(brandAuto.config?.brand_kit_id).startsWith("brand-"), JSON.stringify(brandAuto));
+  const brandEdited = JSON.parse(textOf(await call(openai, "versely_update_brand", { brand_id: "brand-1", voice_tone: "playful" }))) as { brand?: { brand_id?: string } };
+  assert("update_brand edits one brand and answers with it", brandEdited.brand?.brand_id === "brand-1", JSON.stringify(brandEdited));
   // ChatGPT caches widget templates by URI, so its tools point at the hashed
   // card URI; claude.ai keeps the plain one.
   const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;

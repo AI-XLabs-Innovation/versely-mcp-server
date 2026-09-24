@@ -138,6 +138,7 @@ function rememberFinishedStatus(key: string, result: ToolResult): void {
 /** Status tools the media card calls from inside the host to follow a job. */
 export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_task_status",
+  "versely_get_slideshow",
   "versely_get_movie_status",
   "versely_get_workflow_run",
   "versely_get_video_workflow_run",

@@ -336,6 +336,50 @@ const ROWS: Record<string, Row> = {
     inv: ["Rendering your slideshow video", "Slideshow video rendered"],
   },
 
+  // ── Brands (both profiles; owner, 2026-09-24) ───────────────────────────
+  versely_analyze_brand: {
+    title: "Analyze brand from link", cls: "create", what: "brand profile", spends: false, openai: true,
+    inv: ["Reading the brand", "Brand read"],
+    hints: { destructiveHint: true, openWorldHint: true },
+    why: {
+      readOnly: "Reads a brand's public page and saves the brand profile to the user's Versely account; no credits are spent.",
+      destructive: "Reading a brand that is already saved refreshes that brand's saved profile.",
+      openWorld: "Fetches the public web page or social post the user gives.",
+    },
+  },
+  versely_list_brands: {
+    title: "List brands", cls: "read", what: "the brands saved on the user's account", openai: true,
+    inv: ["Loading your brands", "Loaded your brands"],
+  },
+  versely_get_brand: {
+    title: "Get brand", cls: "read", what: "one of the user's saved brands", openai: true,
+    inv: ["Loading the brand", "Loaded the brand"],
+  },
+  versely_update_brand: {
+    title: "Edit brand", cls: "edit", what: "saved brand", openai: true,
+    inv: ["Updating the brand", "Brand updated"],
+  },
+  versely_set_default_brand: {
+    title: "Set default brand", cls: "edit", what: "default brand", openai: true,
+    inv: ["Setting the default brand", "Default brand set"],
+    hints: { destructiveHint: false, idempotentHint: true },
+    why: { destructive: "Only changes which saved brand is the default; nothing is removed." },
+  },
+  versely_archive_brand: {
+    title: "Archive brand", cls: "delete", what: "saved brand", openai: true,
+    inv: ["Archiving the brand", "Brand archived"],
+    why: {
+      readOnly: "Archives one of the user's saved brands.",
+      destructive: "The brand leaves the list and its automations pause; it can be restored from the web app.",
+    },
+  },
+  versely_create_brand_slideshow: {
+    title: "Create brand slideshow", cls: "create", what: "slideshow for a brand", openai: true,
+    inv: ["Creating your brand slideshow", "Brand slideshow started"],
+    hints: { openWorldHint: true },
+    why: { openWorld: "When given the brand's link, reads that public page first; the slideshow stays private." },
+  },
+
   // ── Movies ──────────────────────────────────────────────────────────────
   versely_create_movie: {
     title: "Plan a movie", cls: "create", what: "movie plan", openai: true, spends: false,

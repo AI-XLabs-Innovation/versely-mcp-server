@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineTool, type Tool } from "./_types.js";
+import { defineTool, type Tool, type ToolContext, type ToolResult } from "./_types.js";
 import { jsonResult, mediaResult } from "./_helpers.js";
 import { SYNC_TIMEOUT_MS } from "../client.js";
 import { metaForMediaCard } from "../ui/templates.js";
@@ -67,7 +67,10 @@ const versely_create_slideshow = defineTool({
 const versely_create_automated_slideshow = defineTool({
   name: "versely_create_automated_slideshow",
   description:
-    "Full automation: AI plans the slideshow, generates the images, and burns text overlays in one request.",
+    "Full automation: AI plans the slideshow (a fresh hook and slide captions for the topic), draws the slides and " +
+    "puts the captions on them. The slides render in the background and the inline card fills in as they land " +
+    "(or check with versely_get_slideshow). Pick a caption_style from versely_list_slideshow_options for a styled " +
+    "look; otherwise classic white captions are used.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -91,6 +94,10 @@ const versely_create_automated_slideshow = defineTool({
         .record(z.unknown())
         .optional()
         .describe("Styling for the burned-in overlay text (font, colour, background, …)."),
+      caption_style: z
+        .string()
+        .optional()
+        .describe("A caption style id from versely_list_slideshow_options (e.g. 'pink-pop'); replaces text_style."),
       topic: z.string().optional().describe("Deprecated alias for prompt — prefer prompt."),
       n_slides: z
         .number()
@@ -111,29 +118,129 @@ const versely_create_automated_slideshow = defineTool({
     if (typeof body.prompt !== "string" || !body.prompt.trim()) {
       throw new Error("`prompt` is required (the legacy `topic` field is accepted as an alias).");
     }
+    // Server-side captions: without bake_overlays the planned captions were
+    // never put on the slides (the web studio bakes in the browser).
+    body.bake_overlays = true;
+    if (!body.caption_style && (!body.text_style || typeof body.text_style !== "object")) {
+      body.text_style = STUDIO_TEXT_STYLE;
+    }
     const data = await ctx.client.post("/api/v1/slideshow/create-automated", body, {
       timeoutMs: SYNC_TIMEOUT_MS,
     });
-    return mediaResult(data, {
-      kind: "gallery",
-      toolName: "versely_create_automated_slideshow",
-      toolArgs: body,
-      extra: { prompt: body.prompt, model: input.model, aspect_ratio: input.aspect_ratio },
-    });
+    return startedSlideshowResult(ctx, data, { toolName: "versely_create_automated_slideshow", toolArgs: body });
   },
 });
 
+/**
+ * The studio's caption look (automations' withStudioCaptionDefaults). With
+ * bake_overlays the finaliser stamps the planned captions on in this style;
+ * without it the slides came back bare, because the web studio bakes in the
+ * browser and a server-driven caller has no browser.
+ */
+export const STUDIO_TEXT_STYLE = {
+  font_family: "tiktoksans",
+  stroke_width: 2,
+  stroke_color: "#000000",
+  text_color: "#FFFFFF",
+  background: "none",
+};
+
+/** How often, and for how long, a slideshow card follows its slides. */
+const SLIDESHOW_POLL = { interval_ms: 5000, timeout_ms: 15 * 60_000 };
+
+/**
+ * A slideshow as media-card state: pending while its slides render (with the
+ * ones already done), then every slide - the captioned copy when there is one.
+ * The finaliser bakes captions BEFORE it marks the slideshow done, so
+ * "completed" always means captioned.
+ */
+export function slideshowCardState(payload: unknown): Record<string, unknown> | null {
+  const d = ((payload as { data?: unknown } | null)?.data ?? payload) as Record<string, any> | null;
+  if (!d || typeof d !== "object" || !d.id) return null;
+  const images = (Array.isArray(d.images) ? [...d.images] : []).sort(
+    (a: any, b: any) => (Number(a?.order_index) || 0) - (Number(b?.order_index) || 0),
+  );
+  const assets = images
+    .map((img: any, i: number) => ({ url: img?.edited_image_url || img?.image_url, label: `Slide ${i + 1}` }))
+    .filter((a) => typeof a.url === "string" && a.url);
+  const generating = d.is_generating === true || d.status === "generating";
+  const status = generating ? "pending" : d.status === "failed" ? "failed" : "completed";
+  const total = typeof d.num_images === "number" && d.num_images > 0 ? d.num_images : images.length;
+  return {
+    kind: "gallery",
+    status,
+    task_id: d.id,
+    slideshow_id: d.id,
+    assets,
+    ...(status === "pending" && total ? { progress: Math.min(1, assets.length / total) } : {}),
+    ...(typeof d.prompt === "string" && d.prompt ? { prompt: d.prompt.slice(0, 200) } : {}),
+    ...(d.model ? { model: d.model } : {}),
+    ...(status === "failed" ? { error: "The slideshow could not be generated; its credits are refunded." } : {}),
+    ...(d.status === "partial" ? { message: "Some slides could not be generated and were refunded." } : {}),
+  };
+}
+
+/** The media-card result for a slideshow: self-polling while it renders. */
+export function slideshowResult(payload: unknown, opts: { toolName?: string; toolArgs?: Record<string, unknown> } = {}): ToolResult {
+  const sc = slideshowCardState(payload);
+  if (!sc) return jsonResult(payload);
+  const id = String(sc.slideshow_id);
+  const assets = sc.assets as Array<{ url: string }>;
+  const pending = sc.status === "pending";
+  const text = pending
+    ? `Slideshow ${id} is generating (${assets.length} slide${assets.length === 1 ? "" : "s"} ready so far). ` +
+      `If an inline preview is shown it updates on its own; otherwise call versely_get_slideshow with ` +
+      `slideshow_id="${id}" to check it. Do not describe it as finished until it says completed.`
+    : sc.status === "failed"
+      ? `Slideshow ${id} failed: ${String(sc.error)}`
+      : `Slideshow ${id} is ready: ${assets.length} slide${assets.length === 1 ? "" : "s"}.\n` +
+        assets.map((a, i) => `${i + 1}. ${a.url}`).join("\n") +
+        (sc.message ? `\n${String(sc.message)}` : "");
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: {
+      ...sc,
+      ...(pending ? { poll: { tool_name: "versely_get_slideshow", args: { slideshow_id: id }, ...SLIDESHOW_POLL } } : {}),
+      ...(opts.toolName ? { toolName: opts.toolName } : {}),
+      ...(opts.toolArgs ? { toolArgs: opts.toolArgs } : {}),
+    },
+  };
+}
+
+/**
+ * POST /slideshow/create-automated answers straight away with the slideshow
+ * id and no slides (they render in the background). Read it back so the card
+ * starts from the real row and follows it.
+ */
+export async function startedSlideshowResult(
+  ctx: ToolContext,
+  submission: unknown,
+  opts: { toolName: string; toolArgs: Record<string, unknown> },
+): Promise<ToolResult> {
+  const id = (submission as { data?: { slideshow_id?: unknown } } | null)?.data?.slideshow_id;
+  if (typeof id !== "string" || !id) return mediaResult(submission, { kind: "gallery", ...opts });
+  try {
+    const row = await ctx.client.get(`/api/v1/slideshow/${encodeURIComponent(id)}`);
+    const result = slideshowResult(row, opts);
+    if (result.structuredContent) return result;
+  } catch {
+    /* fall back to the pending card below */
+  }
+  return slideshowResult({ data: { id, status: "generating", is_generating: true, images: [] } }, opts);
+}
+
 const versely_get_slideshow = defineTool({
   name: "versely_get_slideshow",
-  description: "Get a slideshow by ID, including its images.",
-  meta: metaForMediaCard(),
+  description:
+    "Get one of the user's slideshows: whether it is still generating, and its slides (the captioned versions once " +
+    "they are baked). Also what the slideshow card calls to follow one that is generating.",
+  meta: metaForMediaCard({ app: true }),
   inputSchema: z.object({ slideshow_id: z.string() }),
   handler: async (input, ctx) => {
     const data = await ctx.client.get(
       `/api/v1/slideshow/${encodeURIComponent(input.slideshow_id)}`,
     );
-    // Read-only fetch — no Recreate button (re-fetching doesn't generate).
-    return mediaResult(data, { kind: "gallery" });
+    return slideshowResult(data);
   },
 });
 

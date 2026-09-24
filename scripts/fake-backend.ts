@@ -134,6 +134,8 @@ export async function startFakeBackend(opts: {
   let seq = 0;
   const socialPosts: Array<Record<string, unknown>> = [];
   const automations = new Map<string, Record<string, unknown>>();
+  const brands = new Map<string, Record<string, unknown>>();
+  const slideshowReads = new Map<string, number>();
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -349,6 +351,62 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- brand kits (agenticContext.controller) ---
+    if (method === "POST" && path === "/api/v1/agentic/brand-kit/analyze") {
+      const kit = {
+        id: `brand-${brands.size + 1}`, name: "Acme Coffee", tagline: "Slow mornings, great coffee", brand_type: "coffee roaster",
+        description: "Small-batch coffee roaster.", audience: "home baristas", voice_tone: "warm, unhurried",
+        products: [{ name: "Morning Blend", price: "$18" }], content_angles: ["pour-over basics at home", "choosing beans"],
+        website_url: String(b.url ?? ""), is_default: brands.size === 0,
+      };
+      brands.set(kit.id, kit);
+      const { id: _id, is_default: _d, ...brand } = kit;
+      return send(res, 200, { success: true, saved: true, brand, uncertain: ["pricing"] });
+    }
+    if (method === "GET" && path === "/api/v1/agentic/brand-kit") {
+      const kits = [...brands.values()];
+      const requested = rec.query.brand_id ? kits.find((k) => k.id === rec.query.brand_id) : undefined;
+      return send(res, 200, { success: true, brand_kit: requested ?? kits[0] ?? null, brand_kits: kits });
+    }
+    if (method === "PUT" && path === "/api/v1/agentic/brand-kit") {
+      const kit = brands.get(String(b.brand_id ?? ""));
+      if (!kit) return send(res, 404, { success: false, error: "That brand was not found." });
+      const { brand_id: _b, ...fields } = b;
+      Object.assign(kit, fields);
+      return send(res, 200, { success: true });
+    }
+
+    // --- slideshows: create-automated answers at once; the row fills in later ---
+    if (method === "POST" && path === "/api/v1/slideshow/create-automated") {
+      seq += 1;
+      const id = `ss-${seq}`;
+      slideshowReads.set(id, 0);
+      return send(res, 200, { success: true, data: { slideshow_id: id, status: "generating", credits_charged: 25, images: [{ id: "i1", order: 1, url: null }] } });
+    }
+    if (method === "POST" && path === "/api/v1/slideshow/create-pinterest-auto") {
+      seq += 1;
+      const id = `pin-${seq}`;
+      slideshowReads.set(id, 99);
+      return send(res, 200, { success: true, data: { slideshow_id: id, status: "completed", images: [] } });
+    }
+    const showRow = /^\/api\/v1\/slideshow\/((?:ss|pin)-\d+)$/.exec(path);
+    if (method === "GET" && showRow) {
+      const id = showRow[1]!;
+      const reads = (slideshowReads.get(id) ?? 0) + 1;
+      slideshowReads.set(id, reads);
+      // First read: still generating with one slide done; after that: done, captioned.
+      const done = reads > 1;
+      const images = [1, 2, 3].map((n) => ({
+        id: `${id}-img-${n}`, order_index: n,
+        image_url: done || n === 1 ? `https://slideshow-images.versely.studio/${id}/${n}.png` : null,
+        ...(done ? { edited_image_url: `https://slideshow-images.versely.studio/${id}/${n}-captioned.png` } : {}),
+      }));
+      return send(res, 200, {
+        success: true,
+        data: { id, prompt: "a topic", model: "Flux Pro Ultra", num_images: 3, status: done ? "completed" : "generating", is_generating: !done, images },
+      });
     }
 
     // --- stock avatars (avatar.controller: VEED = preview URLs named by id) ---

@@ -10,6 +10,7 @@ import { z } from "zod";
 import { defineTool, type Tool, type ToolContext } from "./_types.js";
 import { jsonResult } from "./_helpers.js";
 import { toProviderAccountIds } from "./social.js";
+import { analyzeLink } from "./brands.js";
 
 const SLIDESHOW_KIND = "slideshow";
 const CONTENT_TYPES = ["reel", "story", "post", "portrait", "landscape"] as const;
@@ -30,7 +31,7 @@ const slideshowConfigFields = {
   brand_kit_id: z
     .string()
     .optional()
-    .describe("Make every slideshow for one of the user's brands (id from versely_list_slideshow_options)."),
+    .describe("Make every slideshow for one of the user's brands (brand_id from versely_list_brands / versely_analyze_brand)."),
   model: z
     .string()
     .optional()
@@ -146,9 +147,19 @@ const versely_create_slideshow_automation = defineTool({
     name: z.string().min(1).max(80).describe("A name for the automation."),
     every_minutes,
     start: z.boolean().optional().describe("Start now (the first run happens right away). Default false: created paused."),
+    brand_url: z
+      .string()
+      .url()
+      .optional()
+      .describe("A brand's link, when the brand isn't saved yet: it is read and saved (like versely_analyze_brand) and used as brand_kit_id."),
     ...slideshowConfigFields,
   }),
   handler: async (input, ctx) => {
+    if (input.brand_url && !input.brand_kit_id) {
+      const read = await analyzeLink(ctx, input.brand_url);
+      if (!read.kit) throw new Error("The brand link was read but could not be saved; try versely_analyze_brand.");
+      (input as Record<string, unknown>).brand_kit_id = String(read.kit.id);
+    }
     const config = await configFrom(ctx, input as Record<string, unknown>);
     const res = await ctx.client.post<AutomationEnvelope>("/api/v1/automations", {
       kind: SLIDESHOW_KIND,
