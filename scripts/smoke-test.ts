@@ -69,6 +69,7 @@ const OPENAI_TOOLS = [
   "versely_list_automations", "versely_get_automation", "versely_update_automation", "versely_start_automation",
   "versely_pause_automation", "versely_run_automation_now", "versely_delete_automation", "versely_list_automation_runs",
   "versely_generate_sound_effect",
+  "versely_get_me", "versely_list_purchases", "versely_get_subscription", "versely_list_credit_history",
 ];
 
 const failures: string[] = [];
@@ -516,6 +517,21 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   await call(openai, "versely_generate_lipsync", { model: "Kling Avatar Pro", image_url: "https://img.versely.studio/in/face.png", audio_url: "https://audio.versely.studio/in/line.mp3" });
   const lip = lastBody("/api/v1/generate/video");
   assert("generate_lipsync goes through /generate/video with the photo every way the app sends it", lip.model === "Kling Avatar Pro" && Array.isArray(lip.image_urls) && lip.img_url === "https://img.versely.studio/in/face.png" && backend.count((r) => r.path === "/api/v1/generate/lipsync") === 0, JSON.stringify(lip));
+  // Account: ChatGPT reads status and history; plans, checkout and the
+  // subscription lifecycle are Claude-only (OpenAI's commerce rules).
+  const openaiNames = new Set(oTools.map((t) => t.name));
+  assert("ChatGPT gets no commerce tools", ["versely_list_plans", "versely_create_checkout_link", "versely_cancel_subscription", "versely_pause_subscription", "versely_change_plan", "versely_skip_trial"].every((n) => !openaiNames.has(n)));
+  const subView = JSON.parse(textOf(await call(openai, "versely_get_subscription", {}))) as Record<string, unknown>;
+  assert("get_subscription answers in plain terms", subView.plan === "Pro Monthly" && subView.status === "active" && subView.renews_at === "2026-10-24T00:00:00.000Z" && subView.billed_through === "web" && !("dodo_subscription_id" in subView), JSON.stringify(subView));
+  const checkout = await call(full, "versely_create_checkout_link", { plan_key: "pro_monthly" });
+  assert("create_checkout_link puts the Dodo link in the text", textOf(checkout).includes("https://checkout.dodopayments.test/session/pro_monthly") && !checkout.isError, textOf(checkout));
+  const pack = await call(full, "versely_create_checkout_link", { plan_key: "pack_small" });
+  assert("a credit pack without a subscription is refused with the reason", pack.isError === true && /subscription/i.test(textOf(pack)), textOf(pack));
+  const cancelsBefore = backend.count((r) => r.path === "/api/v1/billing/subscription/cancel");
+  const noSurvey = await call(full, "versely_cancel_subscription", {});
+  assert("cancel_subscription needs the three survey answers", noSurvey.isError === true && backend.count((r) => r.path === "/api/v1/billing/subscription/cancel") === cancelsBefore, textOf(noSurvey));
+  const cancelled = JSON.parse(textOf(await call(full, "versely_cancel_subscription", { reason: "too_expensive", improvement: "lower_price", return_intent: "maybe_later" }))) as Record<string, unknown>;
+  assert("cancel_subscription reports when access ends", cancelled.access_until === "2026-10-24T00:00:00.000Z" && (cancelled.subscription as Record<string, unknown>)?.cancels_at_period_end === true, JSON.stringify(cancelled));
   assert("update_workflow_mode maps auto_post_account_ids to provider ids", JSON.stringify(wfAuto.workflow?.auto_post_account_ids) === '["spc_ext_1"]', JSON.stringify(wfAuto));
 
   // Every model, ranked; free_trial marks exactly the plugin-catalog (RunPod) ones.

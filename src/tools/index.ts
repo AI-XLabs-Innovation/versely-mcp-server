@@ -14,10 +14,12 @@ import { voiceTools } from "./voices.js";
 import { dubbingTools } from "./dubbing.js";
 import { automationTools } from "./automations.js";
 import { audioTools } from "./audio.js";
+import { billingTools } from "./billing.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
   ...userTools,
+  ...billingTools,
   ...generateTools,
   ...audioTools,
   ...slideshowTools,

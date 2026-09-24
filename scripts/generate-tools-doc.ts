@@ -20,11 +20,13 @@ import { voiceTools } from "../src/tools/voices.js";
 import { dubbingTools } from "../src/tools/dubbing.js";
 import { automationTools } from "../src/tools/automations.js";
 import { audioTools } from "../src/tools/audio.js";
+import { billingTools } from "../src/tools/billing.js";
 
 // Every registered tool, in tools/list order. (The env-gated debug tool is
 // left out: it isn't registered unless MCP_ENABLE_DEBUG_TOOLS=1.)
 const categories: Array<[string, Tool[]]> = [
   ["User & Account", userTools],
+  ["Billing & subscription", billingTools],
   ["Generation (image / video / audio / music)", generateTools],
   ["Music + sound effects", audioTools],
   ["Slideshow", slideshowTools],

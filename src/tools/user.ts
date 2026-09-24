@@ -111,10 +111,21 @@ const versely_list_api_key_scopes = defineTool({
 
 const versely_list_purchases = defineTool({
   name: "versely_list_purchases",
-  description: "Get the credit purchase history for the authenticated user.",
-  inputSchema: Empty,
-  handler: async (_input, ctx) => {
-    const data = await ctx.client.get("/api/v1/user/purchase-history");
+  description:
+    "The user's transaction history: every subscription payment and credit-pack purchase, newest first, with the " +
+    "credits each added, its status and date, plus the total credits purchased.",
+  inputSchema: z.object({
+    category: z
+      .enum(["subscription", "credit_pack"])
+      .optional()
+      .describe("Only subscription payments, or only credit packs. Omit for both."),
+    limit: z.number().int().min(1).max(100).optional().describe("How many (default 50)."),
+    offset: z.number().int().min(0).optional().describe("How many to skip, for paging."),
+  }),
+  handler: async (input, ctx) => {
+    const data = await ctx.client.get("/api/v1/user/purchase-history", {
+      query: { category: input.category, limit: input.limit, offset: input.offset },
+    });
     return jsonResult(data);
   },
 });

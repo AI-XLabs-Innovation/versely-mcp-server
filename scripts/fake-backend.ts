@@ -345,6 +345,17 @@ export async function startFakeBackend(opts: {
       return send(res, 200, { success: true, post: row, results: [] });
     }
 
+    // --- billing (billing.controller's reply shapes) ---
+    const SUB = { status: "active", plan_label: "Pro Monthly", plan_key: "pro_monthly", provider: "dodo", current_period_end: "2026-10-24T00:00:00.000Z", is_trial: false, cancel_at_period_end: false };
+    if (method === "GET" && path === "/api/v1/billing/subscription") return send(res, 200, { success: true, subscription: SUB });
+    if (method === "POST" && path === "/api/v1/billing/checkout") {
+      if (b.plan_key === "pack_small") return send(res, 403, { success: false, code: "subscription_required", message: "Credit packs need an active subscription." });
+      return send(res, 200, { success: true, url: `https://checkout.dodopayments.test/session/${String(b.plan_key)}` });
+    }
+    if (method === "POST" && path === "/api/v1/billing/subscription/cancel") {
+      return send(res, 200, { success: true, action: "cancel", access_until: SUB.current_period_end, subscription: { ...SUB, cancel_at_period_end: true } });
+    }
+
     // --- music, sound effects, Gemini TTS (each controller's real reply shape) ---
     if (method === "POST" && (path === "/api/v1/suno/generate" || path === "/api/v1/suno/generate-sounds")) {
       seq += 1;

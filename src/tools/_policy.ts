@@ -132,13 +132,101 @@ function defaultWhy(r: Row): HintJustifications {
 
 const ROWS: Record<string, Row> = {
   // ── Account & library ───────────────────────────────────────────────────
-  versely_get_me: { title: "Get account profile", cls: "read", what: "the user's Versely profile and credit balance" },
+  versely_get_me: {
+    title: "Get account profile", cls: "read", what: "the user's Versely profile and credit balance", openai: true,
+    inv: ["Loading your account", "Loaded your account"],
+  },
   versely_get_credits: {
     title: "Get credit balance", cls: "read", what: "the user's Versely credit balance", openai: true,
     inv: ["Checking your Versely credits", "Checked your credits"],
   },
   versely_list_api_key_scopes: { title: "List API key scopes", cls: "read", what: "the catalog of API-key scopes" },
-  versely_list_purchases: { title: "List credit purchases", cls: "read", what: "the user's credit purchase history" },
+  versely_list_purchases: {
+    title: "List purchases", cls: "read", what: "the user's subscription payments and credit purchases", openai: true,
+    inv: ["Loading your purchases", "Loaded your purchases"],
+  },
+  versely_get_subscription: {
+    title: "Get subscription", cls: "read", what: "the user's subscription status", openai: true,
+    inv: ["Checking your subscription", "Checked your subscription"],
+  },
+  versely_list_credit_history: {
+    title: "List credit history", cls: "read", what: "the user's credit spending, refunds and top-ups", openai: true,
+    inv: ["Loading your credit history", "Loaded your credit history"],
+  },
+
+  // ── Billing (full profile only: OpenAI's rules keep commerce out of ChatGPT) ──
+  versely_list_plans: { title: "List plans and credit packs", cls: "read", what: "Versely's subscription plans and credit packs" },
+  versely_create_checkout_link: {
+    title: "Create checkout link", cls: "create", what: "Dodo Payments checkout link", spends: false,
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Creates a payment link for a Versely plan or credit pack; nothing is charged unless the user pays on that page.",
+      destructive: "Only creates a link; nothing existing is changed.",
+      openWorld: "The link opens Dodo Payments' hosted checkout.",
+    },
+  },
+  versely_get_billing_portal_link: {
+    title: "Get billing portal link", cls: "read", what: "a link to the user's Dodo Payments billing portal",
+    hints: { openWorldHint: true },
+    why: { openWorld: "The link opens the user's Dodo Payments billing portal." },
+  },
+  versely_cancel_subscription: {
+    title: "Cancel subscription", cls: "delete", what: "subscription",
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Sets the user's web subscription to cancel at the end of the current billing period.",
+      destructive: "The subscription stops renewing; it can be undone with resume before the period ends.",
+      openWorld: "Changes the subscription at Dodo Payments.",
+    },
+  },
+  versely_pause_subscription: {
+    title: "Pause subscription", cls: "edit", what: "subscription",
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Pauses the user's web subscription.",
+      destructive: "Billing and the plan's benefits stop until the subscription is resumed.",
+      openWorld: "Changes the subscription at Dodo Payments.",
+    },
+  },
+  versely_resume_subscription: {
+    title: "Resume subscription", cls: "edit", what: "subscription",
+    hints: { destructiveHint: false, openWorldHint: true, idempotentHint: true },
+    why: {
+      readOnly: "Resumes the user's paused subscription, or undoes a scheduled cancellation.",
+      destructive: "Only restores the subscription; nothing is removed.",
+      openWorld: "Changes the subscription at Dodo Payments.",
+    },
+  },
+  versely_skip_trial: {
+    title: "End free trial now", cls: "edit", what: "subscription",
+    hints: { destructiveHint: false, openWorldHint: true },
+    why: {
+      readOnly: "Ends the user's free trial now, so their card is charged for the plan today.",
+      destructive: "Starts the paid plan early; nothing is removed.",
+      openWorld: "Charges the user's card through Dodo Payments.",
+    },
+  },
+  versely_preview_plan_change: {
+    title: "Preview plan change", cls: "read", what: "what switching the user's subscription plan would do",
+  },
+  versely_change_plan: {
+    title: "Change plan", cls: "edit", what: "subscription plan",
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Switches the user's web subscription to another plan, which can charge their card today.",
+      destructive: "Replaces the current plan (now, or at the next renewal for a downgrade).",
+      openWorld: "Changes the subscription, and may charge the card, at Dodo Payments.",
+    },
+  },
+  versely_cancel_plan_change: {
+    title: "Cancel plan change", cls: "edit", what: "scheduled plan switch",
+    hints: { destructiveHint: false, openWorldHint: true, idempotentHint: true },
+    why: {
+      readOnly: "Cancels a plan switch scheduled for the next renewal.",
+      destructive: "Only keeps the current plan; nothing is removed.",
+      openWorld: "Changes the subscription at Dodo Payments.",
+    },
+  },
   versely_list_user_media: {
     title: "List my media", cls: "read", what: "the user's generated media", openai: true,
     inv: ["Loading your media", "Loaded your media"],
