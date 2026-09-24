@@ -357,10 +357,19 @@ export async function startFakeBackend(opts: {
     }
 
     // --- hooks studio: library deck, collections, characters, beds; analytics ---
+    // Like the real deck: at most 50 a call, a brief of 10+ characters, an exact scene match.
     if (method === "GET" && path === "/api/v1/hooks/deck") {
-      return send(res, 200, { success: true, hooks: [{ id: "plate-1", title: "Cafe reaction", video_url: "https://videos.versely.studio/hooks/plate-1.mp4", preview_url: "https://videos.versely.studio/hooks/plate-1.mp4", thumbnail_url: "https://img.versely.studio/hooks/plate-1.jpg", vibe: "cafe", emotion: "surprised", line: "You won't believe this app", duration_sec: 4 }], total_active: 1 });
+      const brief = rec.query.brief;
+      if (brief !== undefined && brief.trim().length < 10) return send(res, 400, { success: false, error: "Tell us a little more - at least 10 characters" });
+      const plate = { id: "plate-1", title: "Cafe reaction", video_url: "https://videos.versely.studio/hooks/plate-1.mp4", preview_url: "https://videos.versely.studio/hooks/plate-1.mp4", thumbnail_url: "https://img.versely.studio/hooks/plate-1.jpg", vibe: "cafe", emotion: "surprised", line: "You won't believe this app", duration_sec: 4 };
+      const hooks = !rec.query.vibe || rec.query.vibe === "cafe" ? [plate] : [];
+      return send(res, 200, { success: true, hooks, remaining: rec.query.vibe ? hooks.length : 155, total_active: 155 });
     }
     if (method === "POST" && path === "/api/v1/hooks/collections") {
+      // Like the real packs: the ask (brand_context) must be 10-500 characters.
+      if (b.kind !== "reuse" && (typeof b.brand_context !== "string" || b.brand_context.trim().length < 10 || b.brand_context.trim().length > 500)) {
+        return send(res, 400, { success: false, error: "brand_context must be 10–500 characters" });
+      }
       collectionReads.set("col-1", 0);
       return send(res, 202, { success: true, collection: { id: "col-1", kind: b.kind, status: "queued", title: b.title ?? null }, items: [] });
     }

@@ -651,7 +651,22 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const reuse = await call(openai, "versely_reuse_hooks", { hook_ids: ["plate-1"], brand_id: "brand-1", lines: { "plate-1": "My line" } });
   const reuseBody = lastBody("/api/v1/hooks/collections");
   const reuseSc = reuse.structuredContent as Record<string, any> | undefined;
-  assert("reuse_hooks sends the clips, lines and brand, and follows the collection", reuseBody.kind === "reuse" && JSON.stringify(reuseBody.hook_ids) === '["plate-1"]' && String(reuseBody.brand_context).includes("Acme Coffee") && reuseSc?.poll?.tool_name === "versely_get_hook_collection", JSON.stringify({ reuseBody, sc: reuseSc }));
+  assert("reuse_hooks sends the clips, lines and brand, and follows the collection", reuseBody.kind === "reuse" && JSON.stringify(reuseBody.hook_ids) === '["plate-1"]' && reuseBody.brand_kit_id === "brand-1" && reuseBody.brand_context === undefined && reuseSc?.poll?.tool_name === "versely_get_hook_collection", JSON.stringify({ reuseBody, sc: reuseSc }));
+  // The deck wants a brief of 10+ characters and serves 50 clips at most, with exact scene names.
+  const deckQuery = () => (backend.requests.filter((r) => r.path === "/api/v1/hooks/deck").at(-1)?.query ?? {}) as Record<string, string>;
+  const shortSearch = await call(openai, "versely_browse", { collection: "hook_library", q: "gym" });
+  assert("a short hook search becomes a valid brief", !shortSearch.isError && deckQuery().brief === "Hooks about: gym", `${deckQuery().brief} / ${textOf(shortSearch).slice(0, 200)}`);
+  const allClips = textOf(await call(openai, "versely_browse", { collection: "hook_library" }));
+  assert("the hook picker says how many clips fit and how to narrow them", allClips.includes("1 of the 155 clips") && allClips.includes("scene: cafe"), allClips.slice(0, 400));
+  const noScene = await call(openai, "versely_browse", { collection: "hook_library", category: "Beach Day" });
+  assert("an unknown scene is normalized and answered with the scenes there are", deckQuery().vibe === undefined && textOf(noScene).includes('scene "beach-day"') && textOf(noScene).includes("Scenes (category): cafe"), textOf(noScene));
+  const brandPack = await call(openai, "versely_create_hook_pack", { brand_id: "brand-1", count: 3 });
+  const brandPackBody = lastBody("/api/v1/hooks/collections");
+  assert("a brand hook pack sends the brand as brand_kit_id with a valid ask", !brandPack.isError && brandPackBody.brand_kit_id === "brand-1" && typeof brandPackBody.brand_context === "string" && brandPackBody.brand_context.length >= 10 && brandPackBody.brand_context.length <= 500 && !String(brandPackBody.brand_context).includes("Acme"), JSON.stringify(brandPackBody));
+  await call(openai, "versely_create_hook_pack", { brief: "gym", count: 3 });
+  assert("a short pack brief is padded to the planner's minimum", lastBody("/api/v1/hooks/collections").brand_context === "Hooks about: gym", JSON.stringify(lastBody("/api/v1/hooks/collections")));
+  const packVibes = (oTools.find((t) => t.name === "versely_create_hook_pack")?.inputSchema as any)?.properties?.vibes?.items?.enum;
+  assert("pack settings are the planner's five presets", JSON.stringify(packVibes) === '["cafe","morning","kitchen","outdoor","selfie"]', JSON.stringify(packVibes));
   await call(openai, "versely_get_hook_collection", { collection_id: "col-1" });
   const colDone = (await call(openai, "versely_get_hook_collection", { collection_id: "col-1" })).structuredContent as Record<string, any> | undefined;
   assert("a hook collection ends with its videos", colDone?.status === "completed" && colDone?.assets?.[0]?.url === "https://videos.versely.studio/hooks/col-1-1.mp4", JSON.stringify(colDone));

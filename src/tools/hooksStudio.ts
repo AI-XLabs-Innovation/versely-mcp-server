@@ -10,7 +10,6 @@ import { z } from "zod";
 import { defineTool, type Tool, type ToolContext, type ToolResult } from "./_types.js";
 import { jsonResult } from "./_helpers.js";
 import { metaForMediaCard } from "../ui/templates.js";
-import { brandContextBlock } from "./brands.js";
 
 const COLLECTION_POLL = { interval_ms: 6000, timeout_ms: 30 * 60_000 };
 const TERMINAL = new Set(["completed", "partial", "failed", "cancelled", "canceled"]);
@@ -46,14 +45,23 @@ function collectionCard(payload: unknown, id: string): ToolResult {
   };
 }
 
-async function brandContextFor(ctx: ToolContext, brandId: string | undefined, brief: string | undefined): Promise<string | undefined> {
-  if (brandId) {
-    const res = await ctx.client.get<{ brand_kits?: Array<Record<string, any>> }>("/api/v1/agentic/brand-kit", { query: { brand_id: brandId } });
-    const kit = (res?.brand_kits ?? []).find((k) => k?.id === brandId);
-    if (!kit) throw new Error(`Brand ${brandId} is not one of the user's brands (versely_list_brands).`);
-    return [brandContextBlock(kit), brief ? `Brief: ${brief}` : ""].filter(Boolean).join("\n");
-  }
-  return brief?.trim() || undefined;
+/**
+ * The hook planner's ask (the backend's brand_context: 10-500 characters, or a
+ * 400). A brand goes as brand_kit_id - the backend reads the kit's facts
+ * itself - so the ask is only the user's brief, padded when short, or a
+ * brand-neutral ask when they named just a brand (never the brand's name: a
+ * planner reads names literally).
+ */
+export function hookAsk(brief: string | undefined, hasBrand: boolean): string | undefined {
+  const b = brief?.replace(/\s+/g, " ").trim();
+  if (b) return (b.length >= 10 ? b : `Hooks about: ${b}`).slice(0, 500);
+  return hasBrand ? "Scroll-stopping hooks for this brand's products, in its own voice, for its audience." : undefined;
+}
+
+/** A library scene as the deck stores its vibe: lowercase and hyphenated ("Cozy night" -> "cozy-night"). */
+export function sceneSlug(scene: string | undefined): string | undefined {
+  const s = scene?.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  return s || undefined;
 }
 
 async function startCollection(ctx: ToolContext, body: Record<string, unknown>, toolName: string, toolArgs: Record<string, unknown>): Promise<ToolResult> {
@@ -70,7 +78,8 @@ async function startCollection(ctx: ToolContext, body: Record<string, unknown>, 
 }
 
 const CaptionMode = z.enum(["auto", "none", "custom"]).optional().describe("Burn a line on: 'auto' (written per hook, default), 'custom' (caption_text), or 'none'.");
-const Vibes = z.array(z.string()).max(5).optional().describe("Settings to vary between, e.g. ['cafe','outdoor'] (see the library's vibes).");
+// The pack planner's settings (backend HOOK_VIBE_PRESETS); anything else is swapped for one of these.
+const Vibes = z.array(z.enum(["cafe", "morning", "kitchen", "outdoor", "selfie"])).max(5).optional().describe("Settings to vary between (default: a mix).");
 const Emotions = z.array(z.string()).max(5).optional().describe("Presenter emotions, e.g. ['surprised','excited'].");
 
 // --- Library, saves -------------------------------------------------------------------
@@ -84,14 +93,20 @@ const versely_list_hook_library = defineTool({
   inputSchema: z.object({
     brand_id: z.string().optional().describe("Pick and word hooks for this brand (versely_list_brands)."),
     brief: z.string().max(500).optional().describe("What the hooks are for, when there's no saved brand."),
-    vibe: z.string().optional(),
-    emotion: z.string().optional(),
+    vibe: z.string().optional().describe("The clips' scene, e.g. kitchen, outdoor, cozy-night, urban, social, cafe, travel, car, desk, fitness."),
+    emotion: z.string().optional().describe("The presenter's emotion, e.g. focused, calm, excited, laughing."),
     limit: z.number().int().min(1).max(40).optional().describe("Default 12."),
   }),
   handler: async (input, ctx) =>
     jsonResult(
       await ctx.client.get("/api/v1/hooks/deck", {
-        query: { brand_kit_id: input.brand_id, brief: input.brief, vibe: input.vibe, emotion: input.emotion, limit: input.limit ?? 12 },
+        query: {
+          brand_kit_id: input.brand_id,
+          brief: hookAsk(input.brief, false),
+          vibe: sceneSlug(input.vibe),
+          emotion: input.emotion?.trim().toLowerCase() || undefined,
+          limit: input.limit ?? 12,
+        },
       }),
     ),
 });
@@ -150,15 +165,15 @@ const versely_reuse_hooks = defineTool({
   inputSchema: z.object({
     hook_ids: z.array(z.string()).min(1).max(20).describe("Library clip ids."),
     lines: z.record(z.string().max(200)).optional().describe("Your line per clip: { hook_id: line }. Missing ones are written for the brand."),
-    brand_id: z.string().optional(),
-    brief: z.string().max(1000).optional().describe("What it's for, when there's no saved brand."),
+    brand_id: z.string().optional().describe("Write the missing lines for this brand (versely_list_brands)."),
+    brief: z.string().max(500).optional().describe("What it's for, when there's no saved brand."),
     title: z.string().max(120).optional(),
     music_bed_id: z.string().optional().describe("From versely_list_music_beds / versely_browse music_beds."),
     trending_sound_id: z.string().optional().describe("A trending sound (versely_list_trending_sounds); its royalty-free bed is used."),
     caption: z.boolean().optional().describe("Burn the lines on (default true)."),
   }),
   handler: async (input, ctx) => {
-    const brand_context = await brandContextFor(ctx, input.brand_id, input.brief);
+    const brand_context = input.brief?.replace(/\s+/g, " ").trim().slice(0, 500) || undefined;
     return startCollection(
       ctx,
       {
@@ -181,7 +196,7 @@ const versely_reuse_hooks = defineTool({
 
 const PackFields = {
   brand_id: z.string().optional().describe("Make the hooks for this brand (versely_list_brands)."),
-  brief: z.string().max(1000).optional().describe("What the hooks are for (required without brand_id)."),
+  brief: z.string().max(500).optional().describe("What the hooks are for (required without brand_id)."),
   count: z.union([z.literal(3), z.literal(5), z.literal(10)]).optional().describe("How many hooks: 3, 5 (default) or 10."),
   caption_mode: CaptionMode,
   caption_text: z.string().max(200).optional().describe("With caption_mode 'custom': the line to burn on every hook."),
@@ -198,7 +213,7 @@ const versely_create_hook_pack = defineTool({
   meta: metaForMediaCard(),
   inputSchema: z.object(PackFields),
   handler: async (input, ctx) => {
-    const brand_context = await brandContextFor(ctx, input.brand_id, input.brief);
+    const brand_context = hookAsk(input.brief, !!input.brand_id);
     if (!brand_context) throw new Error("Pass brand_id or a brief: the hooks need something to be about.");
     const { brand_id, brief: _b, ...rest } = input;
     return startCollection(ctx, { kind: "pack", brand_context, ...(brand_id ? { brand_kit_id: brand_id } : {}), ...rest }, "versely_create_hook_pack", input);
@@ -213,7 +228,7 @@ const versely_create_character_hook_pack = defineTool({
   meta: metaForMediaCard(),
   inputSchema: z.object({ character_id: z.string().describe("From versely_list_hook_characters / versely_browse hook_characters."), ...PackFields }),
   handler: async (input, ctx) => {
-    const brand_context = await brandContextFor(ctx, input.brand_id, input.brief);
+    const brand_context = hookAsk(input.brief, !!input.brand_id);
     if (!brand_context) throw new Error("Pass brand_id or a brief: the hooks need something to be about.");
     const { brand_id, brief: _b, ...rest } = input;
     return startCollection(ctx, { kind: "character_pack", brand_context, ...(brand_id ? { brand_kit_id: brand_id } : {}), ...rest }, "versely_create_character_hook_pack", input);

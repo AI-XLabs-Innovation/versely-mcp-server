@@ -13,6 +13,7 @@ import { defineTool, type Tool, type ToolContext, type ToolResult } from "./_typ
 import { metaForPicker } from "../ui/templates.js";
 import { PICKER_META_KEY } from "../ui/picker.js";
 import { loadVeedAvatars } from "./avatars.js";
+import { hookAsk, sceneSlug } from "./hooksStudio.js";
 
 interface PickItem {
   id: string;
@@ -34,7 +35,8 @@ interface CollectionDef {
   wide?: boolean;
   /** The backend already searched for q (in more than the title): no second filter here. */
   serverSearch?: boolean;
-  load: (ctx: ToolContext, opts: { category?: string; q?: string }) => Promise<PickItem[]>;
+  /** Items, or items plus a note for the model (e.g. how to narrow a collection the backend pages). */
+  load: (ctx: ToolContext, opts: { category?: string; q?: string }) => Promise<PickItem[] | { items: PickItem[]; note?: string }>;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -114,11 +116,21 @@ const COLLECTIONS: Record<string, CollectionDef> = {
     title: "Hook clips",
     noun: "hook",
     serverSearch: true,
+    // The deck serves at most 50 clips a call and has no offset (the web swipes
+    // through it), so the model is told how many fit and which scenes narrow it.
     load: async (ctx, { category, q }) => {
-      const res = await ctx.client.get<{ hooks?: Array<Record<string, any>> }>("/api/v1/hooks/deck", {
-        query: { limit: 60, ...(category ? { vibe: category } : {}), ...(q ? { brief: q } : {}) },
-      });
-      return (res?.hooks ?? []).map((h) => {
+      type Deck = { hooks?: Array<Record<string, any>>; remaining?: number };
+      const deck = (vibe?: string) =>
+        ctx.client.get<Deck>("/api/v1/hooks/deck", { query: { limit: 50, ...(vibe ? { vibe } : {}), ...(q ? { brief: hookAsk(q, false) } : {}) } });
+      const scenesOf = (hooks: Array<Record<string, any>>) => {
+        const n = new Map<string, number>();
+        for (const h of hooks) if (str(h.vibe)) n.set(String(h.vibe), (n.get(String(h.vibe)) ?? 0) + 1);
+        return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([s]) => s).join(", ");
+      };
+      const vibe = sceneSlug(category);
+      const res = await deck(vibe);
+      const hooks = res?.hooks ?? [];
+      const items = hooks.map((h) => {
         const lineText = String(h.line || h.suggested_hook_line || h.title || "Hook").replace(/\s+/g, " ").trim();
         return {
           id: String(h.id),
@@ -129,6 +141,14 @@ const COLLECTIONS: Record<string, CollectionDef> = {
           pick: `Use this hook clip ${quote(lineText.slice(0, 120))} (hook_id: ${String(h.id)}).`,
         };
       });
+      let note: string | undefined;
+      if (!hooks.length && vibe) {
+        const scenes = scenesOf((await deck()).hooks ?? []);
+        note = `No clips in the scene "${vibe}".${scenes ? ` Scenes (category): ${scenes}.` : ""}`;
+      } else if (typeof res?.remaining === "number" && res.remaining > hooks.length) {
+        note = `These are ${hooks.length} of the ${res.remaining} clips that fit; to see others, narrow with category = a scene: ${scenesOf(hooks)}.`;
+      }
+      return { items, note };
     },
   },
   hook_characters: {
@@ -334,7 +354,8 @@ const versely_browse = defineTool({
   description:
     "Show the user a visual picker to choose from - with previews - instead of listing options in text: " +
     "inspiration (viral outlier posts; category = niche), trending_sounds (with playable royalty-free versions), " +
-    "hook_library (ready-made hook clips; category = vibe, q = what they're for), hook_characters, music_beds, " +
+    "hook_library (ready-made hook clips; category = a scene, q = what they're for - the clips are picked and their " +
+    "lines written for it), hook_characters, music_beds, " +
     "slideshow_styles (caption styles with example slides), heygen_avatars_v5 / heygen_avatars_v3, " +
     "heygen_voices_v5 / heygen_voices_v3, veed_avatars, avatar_x_avatars, ai_templates, workflow_templates, " +
     "slideshow_templates, brands. The user clicks 'Use this' and their choice arrives as their next message, with " +
@@ -344,13 +365,21 @@ const versely_browse = defineTool({
   inputSchema: z.object({
     collection: z.enum(BROWSE_COLLECTIONS).describe("What to show."),
     q: z.string().optional().describe("Only options whose name or description contains this."),
-    category: z.string().optional().describe("inspiration: a niche slug (versely_list_inspiration_niches); templates: a category."),
+    category: z
+      .string()
+      .optional()
+      .describe(
+        "inspiration: a niche slug (versely_list_inspiration_niches); hook_library: a scene, e.g. kitchen, outdoor, " +
+          "cozy-night, urban, social, cafe, travel, car, desk, fitness; templates: a category.",
+      ),
     limit: z.number().int().min(1).max(60).optional().describe("How many to show (default 24)."),
     offset: z.number().int().min(0).optional().describe("Skip this many (the picker's Show more uses it)."),
   }),
   handler: async (input, ctx) => {
     const def = COLLECTIONS[input.collection]!;
-    const all = await def.load(ctx, { category: input.category, q: input.q });
+    const loaded = await def.load(ctx, { category: input.category, q: input.q });
+    const all = Array.isArray(loaded) ? loaded : loaded.items;
+    const note = Array.isArray(loaded) ? undefined : loaded.note;
     const q = input.q?.trim().toLowerCase();
     const matched = q && !def.serverSearch
       ? all.filter((it) => `${it.title} ${it.subtitle ?? ""} ${it.id}`.toLowerCase().includes(q))
@@ -373,11 +402,12 @@ const versely_browse = defineTool({
     };
     const text =
       items.length === 0
-        ? `No ${def.noun}s match${input.q ? ` "${input.q}"` : ""}.`
+        ? `No ${def.noun}s match${input.q ? ` "${input.q}"` : ""}.${note ? ` ${note}` : ""}`
         : `Showing ${items.length} of ${matched.length} ${def.title.toLowerCase()} in a visual picker the user can see; ` +
           `they choose by clicking "Use this" and the choice arrives as their next message. Don't list these in your ` +
           `reply: ask them to pick one above, or to name one. ${USE_HINT[input.collection] ?? ""}` +
           (more ? ` More: call again with offset=${offset + items.length}.` : "") +
+          (note ? ` ${note}` : "") +
           `\nIds: ${items.map((it) => `${it.id} = ${it.title}`).join("; ")}`;
     const result: ToolResult = {
       content: [{ type: "text", text }],

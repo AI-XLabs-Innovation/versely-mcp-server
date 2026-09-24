@@ -721,13 +721,13 @@ _1 tools_
 
 **Show options to pick from** · read (read-only) · also in the ChatGPT plugin
 
-Show the user a visual picker to choose from - with previews - instead of listing options in text: inspiration (viral outlier posts; category = niche), trending_sounds (with playable royalty-free versions), hook_library (ready-made hook clips; category = vibe, q = what they're for), hook_characters, music_beds, slideshow_styles (caption styles with example slides), heygen_avatars_v5 / heygen_avatars_v3, heygen_voices_v5 / heygen_voices_v3, veed_avatars, avatar_x_avatars, ai_templates, workflow_templates, slideshow_templates, brands. The user clicks 'Use this' and their choice arrives as their next message, with the id to use. Don't repeat the options in your reply: tell the user to pick one above (or name it). Use q to narrow a big collection (e.g. HeyGen avatars by name).
+Show the user a visual picker to choose from - with previews - instead of listing options in text: inspiration (viral outlier posts; category = niche), trending_sounds (with playable royalty-free versions), hook_library (ready-made hook clips; category = a scene, q = what they're for - the clips are picked and their lines written for it), hook_characters, music_beds, slideshow_styles (caption styles with example slides), heygen_avatars_v5 / heygen_avatars_v3, heygen_voices_v5 / heygen_voices_v3, veed_avatars, avatar_x_avatars, ai_templates, workflow_templates, slideshow_templates, brands. The user clicks 'Use this' and their choice arrives as their next message, with the id to use. Don't repeat the options in your reply: tell the user to pick one above (or name it). Use q to narrow a big collection (e.g. HeyGen avatars by name).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `collection` | enum("inspiration" \| "hook_library" \| "hook_characters" \| "music_beds" \| "trending_sounds" \| "slideshow_styles" \| "heygen_avatars_v5" \| "heygen_avatars_v3" \| "heygen_voices_v5" \| "heygen_voices_v3" \| "veed_avatars" \| "avatar_x_avatars" \| "ai_templates" \| "workflow_templates" \| "slideshow_templates" \| "brands") | **yes** | What to show. |
 | `q` | string | — | Only options whose name or description contains this. |
-| `category` | string | — | inspiration: a niche slug (versely_list_inspiration_niches); templates: a category. |
+| `category` | string | — | inspiration: a niche slug (versely_list_inspiration_niches); hook_library: a scene, e.g. kitchen, outdoor, cozy-night, urban, social, cafe, travel, car, desk, fitness; templates: a category. |
 | `limit` | integer | — | How many to show (default 24). |
 | `offset` | integer | — | Skip this many (the picker's Show more uses it). |
 
@@ -975,8 +975,8 @@ Ready-made hook clips in Versely's hook library, each with a suggested line; wit
 |-------|------|----------|-------------|
 | `brand_id` | string | — | Pick and word hooks for this brand (versely_list_brands). |
 | `brief` | string | — | What the hooks are for, when there's no saved brand. |
-| `vibe` | string | — |  |
-| `emotion` | string | — |  |
+| `vibe` | string | — | The clips' scene, e.g. kitchen, outdoor, cozy-night, urban, social, cafe, travel, car, desk, fitness. |
+| `emotion` | string | — | The presenter's emotion, e.g. focused, calm, excited, laughing. |
 | `limit` | integer | — | Default 12. |
 
 ### `versely_save_hook`
@@ -1040,7 +1040,7 @@ Turn picked library hook clips (versely_browse 'hook_library') into the user's o
 |-------|------|----------|-------------|
 | `hook_ids` | string[] | **yes** | Library clip ids. |
 | `lines` | object | — | Your line per clip: { hook_id: line }. Missing ones are written for the brand. |
-| `brand_id` | string | — |  |
+| `brand_id` | string | — | Write the missing lines for this brand (versely_list_brands). |
 | `brief` | string | — | What it's for, when there's no saved brand. |
 | `title` | string | — |  |
 | `music_bed_id` | string | — | From versely_list_music_beds / versely_browse music_beds. |
@@ -1060,7 +1060,7 @@ Generate a pack of new AI hook videos (3, 5 or 10) for a brand or brief, with va
 | `count` | any | — | How many hooks: 3, 5 (default) or 10. |
 | `caption_mode` | enum("auto" \| "none" \| "custom") | — | Burn a line on: 'auto' (written per hook, default), 'custom' (caption_text), or 'none'. |
 | `caption_text` | string | — | With caption_mode 'custom': the line to burn on every hook. |
-| `vibes` | string[] | — | Settings to vary between, e.g. ['cafe','outdoor'] (see the library's vibes). |
+| `vibes` | enum("cafe" \| "morning" \| "kitchen" \| "outdoor" \| "selfie")[] | — | Settings to vary between (default: a mix). |
 | `emotions` | string[] | — | Presenter emotions, e.g. ['surprised','excited']. |
 | `title` | string | — |  |
 
@@ -1078,7 +1078,7 @@ Generate a pack of hook videos (3, 5 or 10) starring one of the user's character
 | `count` | any | — | How many hooks: 3, 5 (default) or 10. |
 | `caption_mode` | enum("auto" \| "none" \| "custom") | — | Burn a line on: 'auto' (written per hook, default), 'custom' (caption_text), or 'none'. |
 | `caption_text` | string | — | With caption_mode 'custom': the line to burn on every hook. |
-| `vibes` | string[] | — | Settings to vary between, e.g. ['cafe','outdoor'] (see the library's vibes). |
+| `vibes` | enum("cafe" \| "morning" \| "kitchen" \| "outdoor" \| "selfie")[] | — | Settings to vary between (default: a mix). |
 | `emotions` | string[] | — | Presenter emotions, e.g. ['surprised','excited']. |
 | `title` | string | — |  |
 
