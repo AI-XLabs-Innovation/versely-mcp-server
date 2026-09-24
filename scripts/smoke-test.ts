@@ -659,7 +659,11 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const allClips = textOf(await call(openai, "versely_browse", { collection: "hook_library" }));
   assert("the hook picker says how many clips fit and how to narrow them", allClips.includes("1 of the 155 clips") && allClips.includes("scene: cafe"), allClips.slice(0, 400));
   const noScene = await call(openai, "versely_browse", { collection: "hook_library", category: "Beach Day" });
-  assert("an unknown scene is normalized and answered with the scenes there are", deckQuery().vibe === undefined && textOf(noScene).includes('scene "beach-day"') && textOf(noScene).includes("Scenes (category): cafe"), textOf(noScene));
+  assert("an unknown scene is normalized and answered with the scenes there are", deckQuery().vibe === undefined && textOf(noScene).includes('scene "beach-day"') && textOf(noScene).includes("Scenes: cafe"), textOf(noScene));
+  // ChatGPT: the picker reads _meta (the model reads the text). Claude: structuredContent carries it too.
+  const noScenePicker = (noScene._meta ?? {})["studio.versely/picker"] as { note?: string } | undefined;
+  const claudeNoScene = ((await call(full, "versely_browse", { collection: "hook_library", category: "Beach Day" })).structuredContent as { picker?: { note?: string; hint?: string } } | undefined)?.picker;
+  assert("the picker data carries the note and how to use a pick", String(noScenePicker?.note).includes("Scenes: cafe") && String(claudeNoScene?.note).includes("Scenes: cafe") && String(claudeNoScene?.hint).includes("versely_reuse_hooks"), JSON.stringify({ noScenePicker, claudeNoScene }));
   const brandPack = await call(openai, "versely_create_hook_pack", { brand_id: "brand-1", count: 3 });
   const brandPackBody = lastBody("/api/v1/hooks/collections");
   assert("a brand hook pack sends the brand as brand_kit_id with a valid ask", !brandPack.isError && brandPackBody.brand_kit_id === "brand-1" && typeof brandPackBody.brand_context === "string" && brandPackBody.brand_context.length >= 10 && brandPackBody.brand_context.length <= 500 && !String(brandPackBody.brand_context).includes("Acme"), JSON.stringify(brandPackBody));

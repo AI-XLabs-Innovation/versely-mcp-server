@@ -260,7 +260,8 @@ const PICKER_HTML = String.raw`<!doctype html>
       '<div class="count">' + esc(String((data.items || []).length)) + (data.total ? ' of ' + esc(String(data.total)) : '') + '</div></div>' +
       '<input class="search" data-search placeholder="Search ' + esc(data.noun ? data.noun + 's' : 'options') + ' (Enter searches all)" value="' + esc(query) + '"/>';
     if (!items.length) {
-      html += '<div class="empty">Nothing matches.</div>';
+      var emptyText = !(data.items || []).length && data.note ? String(data.note) : 'Nothing matches.';
+      html += '<div class="empty">' + esc(emptyText) + '</div>';
     } else {
       html += '<div class="grid">';
       for (var i = 0; i < items.length; i++) {

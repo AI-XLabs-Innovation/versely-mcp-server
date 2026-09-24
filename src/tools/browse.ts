@@ -144,7 +144,7 @@ const COLLECTIONS: Record<string, CollectionDef> = {
       let note: string | undefined;
       if (!hooks.length && vibe) {
         const scenes = scenesOf((await deck()).hooks ?? []);
-        note = `No clips in the scene "${vibe}".${scenes ? ` Scenes (category): ${scenes}.` : ""}`;
+        note = `No clips in the scene "${vibe}".${scenes ? ` Scenes: ${scenes}.` : ""}`;
       } else if (typeof res?.remaining === "number" && res.remaining > hooks.length) {
         note = `These are ${hooks.length} of the ${res.remaining} clips that fit; to see others, narrow with category = a scene: ${scenesOf(hooks)}.`;
       }
@@ -399,6 +399,9 @@ const versely_browse = defineTool({
       q: input.q ?? null,
       category: input.category ?? null,
       more,
+      // Also here, not only in the text: some clients give the model structuredContent alone.
+      ...(USE_HINT[input.collection] ? { hint: USE_HINT[input.collection] } : {}),
+      ...(note ? { note } : {}),
     };
     const text =
       items.length === 0
