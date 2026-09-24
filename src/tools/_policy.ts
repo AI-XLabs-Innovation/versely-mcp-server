@@ -276,6 +276,10 @@ const ROWS: Record<string, Row> = {
     title: "Generate lip-sync video", cls: "create", what: "lip-sync video", openai: true,
     inv: ["Starting your lip-sync video", "Lip-sync video started"],
   },
+  versely_list_avatars: {
+    title: "List avatars", cls: "read", what: "the stock avatars and voices for avatar videos", openai: true,
+    inv: ["Loading avatars", "Loaded avatars"],
+  },
   versely_remove_background: {
     title: "Remove video background", cls: "create", what: "background-removed copy of a video", openai: true,
     inv: ["Removing the background", "Background removal started"],

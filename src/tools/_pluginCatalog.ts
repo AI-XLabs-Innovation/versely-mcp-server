@@ -187,6 +187,21 @@ export interface CatalogModel {
 
 export type CatalogType = PluginModelType | "lipsync";
 
+/**
+ * The per-second rate of a duration-billed model, from its price_matrix. For
+ * those models `credits` is only the MINIMUM (e.g. Veed Avatars: 3), so a
+ * listing without the rate had the assistant quote "about 3 credits" for a
+ * 24-second video that cost 24.
+ */
+export function pricingHint(pm: unknown): { credits_per_second?: number } {
+  if (!pm || typeof pm !== "object") return {};
+  const m = pm as { perSecond?: unknown; options?: Array<{ discounted?: unknown; full?: unknown }> };
+  if (m.perSecond !== true || !Array.isArray(m.options) || m.options.length === 0) return {};
+  const first = m.options[0] ?? {};
+  const rate = typeof first.discounted === "number" ? first.discounted : typeof first.full === "number" ? first.full : undefined;
+  return typeof rate === "number" && rate > 0 ? { credits_per_second: rate } : {};
+}
+
 const CATALOG_PATHS: Record<CatalogType, string> = {
   image: "/api/v1/ai-models/images",
   video: "/api/v1/ai-models/videos",

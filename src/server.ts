@@ -27,7 +27,7 @@ import {
   shapeResultForOpenai,
   stripSafetyKeys,
 } from "./tools/_shaping.js";
-import { UI_MIME_TYPE, uiResourcesFor } from "./ui/templates.js";
+import { MEDIA_CARD_URI, UI_MIME_TYPE, mediaCardUriFor, resolveUiResource, uiResourcesFor } from "./ui/templates.js";
 import { serverInstructions, type Profile } from "./profiles.js";
 import { runWithCallContext, subjectFromMeta } from "./requestContext.js";
 import { dedupeKey, dedupeNote, duplicateCallGuard } from "./idempotency.js";
@@ -207,6 +207,12 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
       ? { "openai/toolInvocation/invoked": policy.invoked }
       : {}),
   };
+  // A v2-card profile points its tools at the card's hashed URI, so a changed
+  // card is a new template to hosts that cache by URI (ChatGPT).
+  const ui0 = meta.ui as Json | undefined;
+  if (appsUi && ui0 && ui0.resourceUri === MEDIA_CARD_URI && config.cardV2Profiles.has(profile)) {
+    meta.ui = { ...ui0, resourceUri: mediaCardUriFor({ cardV2: true }) };
+  }
   // The tools the media card polls from inside ChatGPT. ChatGPT only lets a
   // widget call a tool that is explicitly open to it: say so both ways - the
   // MCP Apps visibility list and ChatGPT's own widgetAccessible flag - or the
@@ -401,7 +407,7 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     const uri = request.params.uri;
-    const resource = resources.find((r) => r.uri === uri);
+    const resource = resolveUiResource(resources, uri);
     if (!resource) {
       throw new Error(`Unknown resource: ${uri}`);
     }

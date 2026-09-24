@@ -15,6 +15,7 @@ import { dubbingTools } from "./dubbing.js";
 import { automationTools } from "./automations.js";
 import { audioTools } from "./audio.js";
 import { billingTools } from "./billing.js";
+import { avatarTools } from "./avatars.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
@@ -22,6 +23,7 @@ export const standardTools: Tool[] = [
   ...billingTools,
   ...generateTools,
   ...audioTools,
+  ...avatarTools,
   ...slideshowTools,
   ...movieTools,
   ...ugcTools,

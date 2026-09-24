@@ -31,6 +31,7 @@
 // every profile not in MCP_CARD_V2_PROFILES — keep it byte-for-byte) and v2
 // (further down, the ChatGPT plugin's). See the v2 header for the differences.
 
+import { createHash } from "node:crypto";
 import type { Profile } from "../profiles.js";
 
 const MEDIA_CARD_HTML = String.raw`<!doctype html>
@@ -1090,6 +1091,10 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
   var POLL_ERROR_LIMIT = 3;
   var POLL_STALE_MS = 30000;
   var OPEN_LINK_FALLBACK_MS = 1500;
+  // ChatGPT keeps a widget's state with its message (window.openai.widgetState),
+  // across re-renders and page reloads. A finished card saves itself there, so
+  // a card mounted again shows its result straight away and never re-polls.
+  var WIDGET_STATE_KEY = 'versely_card';
   var state = null;
 
   function esc(s) {
@@ -1299,6 +1304,36 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
     if (kind && !patch.kind) state.kind = kind;
     delete state.poll;
     render();
+    saveFinished(state);
+  }
+
+  // Only what the card needs to draw itself again (the model reads widget
+  // state too): no poll handle, no tool args, at most 12 assets.
+  function saveFinished(s) {
+    try {
+      var o = window.openai;
+      if (!o || typeof o.setWidgetState !== 'function' || !s) return;
+      var keep = { status: s.status, kind: s.kind, task_id: s.task_id, model: s.model, toolName: s.toolName,
+                   title: s.title, final_video_url: s.final_video_url, error: s.error, message: s.message };
+      if (Array.isArray(s.assets)) keep.assets = s.assets.slice(0, 12);
+      if (typeof s.prompt === 'string') keep.prompt = s.prompt.slice(0, 200);
+      var ws = assign(o.widgetState || {});
+      ws[WIDGET_STATE_KEY] = keep;
+      o.setWidgetState(ws);
+    } catch (e) {}
+  }
+
+  // A saved finished card wins over the original "pending" tool output.
+  function restoreFinished() {
+    try {
+      var ws = window.openai && window.openai.widgetState;
+      var saved = ws && ws[WIDGET_STATE_KEY];
+      if (!saved || (saved.status !== 'completed' && saved.status !== 'failed')) return;
+      if (state && (state.status === 'completed' || state.status === 'failed')) return;
+      stopPolling();
+      state = assign(saved);
+      render();
+    } catch (e) {}
   }
 
   function startPolling(s) {
@@ -1481,6 +1516,7 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
       if (!o) return;
       if (o.theme) applyTheme(o.theme);
       if (o.toolInput) lastInput = o.toolInput;
+      restoreFinished();
       if (o.toolOutput || o.toolResponseMetadata) ingest(o.toolOutput, o.toolResponseMetadata);
     } catch (e) {}
   }
@@ -1573,6 +1609,15 @@ export const MEDIA_CARD_URI = "ui://versely/media-card";
 /** The v2 card's HTML, exported for the offline preview script. */
 export const MEDIA_CARD_V2 = MEDIA_CARD_V2_HTML;
 
+/**
+ * The v2 card's URI carries a hash of its HTML. ChatGPT caches a widget
+ * template by its URI, so a fixed card served under the old URI can keep
+ * running the old code (the "Generating" loop was still polling after its
+ * fix shipped). A new hash per change makes ChatGPT fetch the new card; old
+ * URIs are still answered, with the current card (resolveUiResource).
+ */
+export const MEDIA_CARD_V2_URI = `${MEDIA_CARD_URI}-${createHash("sha256").update(MEDIA_CARD_V2_HTML).digest("hex").slice(0, 10)}`;
+
 interface UiResourceEntry {
   uri: string;
   name: string;
@@ -1645,11 +1690,16 @@ export interface UiResourceOptions {
   cardV2: boolean;
 }
 
+/** The card URI the tools of a profile point at (v2: hashed, see MEDIA_CARD_V2_URI). */
+export function mediaCardUriFor(opts: { cardV2: boolean }): string {
+  return opts.cardV2 ? MEDIA_CARD_V2_URI : MEDIA_CARD_URI;
+}
+
 /** The ui:// resources a server for this profile lists and serves. */
 export function uiResourcesFor(opts: UiResourceOptions): UiResourceEntry[] {
   return [
     {
-      uri: MEDIA_CARD_URI,
+      uri: mediaCardUriFor(opts),
       name: MEDIA_CARD_NAME,
       description: MEDIA_CARD_DESCRIPTION,
       html: opts.cardV2 ? MEDIA_CARD_V2_HTML : MEDIA_CARD_HTML,
@@ -1658,11 +1708,25 @@ export function uiResourcesFor(opts: UiResourceOptions): UiResourceEntry[] {
   ];
 }
 
+/**
+ * The resource for a URI. Any earlier card URI (the plain one, or an older
+ * hash a host still holds in a cached tool list) gets the CURRENT card, so a
+ * stale descriptor can't pin a broken template.
+ */
+export function resolveUiResource(resources: readonly UiResourceEntry[], uri: string): UiResourceEntry | undefined {
+  const exact = resources.find((r) => r.uri === uri);
+  if (exact) return exact;
+  if (uri === MEDIA_CARD_URI || uri.startsWith(`${MEDIA_CARD_URI}-`)) {
+    return resources.find((r) => r.uri === MEDIA_CARD_URI || r.uri.startsWith(`${MEDIA_CARD_URI}-`));
+  }
+  return undefined;
+}
+
 export function getUiResource(
   uri: string,
   opts: UiResourceOptions = { profile: "full", cardV2: false },
 ): UiResourceEntry | undefined {
-  return uiResourcesFor(opts).find((r) => r.uri === uri);
+  return resolveUiResource(uiResourcesFor(opts), uri);
 }
 
 // --- Tool _meta -------------------------------------------------------------

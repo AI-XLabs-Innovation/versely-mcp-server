@@ -5,6 +5,7 @@ import { jsonResult, mediaResult } from "./_helpers.js";
 import { SYNC_TIMEOUT_MS } from "../client.js";
 import { isMusicModelName, isSoundEffectModelName } from "./audio.js";
 import { GEMINI_VOICE_IDS } from "./voices.js";
+import { checkAvatarRequest } from "./avatars.js";
 import { resolveCanonicalModel } from "./_modelResolver.js";
 import {
   PLUGIN_CREDITS_NOTE,
@@ -14,6 +15,7 @@ import {
   loadCatalogModels,
   loadPluginCatalog,
   loadPluginModel,
+  pricingHint,
   MCP_ROUTED_AUDIO,
   mcpRoutedAudioModels,
   modesFromCategories,
@@ -133,7 +135,9 @@ const FIND_MODELS_OPENAI = defineVariant({
     "latest independent leaderboard, with its score), with price. ALWAYS call this before the generate tools and " +
     "pass an entry's `name` as `model`; never guess one. `free_trial: true` marks the models an account on the free " +
     "trial can use: when `on_free_trial` is true, generate ONLY with those (the list `free_trial_models` gives their " +
-    "exact names), though you may still describe any model. Other accounts can use any model. For a model's inputs " +
+    "exact names), though you may still describe any model. Other accounts can use any model. `credits` is the " +
+    "starting price; a model with `credits_per_second` is billed per second of output (a 30-second video costs 30 × " +
+    "that), so quote it that way. For a model's inputs " +
     "call versely_get_model_inputs with its name. " +
     PLUGIN_CREDITS_NOTE,
   inputSchema: z.object({
@@ -196,6 +200,7 @@ const FIND_MODELS_OPENAI = defineVariant({
           credits: m.credits,
           ...(typeof pm.minCredits === "number" ? { min_credits: pm.minCredits } : {}),
           ...(typeof pm.maxCredits === "number" ? { max_credits: pm.maxCredits } : {}),
+          ...pricingHint(m.price_matrix),
           requires_image: Boolean(m.requires_image),
           ...(m.released_at ? { released_at: m.released_at } : {}),
           free_trial: trialOk,
@@ -244,7 +249,7 @@ const versely_find_models = defineTool({
   description:
     "Discover AI models for image / video / audio / lipsync generation. ALWAYS call this before versely_generate_image / _video / _audio / _lipsync — guessing leads to 'Model not supported'.\n\n" +
     "Pass the returned `name` (or `slug`) to the generate tools. `display_name`, when present, is only a human label — the dispatcher does not accept it.\n\n" +
-    "`credits` is indicative RELATIVE cost, not the amount you'll be charged — see credits_note in the response. Models with `min_credits`/`max_credits` are priced per resolution/duration.\n\n" +
+    "`credits` is indicative RELATIVE cost, not the amount you'll be charged — see credits_note in the response. Models with `min_credits`/`max_credits` are priced per resolution/duration; `credits_per_second` means the model bills per second of output, and `credits` is then only its minimum.\n\n" +
     "Feature models (upscale, background removal, colorization) and unsupported-surface models (storyboard, inpainting) are excluded by default — they have dedicated tools (versely_upscale_image / versely_upscale_video / versely_remove_background / versely_colorize_photo) and would fail here. Set include_feature_models to see them.",
   inputSchema: z.object({
     type: z
@@ -371,6 +376,7 @@ const versely_find_models = defineTool({
         credits: m.credits,
         ...(minCredits !== undefined ? { min_credits: minCredits } : {}),
         ...(maxCredits !== undefined ? { max_credits: maxCredits } : {}),
+        ...pricingHint(m.price_matrix),
         ...(m.is_discounted
           ? {
               is_discounted: true,
@@ -1009,9 +1015,12 @@ const LIPSYNC_DESCRIPTION =
   "`model` is required. What the models take (versely_get_model_inputs has the details):\n" +
   "• A photo that speaks: image_url + audio_url (Kling Avatar, VEED Fabric, Wan 2.2 Speech, HeyGen Image to Video, LTX Audio to Video).\n" +
   "• A video whose mouth is re-synced to new speech: video_url + audio_url (Sync Lipsync 2.0 / Pro, Sync React 1, Kling Lipsync, VEED Lipsync).\n" +
-  "• A stock avatar: avatar_id + audio_url, or avatar_id + script (Veed Avatars, HeyGen Avatar V3 / V5, Avatar X).\n" +
-  "A voiceover from versely_generate_audio works as audio_url. Spends the user's Versely credits; the inline card " +
-  "updates itself when it finishes.";
+  "• A stock avatar speaking a script: Veed Avatars (avatar_id + script), HeyGen Avatar V3 / V5 (avatar_id + voice_id + " +
+  "script), Avatar X Text to Video (avatar_id + a 50-1,500 character script). Pick the avatar (and HeyGen voice) with " +
+  "versely_list_avatars: never leave it out.\n" +
+  "A voiceover from versely_generate_audio works as audio_url. Avatar and lip-sync models are billed per second of " +
+  "video (credits_per_second in versely_find_models), so a longer script costs more. Spends the user's Versely " +
+  "credits; the inline card updates itself when it finishes.";
 
 const versely_generate_lipsync = defineTool({
   name: "versely_generate_lipsync",
@@ -1062,6 +1071,8 @@ const versely_generate_lipsync = defineTool({
       body.frames_per_second ??= "30";
     }
     if (LIPSYNC_RESOLUTION_REQUIRED.has(model) && !body.resolution) body.resolution = "HD";
+    // Before any charge: an avatar model without its avatar / voice / script.
+    await checkAvatarRequest(ctx, model, body);
     // /generate/video, like the app: /generate/lipsync has no route for Kling
     // Avatar Pro or the LTX audio-to-video models, which it answered with
     // "not available in any provider".

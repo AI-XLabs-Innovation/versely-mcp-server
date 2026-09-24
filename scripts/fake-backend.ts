@@ -89,7 +89,13 @@ const CATALOG: Record<string, Array<Record<string, unknown>>> = {
     { slug: "minimax-speech", name: "Minimax Speech", content_type: "audio", categories: ["text-to-audio"], credits: 2, is_runpod_discounted: true },
     { slug: "eleven-labs-turbo", name: "Eleven Labs Speech Turbo", content_type: "audio", categories: ["text-to-audio"], credits: 4, is_runpod_discounted: false },
   ],
-  lipsync: [],
+  lipsync: [
+    {
+      slug: "veed-avatars", name: "Veed Avatars", content_type: "lipsync", categories: ["text-to-lipsync"], credits: 3,
+      is_runpod_discounted: false,
+      price_matrix: { perSecond: true, unit: "second", billingType: "per_second", minCredits: 3, maxCredits: 56, options: [{ key: "default", full: 1, discounted: 1 }] },
+    },
+  ],
 };
 
 const GEMINI_38 = {
@@ -343,6 +349,23 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- stock avatars (avatar.controller: VEED = preview URLs named by id) ---
+    if (method === "GET" && path === "/api/v1/avatar") {
+      return send(res, 200, {
+        success: true,
+        data: [
+          "https://avatars.versely.studio/veed-avatars-2/emily_vertical_primary.png",
+          "https://avatars.versely.studio/veed-avatars-2/marcus_primary.png",
+        ],
+      });
+    }
+    if (method === "GET" && path === "/api/v1/avatar/heygen") {
+      return send(res, 200, { success: true, data: [{ avatar_id: "abigail_1", name: "Abigail", gender: "female", preview_image_url: null }] });
+    }
+    if (method === "GET" && path === "/api/v1/avatar/heygen/voices") {
+      return send(res, 200, { success: true, data: [{ voice_id: "sara_1", name: "Sara", language: "English", gender: "female" }] });
     }
 
     // --- billing (billing.controller's reply shapes) ---

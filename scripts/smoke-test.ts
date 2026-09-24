@@ -70,6 +70,7 @@ const OPENAI_TOOLS = [
   "versely_pause_automation", "versely_run_automation_now", "versely_delete_automation", "versely_list_automation_runs",
   "versely_generate_sound_effect",
   "versely_get_me", "versely_list_purchases", "versely_get_subscription", "versely_list_credit_history",
+  "versely_list_avatars",
 ];
 
 const failures: string[] = [];
@@ -517,6 +518,33 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   await call(openai, "versely_generate_lipsync", { model: "Kling Avatar Pro", image_url: "https://img.versely.studio/in/face.png", audio_url: "https://audio.versely.studio/in/line.mp3" });
   const lip = lastBody("/api/v1/generate/video");
   assert("generate_lipsync goes through /generate/video with the photo every way the app sends it", lip.model === "Kling Avatar Pro" && Array.isArray(lip.image_urls) && lip.img_url === "https://img.versely.studio/in/face.png" && backend.count((r) => r.path === "/api/v1/generate/lipsync") === 0, JSON.stringify(lip));
+  // Avatars: the list offers exactly the ids fal accepts (previews where the
+  // bucket has one), and an avatar model without its avatar is refused before
+  // any charge (fal used to take it, queue it and 422 it: 2026-09-24).
+  const veed = JSON.parse(textOf(await call(openai, "versely_list_avatars", { model: "Veed Avatars" }))) as { total: number; avatars: Array<{ id: string; preview_image_url: string | null }> };
+  const emily = veed.avatars.find((a) => a.id === "emily_vertical_primary");
+  assert("list_avatars (Veed) offers the 28 ids fal accepts, with previews", veed.total === 28 && emily?.preview_image_url === "https://avatars.versely.studio/veed-avatars-2/emily_vertical_primary.png", JSON.stringify(veed).slice(0, 300));
+  const hey = JSON.parse(textOf(await call(openai, "versely_list_avatars", { model: "HeyGen Avatar V5" }))) as { avatars: unknown[]; voices: unknown[] };
+  assert("list_avatars (HeyGen) returns avatars and voices", hey.avatars.length === 1 && hey.voices.length === 1, JSON.stringify(hey));
+  const videoPosts = () => backend.count((r) => r.method === "POST" && r.path === "/api/v1/generate/video");
+  const postsBefore = videoPosts();
+  const noAvatar = await call(openai, "versely_generate_lipsync", { model: "Veed Avatars", script: "Hello there, this is a test script." });
+  assert("Veed Avatars without avatar_id is refused before any charge", noAvatar.isError === true && textOf(noAvatar).includes("versely_list_avatars") && videoPosts() === postsBefore, textOf(noAvatar));
+  const badAvatar = await call(openai, "versely_generate_lipsync", { model: "Veed Avatars", script: "Hello there, again.", avatar_id: "default" });
+  assert("an unknown Veed avatar is refused", badAvatar.isError === true && textOf(badAvatar).includes("is not a Veed avatar") && videoPosts() === postsBefore, textOf(badAvatar));
+  await call(openai, "versely_generate_lipsync", { model: "Veed Avatars", script: "Hello there, a real one.", avatar_id: "emily_vertical_primary" });
+  const veedBody = lastBody("/api/v1/generate/video");
+  assert("a complete Veed Avatars request sends avatar_id and the script as prompt", veedBody.avatar_id === "emily_vertical_primary" && veedBody.prompt === "Hello there, a real one.", JSON.stringify(veedBody));
+  const fmLip = JSON.parse(textOf(await call(openai, "versely_find_models", { type: "lipsync" }))) as { models: Array<{ name: string; credits_per_second?: number }> };
+  assert("find_models shows the per-second price", fmLip.models.find((m) => m.name === "Veed Avatars")?.credits_per_second === 1, JSON.stringify(fmLip.models));
+  // ChatGPT caches widget templates by URI, so its tools point at the hashed
+  // card URI; claude.ai keeps the plain one.
+  const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;
+  const openaiUris = [...new Set(oTools.map(uriOf).filter(Boolean))];
+  const listedUris = (await openai.listResources()).resources.map((r) => r.uri);
+  assert("ChatGPT tools point at the hashed card URI that resources/list serves", openaiUris.length === 1 && openaiUris[0]!.startsWith("ui://versely/media-card-") && listedUris.includes(openaiUris[0]!), JSON.stringify({ openaiUris, listedUris }));
+  const fullUris = [...new Set(fullTools.map(uriOf).filter(Boolean))];
+  assert("claude.ai tools keep the plain card URI", fullUris.length === 1 && fullUris[0] === "ui://versely/media-card", JSON.stringify(fullUris));
   // Account: ChatGPT reads status and history; plans, checkout and the
   // subscription lifecycle are Claude-only (OpenAI's commerce rules).
   const openaiNames = new Set(oTools.map((t) => t.name));
@@ -540,7 +568,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   };
   const catalogNames = new Set(PLUGIN_MODELS.map((m) => m.name));
   const fmNames = fm.models.map((m) => m.name).sort().join(",");
-  assert("find_models (openai) lists every catalog model", fmNames === "Eleven Labs Speech Turbo,Flux Pro Ultra,Gemini 3.8 Flash TTS,Minimax Speech,Seedream 4 Text to Image,Sora 2,Wan 2.5 Preview", fmNames);
+  assert("find_models (openai) lists every catalog model", fmNames === "Eleven Labs Speech Turbo,Flux Pro Ultra,Gemini 3.8 Flash TTS,Minimax Speech,Seedream 4 Text to Image,Sora 2,Veed Avatars,Wan 2.5 Preview", fmNames);
   assert("find_models (openai) marks free_trial exactly for the plugin-catalog models", fm.models.every((m) => m.free_trial === catalogNames.has(m.name)), JSON.stringify(fm.models));
   assert("find_models (openai) with an API key is not on the free trial", fm.on_free_trial === false && fm.free_trial_models === undefined);
   const inputs = JSON.parse(textOf(await call(openai, "versely_get_model_inputs", { model: "Wan 2.5 Preview" }))) as Record<string, unknown>;
@@ -618,7 +646,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   );
   assert(
     "find_models marks free_trial from the catalog RunPod flag when the plugin catalog 404s",
-    fallback.models.length === 7 &&
+    fallback.models.length === 8 &&
       fallback.models.filter((m) => m.free_trial).map((m) => m.name).sort().join(",") === "Minimax Speech,Seedream 4 Text to Image,Wan 2.5 Preview",
     JSON.stringify(fallback.models),
   );
