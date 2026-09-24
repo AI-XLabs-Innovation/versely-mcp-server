@@ -121,6 +121,7 @@ export async function startFakeBackend(opts: {
   const requests: RecordedRequest[] = [];
   let pluginCatalog = true;
   let seq = 0;
+  const socialPosts: Array<Record<string, unknown>> = [];
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -300,6 +301,39 @@ export async function startFakeBackend(opts: {
     const dub = /^\/api\/v1\/dubbing\/([^/]+)$/.exec(path);
     if (method === "GET" && dub) {
       return send(res, 200, { project: { id: dub[1], status: "dubbing", media_type: "video", target_langs: ["es"] } });
+    }
+
+    // --- social posting (the real contract: publish answers with Post for Me's id) ---
+    if (method === "GET" && path === "/api/v1/social/auth-url") {
+      const platform = rec.query.platform ?? "";
+      return send(res, 200, { success: true, url: `https://connect.postforme.test/${platform}?state=abc` });
+    }
+    if (method === "GET" && path === "/api/v1/social/accounts") {
+      return send(res, 200, {
+        success: true,
+        accounts: [{ id: "acct-db-1", external_account_id: "spc_ext_1", platform: "tiktok", username: "smoke", is_active: true }],
+      });
+    }
+    if (method === "POST" && path === "/api/v1/social/posts") {
+      seq += 1;
+      const ext = `sp_ext_${seq}`;
+      socialPosts.unshift({ id: `post-db-${seq}`, external_post_id: ext, text: b.caption, status: "processing", platforms: ["tiktok"] });
+      return send(res, 200, {
+        success: true,
+        post: { id: ext, caption: b.caption, status: "processing", platforms: ["tiktok"] },
+        credits_charged: 1,
+      });
+    }
+    if (method === "GET" && path === "/api/v1/social/posts") {
+      return send(res, 200, { success: true, posts: socialPosts.slice(0, Number(rec.query.limit ?? 20)) });
+    }
+    const socialPost = /^\/api\/v1\/social\/posts\/([^/]+)$/.exec(path);
+    if (socialPost && (method === "PATCH" || method === "DELETE" || method === "GET")) {
+      const row = socialPosts.find((p) => p.id === decodeURIComponent(socialPost[1]!));
+      if (!row) return send(res, 404, { success: false, error: "Post not found" });
+      if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
+      if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
+      return send(res, 200, { success: true, post: row, results: [] });
     }
 
     return send(res, 404, { success: false, error: `fake backend: no route for ${method} ${path}` });

@@ -21,11 +21,11 @@
 //   publish reaches third-party platforms (open world)
 // A row can override single hints (e.g. social connect/disconnect are open-world).
 //
-// The openai set is deliberately: generation + editing that lands in the
-// user's own library, the reads needed to drive it, and nothing that posts
-// anywhere. Adding a tool to the plugin later is a one-word change here, but it
-// goes out without re-review, so check its description and schema against the
-// RunPod-only rule first (see server.ts, openai profile shaping).
+// The openai set: generation + editing that lands in the user's own library,
+// the reads needed to drive it, and (owner, 2026-09-24) social posting to the
+// accounts the user connects. Adding a tool to the plugin is a one-word change
+// here, but it goes out without re-review, so check its description and schema
+// against the free-trial rule first (see server.ts, openai profile shaping).
 
 import type { Profile } from "../profiles.js";
 
@@ -326,9 +326,10 @@ const ROWS: Record<string, Row> = {
     inv: ["Loading the video", "Loaded the video"],
   },
 
-  // ── Social (full profile only — no posting from the plugin) ─────────────
+  // ── Social posting (both profiles; owner, 2026-09-24) ───────────────────
   versely_get_social_auth_url: {
-    title: "Connect social account", cls: "create", what: "social-account connection link", spends: false,
+    title: "Connect social account", cls: "create", what: "social-account connection link", spends: false, openai: true,
+    inv: ["Creating a connect link", "Connect link ready"],
     hints: { openWorldHint: true },
     why: {
       readOnly: "Creates a sign-in link for connecting one of the user's social accounts to Versely.",
@@ -336,35 +337,76 @@ const ROWS: Record<string, Row> = {
       openWorld: "The link leads to a third-party social platform's sign-in page.",
     },
   },
-  versely_list_social_accounts: { title: "List social accounts", cls: "read", what: "the social accounts the user connected" },
+  versely_list_social_accounts: {
+    title: "List social accounts", cls: "read", what: "the social accounts the user connected", openai: true,
+    inv: ["Loading your social accounts", "Loaded your social accounts"],
+  },
   versely_refresh_social_accounts: {
-    title: "Refresh social accounts", cls: "edit", what: "connected social accounts",
+    title: "Refresh social accounts", cls: "edit", what: "connected social accounts", openai: true,
+    inv: ["Linking your social accounts", "Social accounts linked"],
     hints: { destructiveHint: false, openWorldHint: true, idempotentHint: true },
     why: {
-      readOnly: "Refreshes the sign-in tokens and account details Versely stores for the user's connected social accounts.",
-      destructive: "Only updates stored account details; nothing is posted or deleted.",
-      openWorld: "Contacts the connected social platforms to refresh tokens and account details.",
+      readOnly: "Links newly connected social accounts to the user's Versely account and refreshes the stored names and pictures.",
+      destructive: "Only adds or updates stored account details; nothing is posted or deleted.",
+      openWorld: "Reads the user's connected accounts from the social-posting provider.",
     },
   },
   versely_disconnect_social_account: {
-    title: "Disconnect social account", cls: "delete", what: "social account connection",
+    title: "Disconnect social account", cls: "delete", what: "social account connection", openai: true,
+    inv: ["Disconnecting the account", "Account disconnected"],
     hints: { openWorldHint: true },
     why: {
       readOnly: "Disconnects one of the user's social accounts from Versely.",
       destructive: "Removes the connection; the user must reconnect before Versely can post there again.",
-      openWorld: "Revokes Versely's access at the third-party social platform.",
+      openWorld: "Stops Versely from posting to that third-party social account.",
     },
   },
   versely_preview_post: {
-    title: "Preview social post", cls: "read", what: "a preview of a social post",
+    title: "Preview social post", cls: "read", what: "a preview of a social post", openai: true,
+    inv: ["Previewing your post", "Post previewed"],
     why: {
       readOnly: "Only renders a preview of a post; nothing is published, saved or charged.",
       openWorld: "Nothing is posted; the preview is returned only to the user.",
     },
   },
-  versely_publish_post: { title: "Publish social post", cls: "publish", what: "a post (caption and media)" },
-  versely_list_posts: { title: "List social posts", cls: "read", what: "the user's social posts" },
-  versely_get_post: { title: "Get social post", cls: "read", what: "one of the user's social posts and its links" },
+  versely_publish_post: {
+    title: "Publish social post", cls: "publish", what: "a post (caption and media)", openai: true,
+    inv: ["Publishing your post", "Post sent"],
+    why: {
+      readOnly:
+        "Publishes (or schedules) a post from the user's Versely account to the social accounts they connected, and spends the user's Versely credits for each account.",
+    },
+  },
+  versely_list_posts: {
+    title: "List social posts", cls: "read", what: "the user's social posts", openai: true,
+    inv: ["Loading your posts", "Loaded your posts"],
+  },
+  versely_get_post: {
+    title: "Get social post", cls: "read", what: "one of the user's social posts and its links", openai: true,
+    inv: ["Loading the post", "Loaded the post"],
+  },
+  versely_update_post: {
+    title: "Reschedule social post", cls: "edit", what: "scheduled social post", openai: true,
+    inv: ["Updating the post", "Post updated"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Changes the time and/or caption of one of the user's scheduled posts; no extra credits are spent.",
+      destructive: "Replaces the post's earlier time and caption.",
+      openWorld: "Updates the scheduled post at the social-posting provider that will publish it.",
+    },
+  },
+  versely_delete_post: {
+    title: "Delete social post", cls: "delete", what: "social post", openai: true,
+    inv: ["Deleting the post", "Post deleted"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly:
+        "Deletes one of the user's social posts from Versely; a post that is still scheduled is cancelled and its credits refunded.",
+      destructive: "Permanently removes the post from Versely; a cancelled scheduled post is never published.",
+      openWorld:
+        "Cancels the scheduled post at the social-posting provider. Posts already published stay live on the platforms.",
+    },
+  },
 
   // ── Job status ──────────────────────────────────────────────────────────
   versely_get_task_status: {

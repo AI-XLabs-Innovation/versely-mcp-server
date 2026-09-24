@@ -2,8 +2,10 @@
 //
 //   full   - everything (claude.ai, Claude Code, Cursor, vsk_ API-key users).
 //   openai - the curated ChatGPT-plugin set: creation tools that write to the
-//            user's private Versely library, no social posting, no workflows,
-//            and only RunPod-served models (see tools/_policy.ts).
+//            user's private Versely library, social posting to the accounts
+//            the user connects, and read-only account details
+//            (see tools/_policy.ts). Free-trial accounts are limited to
+//            RunPod-served models by the backend.
 //
 // ChatGPT is identified by the signed `ck: "openai"` claim the backend puts in
 // the OAuth access tokens it issues to ChatGPT. That claim is sticky: a
@@ -87,7 +89,10 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "versely_find_models, free_account in versely_get_credits) spends free plugin credits and can generate " +
   "images, videos and voiceovers only with models marked free_trial; if the user asks for another model, " +
   "say it isn't included in the free trial and suggest the best free_trial one. Other features return a " +
-  "message saying they are unavailable, and nothing is charged for them. Do not offer or link to credit purchases.";
+  "message saying they are unavailable, and nothing is charged for them. Do not offer or link to credit purchases. " +
+  "Social posting: to connect an account, give the user the link from versely_get_social_auth_url; once they " +
+  "say they connected, call versely_refresh_social_accounts, then versely_list_social_accounts for the account " +
+  "ids. Confirm the caption, media and accounts with the user before versely_publish_post.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

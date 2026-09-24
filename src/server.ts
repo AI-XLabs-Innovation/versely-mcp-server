@@ -187,7 +187,9 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
   }
   applyParamDescriptions(schema, variant?.params, tool.name);
 
-  const dedupe = policy.class === "create" && config.dedupeProfiles.has(profile);
+  // Publishing is guarded too: a re-sent publish would post twice, publicly.
+  const dedupe =
+    (policy.class === "create" || policy.class === "publish") && config.dedupeProfiles.has(profile);
   if (dedupe) injectConfirmRepeat(schema);
 
   const appsUi = !config.disableAppsUi;
@@ -372,8 +374,8 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
     const entry = catalog.tools.get(name);
     if (!entry) {
       // Tools outside the caller's profile are indistinguishable from
-      // tools that don't exist: a ChatGPT token can't reach social posting
-      // just by knowing the name.
+      // tools that don't exist: a ChatGPT token can't reach a full-profile
+      // tool just by knowing the name.
       return errorResult(`Unknown tool: ${name}`) as CallToolResult;
     }
     return (await callTool(entry, args, _meta)) as CallToolResult;

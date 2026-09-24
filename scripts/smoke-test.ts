@@ -52,6 +52,9 @@ const OPENAI_TOOLS = [
   "versely_add_movie_scene", "versely_update_movie_scene", "versely_regenerate_scene", "versely_cancel_movie",
   "versely_create_dub", "versely_get_dub", "versely_list_dubs", "versely_delete_dub",
   "versely_list_user_media", "versely_delete_generation", "versely_generate_lipsync",
+  "versely_get_social_auth_url", "versely_list_social_accounts", "versely_refresh_social_accounts",
+  "versely_disconnect_social_account", "versely_preview_post", "versely_publish_post", "versely_list_posts",
+  "versely_get_post", "versely_update_post", "versely_delete_post",
 ];
 
 const failures: string[] = [];
@@ -432,8 +435,23 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("openai resource sets prefersBorder explicitly", oMeta.ui?.prefersBorder === false);
   assert("openai profile serves the v2 card", String((oCard.contents[0] as { text?: string }).text ?? "").includes("version: '2.0.0'"));
 
-  const outOfProfile = await call(openai, "versely_publish_post", { caption: "x", account_ids: ["a"] });
+  const outOfProfile = await call(openai, "versely_list_api_key_scopes", {});
   assert("out-of-profile call is refused", outOfProfile.isError === true && textOf(outOfProfile).includes("Unknown tool"));
+
+  // Social posting: the connect link is in the text, publish hands back
+  // Versely's own post id, and a re-sent publish never posts twice.
+  const link = await call(openai, "versely_get_social_auth_url", { platform: "twitter" });
+  assert("get_social_auth_url puts the connect link in the text", textOf(link).includes("https://connect.postforme.test/x?state=abc") && !link.isError, textOf(link));
+  assert("openai hides get_social_auth_url.redirect_url", !("redirect_url" in (byName(oTools, "versely_get_social_auth_url")?.inputSchema.properties ?? {})));
+  const pubArgs = { caption: "smoke post", account_ids: ["acct-db-1"], media_urls: ["https://videos.versely.studio/out/a.mp4"] };
+  const pub1 = JSON.parse(textOf(await call(openai, "versely_publish_post", pubArgs))) as { post_id?: string; post?: { id?: string; external_post_id?: string } };
+  assert("publish_post returns Versely's post id", typeof pub1.post_id === "string" && pub1.post_id.startsWith("post-db-") && pub1.post?.id === pub1.post_id && String(pub1.post?.external_post_id).startsWith("sp_ext_"), JSON.stringify(pub1));
+  const before = backend.count((r) => r.method === "POST" && r.path === "/api/v1/social/posts");
+  const pub2 = await call(openai, "versely_publish_post", pubArgs);
+  const after = backend.count((r) => r.method === "POST" && r.path === "/api/v1/social/posts");
+  assert("a re-sent publish_post is not posted twice", after === before && textOf(pub2).includes("confirm_repeat"), `posts ${before} -> ${after}`);
+  const del = JSON.parse(textOf(await call(openai, "versely_delete_post", { post_id: String(pub1.post_id) }))) as { refunded?: number };
+  assert("delete_post reaches the post by Versely's id", del.refunded === 1, JSON.stringify(del));
 
   // Every model, ranked; free_trial marks exactly the plugin-catalog (RunPod) ones.
   const fm = JSON.parse(textOf(await call(openai, "versely_find_models", {}))) as {
@@ -507,7 +525,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const jwt = mintJwt(backend.url, { ck: "openai" });
   const chatgpt = await connect(`${MCP_URL}?profile=full`, jwt);
   const cTools = (await chatgpt.listTools()).tools as AnyTool[];
-  assert("a ck:\"openai\" JWT gets the openai profile even with ?profile=full", cTools.length === OPENAI_TOOLS.length && !cTools.some((t) => t.name === "versely_publish_post"), `${cTools.length} tools`);
+  assert("a ck:\"openai\" JWT gets the openai profile even with ?profile=full", cTools.length === OPENAI_TOOLS.length && !cTools.some((t) => t.name === "versely_list_api_key_scopes"), `${cTools.length} tools`);
   const credits = JSON.parse(textOf(await call(chatgpt, "versely_get_credits", {}))) as Record<string, unknown>;
   assert("get_credits (openai) reports the plugin block", credits.free_account === true && credits.plugin_free_credits === 87 && credits.credits === 0, JSON.stringify(credits));
   assert("get_credits (openai) never shows trial / trial_offer", !("trial" in credits) && !("trial_offer" in credits));
