@@ -1705,6 +1705,7 @@ const PICKER_CSP = {
   resourceDomains: [
     ...MEDIA_CARD_CSP.resourceDomains,
     "https://templates.versely.studio",
+    "https://media.brand.dev",
     "https://files2.heygen.ai",
     "https://resource.heygen.ai",
     "https://static.heygen.ai",

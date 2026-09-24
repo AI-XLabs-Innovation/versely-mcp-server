@@ -229,7 +229,7 @@ const PICKER_HTML = String.raw`<!doctype html>
       inner = '<video src="' + esc(it.video) + '" muted loop playsinline preload="metadata" referrerpolicy="no-referrer"' +
         (it.image ? ' poster="' + esc(it.image) + '"' : '') + ' data-hover></video>';
     } else if (it.image) {
-      inner = '<img src="' + esc(it.image) + '" alt="' + esc(it.title) + '" loading="lazy" referrerpolicy="no-referrer"/>';
+      inner = '<img src="' + esc(it.image) + '" alt="" data-initial="' + esc(String(it.title || '?').charAt(0).toUpperCase()) + '" loading="lazy" referrerpolicy="no-referrer"/>';
     } else {
       inner = '<div class="noimg">' + esc(String(it.title || '?').charAt(0).toUpperCase()) + '</div>';
     }
@@ -298,6 +298,17 @@ const PICKER_HTML = String.raw`<!doctype html>
     if (s2) { s2.focus(); try { s2.setSelectionRange(pos, pos); } catch (e) {} }
   }
   function bindItems(items) {
+    // A preview the host blocks or that is gone (brand logos live on each
+    // brand's own site) becomes the initial-letter tile, never a broken image.
+    var covers = root.querySelectorAll('.media > img');
+    for (var c = 0; c < covers.length; c++) {
+      covers[c].addEventListener('error', function () {
+        var tile = document.createElement('div');
+        tile.className = 'noimg';
+        tile.textContent = this.getAttribute('data-initial') || '?';
+        if (this.parentNode) this.parentNode.replaceChild(tile, this);
+      });
+    }
     var buttons = root.querySelectorAll('[data-pick]');
     for (var i = 0; i < buttons.length; i++) {
       buttons[i].addEventListener('click', function () { choose(items[Number(this.getAttribute('data-pick'))]); });
