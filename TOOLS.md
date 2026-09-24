@@ -1478,12 +1478,11 @@ _10 tools_
 
 **Connect social account** · create (open-world) · also in the ChatGPT plugin
 
-Get a link the user opens to connect one of their social accounts (Instagram, TikTok, YouTube, X, Facebook, LinkedIn, Pinterest, Threads, Bluesky) to Versely, so Versely can post there. Show the link to the user as a clickable link. After they say they finished connecting, call versely_refresh_social_accounts, then versely_list_social_accounts to get the new account's id.
+Get a link the user opens to connect one of their social accounts (Instagram, TikTok, YouTube, X, Facebook, LinkedIn, Pinterest, Threads, Bluesky) to Versely, so Versely can post there. Show the link to the user as a clickable link; it opens the platform's own sign-in page. Instagram needs a professional (Business or Creator) account. After they say they finished connecting, call versely_refresh_social_accounts, then versely_list_social_accounts to get the new account's id.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `platform` | enum("instagram" \| "tiktok" \| "youtube" \| "x" \| "twitter" \| "facebook" \| "linkedin" \| "pinterest" \| "threads" \| "bluesky") | **yes** | Which platform to connect. |
-| `redirect_url` | string (url) | — | Where to send the user after they connect. Defaults to Versely's accounts page. |
 
 ### `versely_list_social_accounts`
 

@@ -69,26 +69,27 @@ const MEDIA_RULES =
   "Media rules: YouTube takes video only; TikTok takes one video or pictures, never both; " +
   "Instagram needs an image or a video; X and Bluesky post at most 4 pictures.";
 
+const AFTER_CONNECT =
+  "When the user says they are done, call versely_refresh_social_accounts so the account is linked to their " +
+  "Versely account, then versely_list_social_accounts for its id.";
+
+// No redirect_url: Post for Me ignores one on Versely's (Quickstart) project -
+// where the user lands after approving is the project redirect URL set in the
+// Post for Me dashboard, for the web and the app alike.
 const versely_get_social_auth_url = defineTool({
   name: "versely_get_social_auth_url",
   description:
     "Get a link the user opens to connect one of their social accounts (Instagram, TikTok, YouTube, X, " +
     "Facebook, LinkedIn, Pinterest, Threads, Bluesky) to Versely, so Versely can post there. Show the link " +
-    "to the user as a clickable link. After they say they finished connecting, call " +
+    "to the user as a clickable link; it opens the platform's own sign-in page. Instagram needs a professional " +
+    "(Business or Creator) account. After they say they finished connecting, call " +
     "versely_refresh_social_accounts, then versely_list_social_accounts to get the new account's id.",
   inputSchema: z.object({
     platform: z.enum(CONNECTABLE).describe("Which platform to connect."),
-    redirect_url: z
-      .string()
-      .url()
-      .optional()
-      .describe("Where to send the user after they connect. Defaults to Versely's accounts page."),
   }),
   handler: async (input, ctx) => {
     const platform = input.platform === "twitter" ? "x" : input.platform;
-    const data = await ctx.client.get<{ url?: string }>("/api/v1/social/auth-url", {
-      query: { platform, redirect_url: input.redirect_url },
-    });
+    const data = await ctx.client.get<{ url?: string }>("/api/v1/social/auth-url", { query: { platform } });
     const url = typeof data?.url === "string" ? data.url : "";
     if (!url) return jsonResult(data);
     const label = PLATFORM_LABELS[platform] ?? platform;
@@ -98,15 +99,15 @@ const versely_get_social_auth_url = defineTool({
           type: "text",
           text:
             `Connect link for ${label}: ${url}\n\n` +
-            `Give the user this link to open and sign in to ${label}. When they say they are done, call ` +
-            `versely_refresh_social_accounts so the account is linked to their Versely account, then ` +
-            `versely_list_social_accounts for its id.`,
+            `Give the user this link to open and sign in to ${label}` +
+            (platform === "instagram" ? " (a Business or Creator account)" : "") +
+            `. ${AFTER_CONNECT}`,
         },
       ],
-      structuredContent: { platform, url },
+      // The next step rides here too: some clients give the model structuredContent alone.
+      structuredContent: { platform, url, next: AFTER_CONNECT },
     };
   },
-  openai: { hide: ["redirect_url"] },
 });
 
 const versely_list_social_accounts = defineTool({

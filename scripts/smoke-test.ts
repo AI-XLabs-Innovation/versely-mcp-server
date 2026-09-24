@@ -476,7 +476,11 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   // Versely's own post id, and a re-sent publish never posts twice.
   const link = await call(openai, "versely_get_social_auth_url", { platform: "twitter" });
   assert("get_social_auth_url puts the connect link in the text", textOf(link).includes("https://connect.postforme.test/x?state=abc") && !link.isError, textOf(link));
-  assert("openai hides get_social_auth_url.redirect_url", !("redirect_url" in (byName(oTools, "versely_get_social_auth_url")?.inputSchema.properties ?? {})));
+  // Post for Me ignores a redirect on Versely's project, so no profile offers one.
+  assert("get_social_auth_url offers no redirect_url (Post for Me ignores it)", !("redirect_url" in (byName(oTools, "versely_get_social_auth_url")?.inputSchema.properties ?? {})) && !("redirect_url" in (byName(fullTools, "versely_get_social_auth_url")?.inputSchema.properties ?? {})) && backend.requests.filter((r) => r.path === "/api/v1/social/auth-url").every((r) => r.query.redirect_url === undefined));
+  const linkFull = await call(full, "versely_get_social_auth_url", { platform: "instagram" });
+  const linkSc = linkFull.structuredContent as { url?: string; next?: string } | undefined;
+  assert("the connect link result carries the next step for clients that show only structured data", typeof linkSc?.url === "string" && String(linkSc?.next).includes("versely_refresh_social_accounts") && textOf(linkFull).includes("Business or Creator"), JSON.stringify(linkSc));
   const pubArgs = { caption: "smoke post", account_ids: ["acct-db-1"], media_urls: ["https://videos.versely.studio/out/a.mp4"] };
   const pub1 = JSON.parse(textOf(await call(openai, "versely_publish_post", pubArgs))) as { post_id?: string; post?: { id?: string; external_post_id?: string } };
   assert("publish_post returns Versely's post id", typeof pub1.post_id === "string" && pub1.post_id.startsWith("post-db-") && pub1.post?.id === pub1.post_id && String(pub1.post?.external_post_id).startsWith("sp_ext_"), JSON.stringify(pub1));
