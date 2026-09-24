@@ -1367,11 +1367,18 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
     scheduleNextPoll();
   }
 
-  function cardStateFromResult(result) {
+  // Accepts every shape a host hands back for a tool call: the MCP result,
+  // one wrapped in { result }, or that result serialized to a string.
+  function cardStateFromResult(result, depth) {
+    if (typeof result === 'string') {
+      try { result = JSON.parse(result); } catch (e) { return null; }
+    }
     if (!result || typeof result !== 'object') return null;
-    var meta = result._meta && result._meta[CARD_META_KEY];
+    var metaObj = result._meta || result.meta;
+    var meta = metaObj && metaObj[CARD_META_KEY];
     var sc = result.structuredContent;
     if (sc || meta) return assign(meta, sc);
+    if (result.result && !depth) return cardStateFromResult(result.result, 1);
     if (Array.isArray(result.content)) {
       for (var i = 0; i < result.content.length; i++) {
         var c = result.content[i];
@@ -1427,10 +1434,21 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
 
   // --- State ingestion ---------------------------------------------------------
   var lastInput = null;
+  var lastIngestKey = null;
   function ingest(structured, meta) {
     var cardMeta = meta && meta[CARD_META_KEY];
     if (!structured && !cardMeta) return;
+    // Hosts re-deliver the same tool output (ChatGPT on every
+    // openai:set_globals, which the card's own resize fires once it has
+    // finished). Taking it again reset the finished card to "Generating" and
+    // restarted polling, in a loop, so the media never showed.
+    var key;
+    try { key = JSON.stringify([structured || null, cardMeta || null]); } catch (e) { key = null; }
+    if (key !== null && key === lastIngestKey) return;
     var next = assign(cardMeta, structured);
+    // This iframe renders one tool call, so a finished card never goes back to pending.
+    if (state && (state.status === 'completed' || state.status === 'failed') && next.status === 'pending') return;
+    lastIngestKey = key;
     if (lastInput && !next.toolArgs) next.toolArgs = lastInput;
     state = next;
     render();
@@ -1455,6 +1473,8 @@ const MEDIA_CARD_V2_HTML = String.raw`<!doctype html>
   setTimeout(reportSize, 300);
 
   // window.openai globals (ChatGPT), read once now and again on each update.
+  // openai:set_globals fires for every global (theme, maxHeight, display
+  // mode...); ingest() ignores a tool output it has already taken.
   function readOpenAiGlobals() {
     try {
       var o = window.openai;
