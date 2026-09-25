@@ -331,7 +331,8 @@ export async function startFakeBackend(opts: {
     if (method === "GET" && path === "/api/v1/social/accounts") {
       return send(res, 200, {
         success: true,
-        accounts: [{ id: "acct-db-1", external_account_id: "spc_ext_1", platform: "tiktok", username: "smoke", is_active: true }],
+        // Row bookkeeping as the real table returns it: ChatGPT must not see user_id or connected_at.
+        accounts: [{ id: "acct-db-1", external_account_id: "spc_ext_1", platform: "tiktok", username: "smoke", is_active: true, user_id: "user-smoke", connected_at: "2026-09-01T10:00:00Z", created_at: "2026-09-01T10:00:00Z", updated_at: "2026-09-20T10:00:00Z", served_provider: "postforme" }],
       });
     }
     if (method === "POST" && path === "/api/v1/social/posts") {
@@ -391,6 +392,10 @@ export async function startFakeBackend(opts: {
     }
     if (method === "GET" && path === "/api/v1/hooks/characters") {
       return send(res, 200, { success: true, characters: [{ id: "char-1", name: "Mia", status: "ready", image_url: "https://img.versely.studio/c/mia.png" }] });
+    }
+    // The real answer for an account without a subscription.
+    if (method === "GET" && path === "/api/v1/social-analytics/overview") {
+      return send(res, 403, { success: false, error: "Post analytics comes with a subscription, and with the free trial while it runs." });
     }
     const analyticsCollect = /^\/api\/v1\/social-analytics\/([^/]+)\/collect$/.exec(path);
     if (method === "POST" && analyticsCollect) return send(res, 200, { success: true });

@@ -474,6 +474,19 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
 
   // Social posting: the connect link is in the text, publish hands back
   // Versely's own post id, and a re-sent publish never posts twice.
+  // OpenAI rejects results that carry internal account ids, bookkeeping
+  // timestamps or debug detail; ChatGPT gets them cleaned, Claude unchanged.
+  const oMe = JSON.parse(textOf(await call(openai, "versely_get_me", {}))) as { user?: Record<string, unknown> };
+  const fMe = JSON.parse(textOf(await call(full, "versely_get_me", {}))) as { user?: Record<string, unknown> };
+  assert("ChatGPT never sees the internal user id; Claude still does", oMe.user?.id === undefined && oMe.user?.email === "smoke@example.com" && fMe.user?.id === "user-smoke", JSON.stringify({ oMe, fMe }));
+  const oAccts = JSON.parse(textOf(await call(openai, "versely_list_social_accounts", {}))) as { accounts?: Array<Record<string, unknown>> };
+  const acct = oAccts.accounts?.[0] ?? {};
+  assert("ChatGPT results drop user_id, provider routing and bookkeeping timestamps", !("user_id" in acct) && !("connected_at" in acct) && !("updated_at" in acct) && !("served_provider" in acct), JSON.stringify(acct));
+  assert("ChatGPT results keep the ids tools take back and when a thing was made", acct.id === "acct-db-1" && acct.external_account_id === "spc_ext_1" && acct.created_at === "2026-09-01T10:00:00Z", JSON.stringify(acct));
+  const oErr = await call(openai, "versely_get_social_analytics_overview", {});
+  const fErr = await call(full, "versely_get_social_analytics_overview", {});
+  assert("ChatGPT errors carry no backend method, path or HTTP code", oErr.isError === true && !/\/api\/v1|HTTP \d{3}|^GET /.test(textOf(oErr)) && /^[A-Z]/.test(textOf(oErr)) && /\/api\/v1/.test(textOf(fErr)), `${textOf(oErr)} || ${textOf(fErr)}`);
+
   const link = await call(openai, "versely_get_social_auth_url", { platform: "twitter" });
   assert("get_social_auth_url puts the connect link in the text", textOf(link).includes("https://connect.postforme.test/x?state=abc") && !link.isError, textOf(link));
   // Post for Me ignores a redirect on Versely's project, so no profile offers one.

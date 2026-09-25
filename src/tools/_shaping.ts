@@ -167,25 +167,136 @@ const MODEL_VISIBLE_CARD_KEYS: ReadonlySet<string> = new Set([
 
 const INLINE_PREVIEW_NOTE = /^\(\d+ of \d+ images? not shown inline/;
 
+// --- Scrubbing (openai) --------------------------------------------------------
+// OpenAI's review rejects tool results that carry "unnecessary PII,
+// telemetry/internal identifiers (for example, session, trace, or request IDs;
+// timestamps; internal account IDs; or logs)". Most tools pass the backend's
+// JSON through, so for ChatGPT it is cleaned here, at any depth. Handles the
+// tools take back stay: request_id (versely_get_task_status's input, and what
+// the card polls with), run / post / collection ids, batch_id, and
+// external_account_id (automation configs name accounts by it).
+
+/** Internal account ids, provider routing, billing internals and logs. */
+export const OPENAI_DROPPED_KEYS: ReadonlySet<string> = new Set([
+  "user_id",
+  "userId",
+  "owner_id",
+  "profile_id",
+  "created_by",
+  "updated_by",
+  "added_by",
+  "admin_id",
+  "session_id",
+  "trace_id",
+  "span_id",
+  "correlation_id",
+  "idempotency_key",
+  "served_provider",
+  "provider_endpoint",
+  "provider_request_id",
+  "held_amount",
+  "settled_amount",
+  "discount_applied",
+  "funding_source",
+  "ip",
+  "ip_address",
+  "user_agent",
+  "logs",
+  "stack",
+]);
+
+/**
+ * The timestamps a user acts on - when something was made, posted or
+ * measured, schedules, renewals and trial ends. Every other `*_at` is
+ * bookkeeping (updated_at, settled_at, connected_at, ...) and is dropped.
+ */
+export const OPENAI_KEPT_TIMESTAMPS: ReadonlySet<string> = new Set([
+  "created_at",
+  "completed_at",
+  "published_at",
+  "posted_at",
+  "fetched_at",
+  "scheduled_at",
+  "scheduled_for",
+  "start_at",
+  "starts_at",
+  "end_at",
+  "ends_at",
+  "first_at",
+  "next_run_at",
+  "last_run_at",
+  "slot_at",
+  "due_at",
+  "access_until",
+  "current_period_start",
+  "current_period_end",
+  "trial_end",
+  "trial_end_at",
+  "trial_ends_at",
+  "expires_at",
+  "cancel_at",
+  "cancels_at",
+  "renews_at",
+  "paused_until",
+  "resumes_at",
+]);
+
+function scrubValue(value: unknown, parentKey: string | null): unknown {
+  if (Array.isArray(value)) return value.map((v) => scrubValue(v, parentKey));
+  if (!value || typeof value !== "object") return value;
+  const obj = value as Json;
+  // The caller's own user record (get_me): its row id is an internal account id.
+  const isUserRecord = parentKey === "user" && typeof obj.email === "string";
+  const out: Json = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (OPENAI_DROPPED_KEYS.has(k)) continue;
+    if (k.endsWith("_at") && !OPENAI_KEPT_TIMESTAMPS.has(k)) continue;
+    if (isUserRecord && k === "id") continue;
+    out[k] = scrubValue(v, k);
+  }
+  return out;
+}
+
+export function scrubForOpenai<T>(value: T): T {
+  return scrubValue(value, null) as T;
+}
+
+/** Backend call details on an error line ("GET /api/v1/x -> HTTP 403: ") mean nothing to a user. */
+const API_TAG = /^(?:GET|POST|PUT|PATCH|DELETE) \/api\/v1\/\S*?(?: -> HTTP \d{3})?(?::\s+|\s+(?=aborted\b))/;
+
+function scrubText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.stringify(scrubForOpenai(JSON.parse(trimmed)), null, 2);
+    } catch {
+      /* not JSON after all: fall through */
+    }
+  }
+  const cleaned = text.replace(API_TAG, (m) => (/aborted/.test(text.slice(m.length, m.length + 8)) ? "The request was " : ""));
+  return cleaned === text ? text : cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
 export function shapeResultForOpenai(result: ToolResult): ToolResult {
   // No inline base64 previews: the card shows the media, and multi-MB image
   // blocks are exactly what makes a host reject a response.
-  const content = result.content.filter(
-    (b) => b.type !== "image" && !(b.type === "text" && INLINE_PREVIEW_NOTE.test(b.text)),
-  );
+  const content = result.content
+    .filter((b) => b.type !== "image" && !(b.type === "text" && INLINE_PREVIEW_NOTE.test(b.text)))
+    .map((b) => (b.type === "text" ? { ...b, text: scrubText(b.text) } : b));
   const out: ToolResult = {
     ...result,
     content: content.length > 0 ? content : [{ type: "text", text: "Done." }],
   };
+  if (result._meta) out._meta = scrubForOpenai(result._meta);
   if (result.structuredContent) {
     const visible: Json = {};
     const cardOnly: Json = {};
-    for (const [k, v] of Object.entries(result.structuredContent)) {
+    for (const [k, v] of Object.entries(scrubForOpenai(result.structuredContent))) {
       (MODEL_VISIBLE_CARD_KEYS.has(k) ? visible : cardOnly)[k] = v;
     }
     out.structuredContent = visible;
     if (Object.keys(cardOnly).length > 0) {
-      out._meta = { ...(result._meta ?? {}), [CARD_META_KEY]: cardOnly };
+      out._meta = { ...(out._meta ?? {}), [CARD_META_KEY]: cardOnly };
     }
   }
   return out;

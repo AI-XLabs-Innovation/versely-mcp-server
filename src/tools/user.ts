@@ -7,7 +7,7 @@ const Empty = z.object({});
 const versely_get_me = defineTool({
   name: "versely_get_me",
   description:
-    "Get the authenticated user's profile (id, email, name) and credit balance. Returns the full /user/me response.",
+    "Get the authenticated user's profile (email, name) and credit balance.",
   inputSchema: Empty,
   handler: async (_input, ctx) => {
     const data = await ctx.client.get("/api/v1/user/me");

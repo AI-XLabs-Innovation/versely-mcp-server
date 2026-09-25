@@ -38,7 +38,7 @@ _6 tools_
 
 **Get account profile** · read (read-only) · also in the ChatGPT plugin
 
-Get the authenticated user's profile (id, email, name) and credit balance. Returns the full /user/me response.
+Get the authenticated user's profile (email, name) and credit balance.
 
 _No input parameters._
 
