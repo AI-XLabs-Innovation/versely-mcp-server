@@ -357,24 +357,33 @@ const versely_get_social_analytics_overview = defineTool({
   handler: async (_input, ctx) => jsonResult(await ctx.client.get("/api/v1/social-analytics/overview")),
 });
 
+// Reading and refreshing are two tools: a refresh makes the backend fetch the
+// post's numbers from the platform and store a new reading, which a tool
+// marked read-only must not do (OpenAI's review checks the hints).
 const versely_get_post_analytics = defineTool({
   name: "versely_get_post_analytics",
   description:
-    "Live stats of one of the user's published posts (views, likes, comments, shares, per platform). refresh: true " +
-    "collects the latest numbers first. Part of a subscription.",
+    "Stats of one of the user's published posts (views, likes, comments, shares, per platform), as last collected. " +
+    "For the latest numbers, call versely_refresh_post_analytics first. Part of a subscription.",
   inputSchema: z.object({
     post_id: z.string().describe("The post's id from versely_list_posts."),
-    refresh: z.boolean().optional(),
+  }),
+  handler: async (input, ctx) =>
+    jsonResult(await ctx.client.get(`/api/v1/social-analytics/${encodeURIComponent(input.post_id)}`)),
+});
+
+const versely_refresh_post_analytics = defineTool({
+  name: "versely_refresh_post_analytics",
+  description:
+    "Fetch the latest numbers for one of the user's published posts from the social platform now, then return them " +
+    "(views, likes, comments, shares, per platform). Part of a subscription.",
+  inputSchema: z.object({
+    post_id: z.string().describe("The post's id from versely_list_posts."),
   }),
   handler: async (input, ctx) => {
-    if (input.refresh) {
-      try {
-        await ctx.client.post(`/api/v1/social-analytics/${encodeURIComponent(input.post_id)}/collect`, {});
-      } catch {
-        /* the read below still answers with the last snapshot */
-      }
-    }
-    return jsonResult(await ctx.client.get(`/api/v1/social-analytics/${encodeURIComponent(input.post_id)}`));
+    const id = encodeURIComponent(input.post_id);
+    await ctx.client.post(`/api/v1/social-analytics/${id}/collect`, {});
+    return jsonResult(await ctx.client.get(`/api/v1/social-analytics/${id}`));
   },
 });
 
@@ -408,5 +417,6 @@ export const hooksStudioTools: Tool[] = [
   versely_delete_hook_character,
   versely_get_social_analytics_overview,
   versely_get_post_analytics,
+  versely_refresh_post_analytics,
   versely_get_post_analytics_history,
 ];

@@ -65,7 +65,10 @@ const CLASS_HINTS: Record<ToolClass, ToolAnnotations> = {
   create: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
   edit: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false },
   delete: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: true },
-  publish: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: false },
+  // Destructive: a live post can't be taken back from here, and OpenAI counts
+  // "send messages ... that can't be undone" as destructive. It also makes
+  // ChatGPT confirm with the user before anything goes out publicly.
+  publish: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
 };
 
 interface Row {
@@ -123,7 +126,8 @@ function defaultWhy(r: Row): HintJustifications {
     case "publish":
       return {
         readOnly: `Publishes ${r.what} from the user's Versely account to the social accounts they connected.`,
-        destructive: "Only creates new posts; never edits or deletes existing content.",
+        destructive:
+          "Posts go out publicly on the user's social accounts, and Versely can't take a post back once it is live.",
         openWorld:
           "Posts to third-party social platforms (such as Instagram, TikTok or YouTube) on the user's behalf.",
       };
@@ -199,10 +203,10 @@ const ROWS: Record<string, Row> = {
   },
   versely_skip_trial: {
     title: "End free trial now", cls: "edit", what: "subscription",
-    hints: { destructiveHint: false, openWorldHint: true },
+    hints: { destructiveHint: true, openWorldHint: true },
     why: {
       readOnly: "Ends the user's free trial now, so their card is charged for the plan today.",
-      destructive: "Starts the paid plan early; nothing is removed.",
+      destructive: "Charges the user's card today; the payment can't be undone from here.",
       openWorld: "Charges the user's card through Dodo Payments.",
     },
   },
@@ -541,6 +545,8 @@ const ROWS: Record<string, Row> = {
     inv: ["Scheduling your hooks", "Hooks scheduled"],
     why: {
       readOnly: "Schedules each hook of a collection as a post to the user's connected social accounts; posts are charged like any social post.",
+      destructive:
+        "The scheduled posts go out publicly without another confirmation, and Versely can't take a post back once it is live.",
     },
   },
   versely_list_hook_characters: {
@@ -574,8 +580,18 @@ const ROWS: Record<string, Row> = {
     inv: ["Loading your analytics", "Loaded your analytics"],
   },
   versely_get_post_analytics: {
-    title: "Get post analytics", cls: "read", what: "one published post's live stats", openai: true,
+    title: "Get post analytics", cls: "read", what: "one published post's stats as last collected", openai: true,
     inv: ["Loading the post's stats", "Loaded the post's stats"],
+  },
+  versely_refresh_post_analytics: {
+    title: "Refresh post analytics", cls: "create", what: "reading of a published post's stats", spends: false, openai: true,
+    inv: ["Fetching the latest stats", "Fetched the latest stats"],
+    hints: { openWorldHint: true, idempotentHint: true },
+    why: {
+      readOnly: "Asks Versely to fetch the post's latest numbers from the social platform now and store them as a new reading; it does not spend credits.",
+      destructive: "Adds a new reading of the post's stats; earlier readings are kept.",
+      openWorld: "Reads the post's public numbers from the social platform it was published on.",
+    },
   },
   versely_get_post_analytics_history: {
     title: "Get post stats history", cls: "read", what: "one published post's stats over time", openai: true,
@@ -841,7 +857,8 @@ const ROWS: Record<string, Row> = {
     inv: ["Starting your workflow", "Workflow started"],
     why: {
       readOnly: "Runs one of the user's saved workflows, which generates media and spends the user's Versely credits.",
-      destructive: "Only creates new media (and posts, when the workflow auto-posts); never edits or deletes existing content.",
+      destructive:
+        "When the workflow auto-posts, its results go out publicly, and Versely can't take a post back once it is live.",
       openWorld: "When the workflow is set to auto-post, its results are published to the user's connected social platforms.",
     },
   },
@@ -945,10 +962,12 @@ const ROWS: Record<string, Row> = {
   versely_create_slideshow_automation: {
     title: "Create slideshow automation", cls: "create", what: "slideshow automation", spends: false, openai: true,
     inv: ["Setting up your automation", "Automation set up"],
-    hints: { openWorldHint: true },
+    hints: { destructiveHint: true, openWorldHint: true },
     why: {
       readOnly:
         "Creates a recurring slideshow automation in the user's Versely account. Creating it spends nothing; each run it makes spends the user's Versely credits.",
+      destructive:
+        "When it is set to post and started, its runs publish without another confirmation, and Versely can't take a post back once it is live.",
       openWorld: "When it is set to post, each run publishes its slideshow to the user's connected social accounts.",
     },
   },
@@ -971,10 +990,11 @@ const ROWS: Record<string, Row> = {
   versely_start_automation: {
     title: "Start automation", cls: "edit", what: "automation", openai: true,
     inv: ["Starting the automation", "Automation started"],
-    hints: { destructiveHint: false, openWorldHint: true, idempotentHint: true },
+    hints: { destructiveHint: true, openWorldHint: true, idempotentHint: true },
     why: {
       readOnly: "Starts one of the user's automations; its runs spend the user's Versely credits.",
-      destructive: "Only switches the automation on; nothing is deleted or overwritten.",
+      destructive:
+        "When it is set to post, its runs publish without another confirmation, and Versely can't take a post back once it is live.",
       openWorld: "When it is set to post, each run publishes to the user's connected social accounts.",
     },
   },
@@ -992,7 +1012,8 @@ const ROWS: Record<string, Row> = {
     inv: ["Running the automation", "Automation run started"],
     why: {
       readOnly: "Runs one of the user's automations now, which makes a new slideshow and spends the user's Versely credits.",
-      destructive: "Only creates new content; nothing existing is changed or deleted.",
+      destructive:
+        "When the automation is set to post, the slideshow goes out publicly, and Versely can't take a post back once it is live.",
       openWorld: "When the automation is set to post, the new slideshow is published to the user's connected social accounts.",
     },
   },

@@ -85,7 +85,7 @@ const OPENAI_TOOLS = [
   "versely_cancel_hook_collection", "versely_schedule_hook_collection", "versely_list_hook_characters",
   "versely_create_hook_character", "versely_upload_hook_character", "versely_get_hook_character",
   "versely_pick_character_portrait", "versely_delete_hook_character", "versely_get_social_analytics_overview",
-  "versely_get_post_analytics", "versely_get_post_analytics_history",
+  "versely_get_post_analytics", "versely_refresh_post_analytics", "versely_get_post_analytics_history",
 ];
 
 const failures: string[] = [];
@@ -690,8 +690,14 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("browse music_beds plays each bed", String(beds?.items?.[0]?.audio).endsWith("sunny.mp3") && beds?.items?.[0]?.pick.includes("music_bed_id: bed-9"), JSON.stringify(beds?.items?.[0]));
   const chars = ((await call(openai, "versely_browse", { collection: "hook_characters" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ image?: string; pick: string }> } | undefined;
   assert("browse hook_characters shows their portraits", String(chars?.items?.[0]?.image).endsWith("mia.png") && chars?.items?.[0]?.pick.includes("character_id: char-1"), JSON.stringify(chars?.items?.[0]));
-  const stats = JSON.parse(textOf(await call(openai, "versely_get_post_analytics", { post_id: "post-db-9", refresh: true }))) as { stats?: Record<string, unknown> };
-  assert("get_post_analytics refreshes then reads the stats", stats.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 1, JSON.stringify(stats));
+  const statsRead = JSON.parse(textOf(await call(openai, "versely_get_post_analytics", { post_id: "post-db-9" }))) as { stats?: Record<string, unknown> };
+  assert("get_post_analytics only reads (no collection job)", statsRead.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 0, JSON.stringify(statsRead));
+  const stats = JSON.parse(textOf(await call(openai, "versely_refresh_post_analytics", { post_id: "post-db-9" }))) as { stats?: Record<string, unknown> };
+  assert("refresh_post_analytics collects then reads the stats", stats.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 1, JSON.stringify(stats));
+  const hintsOf = (n: string) => (byName(oTools, n)?.annotations ?? {}) as Record<string, unknown>;
+  assert("the stats reader is read-only and the refresher is not", hintsOf("versely_get_post_analytics").readOnlyHint === true && hintsOf("versely_refresh_post_analytics").readOnlyHint === false && hintsOf("versely_refresh_post_analytics").openWorldHint === true);
+  assert("skip_trial (charges a card today) is destructive", (byName(fullTools, "versely_skip_trial")?.annotations as Record<string, unknown> | undefined)?.destructiveHint === true);
+  assert("tools that can post publicly are destructive (ChatGPT confirms first)", ["versely_publish_post", "versely_schedule_hook_collection", "versely_run_automation_now", "versely_run_workflow", "versely_start_automation", "versely_create_slideshow_automation"].every((n) => hintsOf(n).destructiveHint === true && hintsOf(n).openWorldHint === true), JSON.stringify(["versely_publish_post", "versely_start_automation"].map(hintsOf)));
   // ChatGPT caches widget templates by URI, so its tools point at the hashed
   // card URI; claude.ai keeps the plain one.
   const uriOf = (t: AnyTool) => (t._meta?.ui as { resourceUri?: string } | undefined)?.resourceUri;
