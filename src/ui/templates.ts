@@ -1641,7 +1641,6 @@ const MEDIA_CARD_CSP = {
     "https://slideshow-images.versely.studio",
     "https://slideshowvideos.versely.studio",
     "https://avatars.versely.studio",
-    "https://cdn.versely.studio",
   ],
   connectDomains: [],
   frameDomains: [],
@@ -1698,13 +1697,14 @@ export function mediaCardUriFor(opts: { cardV2: boolean }): string {
 
 /**
  * The picker shows previews from more hosts than the media card: HeyGen's own
- * avatar and voice previews, and the AI templates bucket.
+ * avatar and voice previews, and brand logos that live on brand.dev. OpenAI's
+ * review wants exactly the domains the component fetches from, so every entry
+ * here must be one a live picker actually loads.
  */
 const PICKER_CSP = {
   ...MEDIA_CARD_CSP,
   resourceDomains: [
     ...MEDIA_CARD_CSP.resourceDomains,
-    "https://templates.versely.studio",
     "https://media.brand.dev",
     "https://files2.heygen.ai",
     "https://resource.heygen.ai",

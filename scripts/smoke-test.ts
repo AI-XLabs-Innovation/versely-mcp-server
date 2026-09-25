@@ -468,6 +468,15 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("openai resource has ui.domain", oMeta.ui?.domain === "https://mcp.versely.studio" && oListMeta.domain === "https://mcp.versely.studio");
   assert("openai resource sets prefersBorder explicitly", oMeta.ui?.prefersBorder === false);
   assert("openai profile serves the v2 card", String((oCard.contents[0] as { text?: string }).text ?? "").includes("version: '2.0.0'"));
+  // OpenAI's review wants the exact domains the UI fetches from: no host that
+  // doesn't exist or that nothing loads, and no frame or connect domains.
+  const cspOfUri = async (uri: string) =>
+    (((await openai.readResource({ uri })).contents[0]?._meta ?? {}) as { ui?: { csp?: { resourceDomains?: string[]; connectDomains?: string[]; frameDomains?: string[] } } }).ui?.csp;
+  const cardCsp = await cspOfUri("ui://versely/media-card");
+  const pickerCsp = await cspOfUri("ui://versely/picker");
+  const cardHosts = ["img", "videos", "audio", "user-files", "slideshow-images", "slideshowvideos", "avatars"].map((h) => `https://${h}.versely.studio`);
+  assert("the card allows exactly the Versely media hosts", JSON.stringify(cardCsp?.resourceDomains) === JSON.stringify(cardHosts) && cardCsp?.connectDomains?.length === 0 && cardCsp?.frameDomains?.length === 0, JSON.stringify(cardCsp));
+  assert("the picker adds only HeyGen previews and brand.dev logos", JSON.stringify(pickerCsp?.resourceDomains) === JSON.stringify([...cardHosts, "https://media.brand.dev", "https://files2.heygen.ai", "https://resource.heygen.ai", "https://static.heygen.ai"]) && pickerCsp?.frameDomains?.length === 0, JSON.stringify(pickerCsp));
 
   const outOfProfile = await call(openai, "versely_list_api_key_scopes", {});
   assert("out-of-profile call is refused", outOfProfile.isError === true && textOf(outOfProfile).includes("Unknown tool"));
