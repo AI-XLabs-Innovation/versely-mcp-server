@@ -1,0 +1,130 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "versely",
+  "version": "1.0.0",
+  "description": "Create videos, AI hooks, UGC-style videos, slideshows, voiceovers and music, then publish them to your social accounts.",
+  "author": {
+    "name": "Versely",
+    "email": "contact@versely.studio",
+    "url": "https://www.versely.studio"
+  },
+  "homepage": "https://www.versely.studio",
+  "repository": "https://github.com/AI-XLabs-Innovation/versely-mcp-server",
+  "license": "MIT",
+  "keywords": [
+    "ai video generator",
+    "text to video",
+    "image to video",
+    "ai image generator",
+    "ai hooks",
+    "ugc videos",
+    "tiktok slideshow",
+    "photo carousel",
+    "voiceover",
+    "text to speech",
+    "music generation",
+    "sound effects",
+    "lip sync",
+    "dubbing",
+    "viral content",
+    "trending sounds",
+    "social media content",
+    "schedule posts",
+    "brand kit",
+    "short form video"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Versely",
+        "shortDescription": "Make videos, hooks & slides",
+        "longDescription": "Create short-form content in ChatGPT and post it where your audience is.\n\nGenerate videos from a prompt or a photo, images and product shots, voiceovers, music and sound effects. Make AI hooks: a reaction clip with your line on screen, then a cut to your product. Make UGC-style videos with an AI presenter reading your script, TikTok and Instagram photo carousels with text on every slide, lip-synced clips, dubbed videos and multi-scene movies.\n\nStart from what already works. Browse outlier posts that did far better than the size of the account that posted them, by niche and format, see the trending sounds behind them, and recreate a format for your brand. Save a brand from its website so your hooks and slideshows use its colors and voice.\n\nWhen a piece is ready, preview it, then schedule or publish it to the social accounts you connected in Versely, and check how each post performed.\n\nGeneration uses Versely credits from your account. Results vary by model, and you can check your balance and recent creations at any time. Nothing is published unless you ask for it, and only to accounts you connected yourself. For help, visit versely.studio/support.",
+        "developerName": "Versely",
+        "category": "Creativity",
+        "capabilities": [
+          "Generate videos from text or images",
+          "Generate and edit images",
+          "AI hooks with a product reveal",
+          "UGC-style presenter videos",
+          "Photo carousels and slideshows",
+          "Voiceovers and text to speech",
+          "Music and sound effects",
+          "Lip sync and dubbing",
+          "Multi-scene movies",
+          "Viral outliers and trending sounds",
+          "Brand kits from a website",
+          "Schedule and publish to social accounts",
+          "Post analytics"
+        ],
+        "websiteURL": "https://www.versely.studio",
+        "supportURL": "https://www.versely.studio/support",
+        "privacyPolicyURL": "https://www.versely.studio/privacy",
+        "termsOfServiceURL": "https://www.versely.studio/terms",
+        "defaultPrompt": [
+          "Make a 5-second vertical video of a paper boat drifting down a rainy street.",
+          "Show me this week's viral hooks for fitness apps and make one for my product.",
+          "Turn five morning-routine tips into a TikTok photo carousel with text on each slide."
+        ],
+        "brandColor": "#7C3AED",
+        "brandColorDark": "#8B5CF6",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Text to video. Uses the demo account's credits.",
+              "prompt": "Make a 5-second vertical video of a paper boat drifting down a rainy street.",
+              "tools_triggered": "versely_generate_video (versely_find_models first if a model has to be chosen); the media card polls versely_get_task_status",
+              "expected_behavior": "A media card appears and swaps in a playable vertical video when the job finishes. Credits are used. A job that is still running is not a finished video."
+            },
+            {
+              "description": "Image generation. Uses the demo account's credits.",
+              "prompt": "Generate a square product photo of a matte black water bottle on a marble counter.",
+              "tools_triggered": "versely_generate_image; the media card polls versely_get_task_status",
+              "expected_behavior": "A media card shows the finished square image, which is also saved to the account's library. Credits are used."
+            },
+            {
+              "description": "Photo carousel with text on every slide. Uses the demo account's credits.",
+              "prompt": "Turn five morning-routine tips into a TikTok photo carousel with text on each slide.",
+              "tools_triggered": "versely_create_automated_slideshow; versely_get_slideshow when it needs checking",
+              "expected_behavior": "A carousel of about five slides with one tip written on each, viewable in the chat and saved to the account's slideshows."
+            },
+            {
+              "description": "Viral formats, read-only. No credits used.",
+              "prompt": "Show me viral slideshows in the fitness niche from small accounts.",
+              "tools_triggered": "versely_find_inspiration (versely_list_inspiration_niches if the niche name needs matching)",
+              "expected_behavior": "A list of fitness slideshows that did far better than the posting account's size, with their views and the account's follower count. Nothing is generated or charged."
+            },
+            {
+              "description": "Account and library, read-only. No credits used.",
+              "prompt": "What's my Versely credit balance, and what did I make most recently?",
+              "tools_triggered": "versely_get_credits, versely_list_user_media",
+              "expected_behavior": "The demo account's credit balance and its most recent creations. Nothing is generated or charged."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Written copy only. \"TikTok\" sounds media-related, but no media is requested.",
+              "prompt": "Write three TikTok caption ideas for a bakery launching a new sourdough loaf."
+            },
+            {
+              "description": "A summary of text the user supplies. Nothing to create in Versely.",
+              "prompt": "Summarize this paragraph about remote work in three bullet points: Remote work gives teams flexibility, but it also makes spontaneous collaboration harder, so many companies now mix office days with home days."
+            },
+            {
+              "description": "General knowledge, no creation or account data involved.",
+              "prompt": "What is the difference between a sole trader and a limited company?"
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Versely does not sell anything in ChatGPT. Plans and credits are managed on versely.studio. When an action needs more credits than the account has, the plugin says so in plain text, without links or purchase prompts."
+      },
+      "publication": {
+        "release_notes": "First release in ChatGPT: create videos, images, AI hooks, UGC-style videos, photo carousels, voiceovers, music, lip sync, dubbing and multi-scene movies; find viral formats and trending sounds and recreate them; save brands from a website; schedule and publish to connected social accounts; check how posts performed."
+      }
+    }
+  }
+}
