@@ -797,6 +797,62 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const noSubj = backend.requests.find((r) => r.path === "/api/v1/status/pending-1");
   assert("no subject header without openai/subject", !!noSubj && noSubj.headers["x-versely-openai-subject"] === undefined);
 
+  // ─── per-tool auth (ChatGPT plugin auth spec) ─────────────────────────────
+  // The SDK client drops unknown tool keys, so securitySchemes is checked on
+  // the raw tools/list; the _meta mirror survives the SDK and is checked on
+  // every full-profile tool.
+  const SCOPES = new Set(["generate", "post", "manage_accounts", "slideshow", "ugc", "workflows", "analytics", "read"]);
+  type RawTool = { name: string; securitySchemes?: Array<{ type: string; scopes: string[] }>; _meta?: Record<string, unknown> };
+  const schemeOk = (s: unknown): boolean => {
+    const a = s as Array<{ type?: string; scopes?: string[] }> | undefined;
+    return Array.isArray(a) && a.length === 1 && a[0].type === "oauth2" && Array.isArray(a[0].scopes) && a[0].scopes.length === 1 && SCOPES.has(a[0].scopes[0]);
+  };
+  const fullMetaSchemes = (fullTools as Array<{ name: string; _meta?: Record<string, unknown> }>).filter((t) => !schemeOk(t._meta?.securitySchemes));
+  assert("every full-profile tool mirrors oauth2 securitySchemes in _meta", fullMetaSchemes.length === 0, fullMetaSchemes.map((t) => t.name).join(","));
+  const metaScope = (n: string) => ((fullTools as Array<{ name: string; _meta?: Record<string, unknown> }>).find((t) => t.name === n)?._meta?.securitySchemes as Array<{ scopes: string[] }> | undefined)?.[0]?.scopes[0];
+  const scopeCases: Record<string, string> = {
+    versely_publish_post: "post", versely_generate_image: "generate", versely_get_me: "read", versely_get_post_analytics: "analytics",
+    versely_create_slideshow: "slideshow", versely_run_workflow: "workflows", versely_disconnect_social_account: "manage_accounts",
+    versely_list_social_accounts: "read", versely_list_slideshows: "read", versely_add_captions: "ugc",
+  };
+  const wrongScopes = Object.entries(scopeCases).filter(([n, s]) => metaScope(n) !== s).map(([n, s]) => `${n}=${String(metaScope(n))} (want ${s})`);
+  assert("each tool names the scope that describes it", wrongScopes.length === 0, wrongScopes.join("; "));
+
+  const rawInit = await fetch(`${MCP_URL}?profile=openai`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "raw", version: "0" } } }),
+  });
+  const rawSid = rawInit.headers.get("mcp-session-id") ?? "";
+  const rawList = await fetch(`${MCP_URL}?profile=openai`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream", "Mcp-Session-Id": rawSid, "MCP-Protocol-Version": "2025-06-18" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  });
+  const rawText = await rawList.text();
+  const rawLine = rawText.trimStart().startsWith("{") ? rawText : (rawText.split("\n").find((l) => l.startsWith("data:")) ?? "data: {}").slice(5);
+  const rawTools = ((JSON.parse(rawLine) as { result?: { tools?: RawTool[] } }).result?.tools ?? []);
+  const rawBad = rawTools.filter((t) => !schemeOk(t.securitySchemes) || JSON.stringify(t.securitySchemes) !== JSON.stringify(t._meta?.securitySchemes));
+  assert(
+    `every openai tool declares securitySchemes on the wire, mirrored in _meta (${rawTools.length})`,
+    rawTools.length === OPENAI_TOOLS.length && rawBad.length === 0,
+    `status=${rawList.status} bad=${rawBad.map((t) => t.name).join(",")}`,
+  );
+
+  // A token the backend refuses mid-session: the result carries the OAuth
+  // challenge that makes ChatGPT offer "sign in again".
+  const revoked = await connect(MCP_URL, "vsk_revoked_smoke_token_value");
+  const refused = (await revoked.callTool({ name: "versely_get_credits", arguments: {} })) as { isError?: boolean; _meta?: Record<string, unknown> };
+  const authChallenge = refused._meta?.["mcp/www_authenticate"] as string[] | undefined;
+  assert(
+    "a refused token comes back with an mcp/www_authenticate challenge",
+    refused.isError === true && Array.isArray(authChallenge) && /^Bearer resource_metadata="https:\/\/mcp\.versely\.studio\/\.well-known\/oauth-protected-resource", error="invalid_token", error_description="[^"]+"$/.test(authChallenge[0] ?? ""),
+    JSON.stringify(refused._meta),
+  );
+  const okCall = (await full.callTool({ name: "versely_get_credits", arguments: {} })) as { _meta?: Record<string, unknown> };
+  assert("a successful call carries no challenge", !okCall._meta?.["mcp/www_authenticate"]);
+  await revoked.close();
+
   // ─── session/profile binding ───────────────────────────────────────────────
   const init = await fetch(`${MCP_URL}?profile=openai`, {
     method: "POST",

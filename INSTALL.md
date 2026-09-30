@@ -42,7 +42,7 @@ Until the Versely plugin is listed in ChatGPT's directory, you can add it in **d
 2. Add a new app/connector with the URL `https://mcp.versely.studio/mcp` and **OAuth** authentication.
 3. Sign in to Versely when prompted and approve.
 
-ChatGPT gets the plugin's tool set: video, image, voiceover and music generation, UGC edits, slideshows, movies and dubbing. Social posting and workflows aren't part of it.
+ChatGPT gets nearly every tool: video, image, voiceover and music generation, UGC edits, slideshows, movies, dubbing, inspiration and hooks, social posting and workflows. Buying credits and changing a subscription happen on versely.studio, not inside ChatGPT.
 
 ### Claude Code (CLI)
 
@@ -209,7 +209,7 @@ You should get a JSON-RPC response listing the available tools.
 | `401 invalid_token` | The sign-in expired or was revoked, or the key has stray whitespace | Reconnect (OAuth) or re-copy the key. |
 | `authentication failed` (from a tool) | Versely rejected the connection's credentials | Reconnect, or create a fresh API key. |
 | `Not enough Versely credits for this` | The job costs more than your balance | Ask for your balance (`versely_get_credits`). |
-| `Unknown tool` in ChatGPT | That tool isn't part of the ChatGPT plugin (social posting, workflows) | Use claude.ai, Claude Code or an API-key client for those. |
+| `Unknown tool` in ChatGPT | That tool isn't part of the ChatGPT plugin (billing, checkout and subscription changes) | Manage billing at app.versely.studio/settings, or use claude.ai, Claude Code or an API-key client. |
 | A long video "times out" | The job keeps running after the chat moves on | The inline card updates by itself; or ask for the job's status later. Don't resubmit — that starts (and charges for) a second job. |
 | Connection refused / timeout | Wrong URL, or a firewall blocks `mcp.versely.studio` | Curl the URL directly to confirm reachability. |
 

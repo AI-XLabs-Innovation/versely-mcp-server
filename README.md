@@ -1,6 +1,6 @@
 # versely-mcp-server
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes the Versely content creation API as **93 tools** for any MCP-compatible client (claude.ai, Claude Desktop, Claude Code, ChatGPT, Cursor, etc.). Generate images / videos / voiceovers / music, build slideshows, assemble multi-scene movies, edit UGC, dub videos, run workflows, and post to 9 social platforms — all from a single MCP connection.
+A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes the Versely content creation API as **170 tools** for any MCP-compatible client (claude.ai, Claude Desktop, Claude Code, ChatGPT, Cursor, etc.). Generate images / videos / voiceovers / music, build slideshows, assemble multi-scene movies, edit UGC, dub videos, run workflows, and post to 9 social platforms — all from a single MCP connection.
 
 Source: <https://github.com/AI-XLabs-Innovation/versely-mcp-server>
 
@@ -26,7 +26,7 @@ Health check from another terminal:
 
 ```bash
 curl -s http://127.0.0.1:8080/healthz
-# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":93,"tools_openai":48}
+# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":170,"tools_openai":156}
 ```
 
 For a real client to talk to it locally, expose it via your MCP client's URL config (see below) — or for production, deploy behind nginx + TLS following [`deploy/SETUP.md`](deploy/SETUP.md).
@@ -77,7 +77,7 @@ Each request is served one of two tool **profiles**:
 | Profile | Who | Tools |
 |---|---|---|
 | `full` | claude.ai, Claude Code, Cursor, API-key users | all 93 |
-| `openai` | the ChatGPT plugin | 48: generation and editing that lands in the user's private library, plus the reads that drive it. No social posting, no workflows. |
+| `openai` | the ChatGPT plugin | 156: every tool except buying and billing (plans, checkout and billing-portal links, subscription changes, skip trial), API-key scopes, the legacy model list, the prompt helper and the blocking wait. Purchases stay on versely.studio, as ChatGPT's commerce rules require. |
 
 - A token the backend signed with `ck: "openai"` (issued to ChatGPT) **always** gets `openai` — the claim is inside the signature, so it can't be widened. Any other caller can restrict itself with `?profile=openai` or `X-Versely-Profile: openai` (handy for testing the plugin surface with an API key).
 - Calls to a tool outside the caller's profile fail as `Unknown tool`. A session is bound to the profile it was opened with (a mismatched request gets 403).
@@ -205,7 +205,7 @@ versely-mcp-server/
 | `authentication failed` from a tool call | the backend rejected the credential — reconnect, or check the API key hasn't been revoked |
 | `Not enough Versely credits for this` | the balance is below the job's price — `versely_get_credits` shows it |
 | `not allowed` (403) from a tool call | the account or connection has no access to that feature |
-| `Unknown tool` | the tool isn't in the caller's profile (ChatGPT has the 48-tool plugin set) |
+| `Unknown tool` | the tool isn't in the caller's profile (the ChatGPT plugin set leaves out billing, checkout and subscription changes) |
 | `The request may still have been processed` | a write timed out — check `versely_list_user_media` before retrying |
 | `502 Bad Gateway` from the proxy | PM2 process down — `pm2 status`, `pm2 logs versely-mcp` |
 

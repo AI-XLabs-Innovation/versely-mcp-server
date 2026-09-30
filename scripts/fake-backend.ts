@@ -183,6 +183,12 @@ export async function startFakeBackend(opts: {
         at: Date.now(),
       };
       requests.push(rec);
+      // A key the backend no longer accepts (expired / revoked sign-in).
+      if ((rec.headers.authorization ?? "") === "Bearer vsk_revoked_smoke_token_value") {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid or revoked API key" }));
+        return;
+      }
       void route(rec, res).catch((err) => send(res, 500, { error: String(err) }));
     });
   });

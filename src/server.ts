@@ -13,6 +13,8 @@ import type { VerselyClient } from "./client.js";
 import { ToolRegistry } from "./tools/_registry.js";
 import { allToolDefinitions, registeredTools } from "./tools/index.js";
 import { errorResult, formatErr } from "./tools/_helpers.js";
+import { securitySchemesFor, tokenChallenge, WWW_AUTHENTICATE_META, type SecurityScheme } from "./tools/_security.js";
+import { VerselyApiError } from "./errors.js";
 import type { Tool, ToolContext, ToolResult } from "./tools/_types.js";
 import { assertPolicyCoverage, getToolPolicy, type ToolPolicy } from "./tools/_policy.js";
 import {
@@ -157,6 +159,8 @@ interface ListedTool {
   description: string;
   inputSchema: { type: "object"; [k: string]: unknown };
   annotations: Json;
+  /** Per-tool auth (tools/_security.ts), mirrored under `_meta` for older clients. */
+  securitySchemes: SecurityScheme[];
   _meta?: Json;
 }
 
@@ -248,6 +252,8 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
     meta["openai/widgetAccessible"] = true;
   }
 
+  const schemes = securitySchemesFor(tool.name, policy.class);
+
   return {
     name: tool.name,
     policy,
@@ -262,7 +268,8 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
       description: variant?.description ?? tool.description,
       inputSchema: schema as ListedTool["inputSchema"],
       annotations: { title: policy.title, ...policy.annotations },
-      ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
+      securitySchemes: schemes,
+      _meta: { ...meta, securitySchemes: schemes },
     },
   };
 }
@@ -360,6 +367,9 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
     const args = omitKeys(cleaned, entry.stripKeys);
 
     let result: ToolResult;
+    // Set when the backend refused the connection's token mid-session; the
+    // challenge is added after shaping so the ChatGPT scrub cannot drop it.
+    let challenge: string | null = null;
     const parsed = entry.inputSchema.safeParse(args);
     if (!parsed.success) {
       result = errorResult(
@@ -376,6 +386,7 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
             // hosts hydrate the linked ui:// iframe with that payload.
             return await entry.handler(parsed.data, ctx);
           } catch (err) {
+            if (err instanceof VerselyApiError && err.status === 401) challenge = tokenChallenge(config.resourceUrl);
             return errorResult(formatErr(err));
           }
         });
@@ -411,6 +422,9 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
 
     if (entry.isCard) result = applyCardSafetyNet(result);
     if (profile === "openai") result = shapeResultForOpenai(result);
+    if (challenge && result.isError) {
+      result = { ...result, _meta: { ...((result._meta as Json | undefined) ?? {}), [WWW_AUTHENTICATE_META]: [challenge] } };
+    }
     if (entry.isCard || CARD_POLL_TARGETS.has(entry.name)) recordJobCheck(profile, entry.name, args, result);
     return result;
   }
