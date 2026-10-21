@@ -35,6 +35,7 @@
   ],
   "extensions": {
     "com.openai": {
+      "onboardingSkill": "./skills/get-started/SKILL.md",
       "interface": {
         "displayName": "Versely",
         "shortDescription": "Make videos, hooks & slides",

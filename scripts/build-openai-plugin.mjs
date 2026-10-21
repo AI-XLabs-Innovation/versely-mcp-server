@@ -8,7 +8,7 @@
 // Never put reviewer credentials or the demo video URL in openai/: both go in
 // the OpenAI dashboard, and this repo is public.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +16,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const src = join(root, "openai");
 const manifest = JSON.parse(readFileSync(join(src, "plugin.json"), "utf8"));
 const mcp = JSON.parse(readFileSync(join(src, "mcp.json"), "utf8"));
-const ui = manifest.extensions?.["com.openai"]?.interface ?? {};
+const openai = manifest.extensions?.["com.openai"] ?? {};
+const ui = openai.interface ?? {};
 const review = manifest.extensions?.["com.openai"]?.review ?? {};
 
 const problems = [];
@@ -42,6 +43,38 @@ check((review.test_cases?.positive ?? []).length === 5, "review: exactly 5 posit
 check((review.test_cases?.negative ?? []).length === 3, "review: exactly 3 negative test cases");
 for (const t of review.test_cases?.positive ?? []) check(!!(t.prompt && t.tools_triggered && t.expected_behavior), `positive case "${String(t.prompt).slice(0, 40)}…": prompt, tools_triggered and expected_behavior`);
 check(review.commerce === false && !!review.commerce_description, "review: commerce statement");
+// Skills: a public ZIP needs at least one (submission-errors:
+// plugin_runtime_surface_missing). Each is skills/<dir>/SKILL.md with YAML
+// front matter naming it, and every versely_* tool it mentions must be in the
+// openai profile, or ChatGPT would be told to call a tool it cannot see.
+const policy = readFileSync(join(root, "src", "tools", "_policy.ts"), "utf8");
+const inOpenaiProfile = (tool) => {
+  const at = policy.indexOf(`\n  ${tool}: {`);
+  if (at < 0) return false;
+  const next = policy.indexOf("\n  versely_", at + 1);
+  return /openai: true/.test(policy.slice(at, next < 0 ? undefined : next));
+};
+const skillsDir = join(src, "skills");
+const skills = existsSync(skillsDir) ? readdirSync(skillsDir).filter((d) => statSync(join(skillsDir, d)).isDirectory()) : [];
+check(skills.length > 0, "skills: at least one skill in openai/skills/");
+for (const dir of skills) {
+  const file = join(skillsDir, dir, "SKILL.md");
+  if (!existsSync(file)) { check(false, `skills/${dir}: SKILL.md missing`); continue; }
+  const text = readFileSync(file, "utf8");
+  const fm = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
+  if (!fm) { check(false, `skills/${dir}: YAML front matter between --- lines`); continue; }
+  const field = (k) => (new RegExp(`^${k}:\\s*(.+)$`, "m").exec(fm[1])?.[1] ?? "").trim();
+  const name = field("name");
+  check(/^[a-z0-9-]+$/.test(name), `skills/${dir}: name of lowercase letters, digits or dashes`);
+  check(len(`${manifest.name}:${name}`) <= 64, `skills/${dir}: plugin:skill name at most 64 characters`);
+  check(len(field("description")) > 0 && len(field("description")) <= 1024, `skills/${dir}: description 1-1024 characters`);
+  check(fm[2].trim().length > 0, `skills/${dir}: instructions not empty`);
+  for (const tool of new Set(text.match(/versely_[a-z_]+/g) ?? [])) check(inOpenaiProfile(tool), `skills/${dir}: ${tool} is not in the openai profile`);
+}
+if (openai.onboardingSkill) {
+  check(/^\.\/skills\/[^/]+\/SKILL\.md$/.test(openai.onboardingSkill) && existsSync(join(src, openai.onboardingSkill)), "onboardingSkill: ./skills/<dir>/SKILL.md that exists");
+}
+
 const servers = Object.values(mcp.mcpServers ?? {});
 check(servers.length === 1 && servers[0].type === "streamable-http" && /^https:\/\//.test(servers[0].url), "mcp.json: exactly one streamable-http https server");
 
@@ -59,5 +92,5 @@ const outDir = join(root, "output");
 mkdirSync(outDir, { recursive: true });
 const zip = join(outDir, `versely-openai-${manifest.version}.zip`);
 rmSync(zip, { force: true });
-execFileSync("zip", ["-q", "-r", "-X", zip, "plugin.json", "mcp.json", "assets"], { cwd: src, stdio: "inherit" });
+execFileSync("zip", ["-q", "-r", "-X", zip, "plugin.json", "mcp.json", "assets", "skills"], { cwd: src, stdio: "inherit" });
 console.log(`wrote ${zip}`);
