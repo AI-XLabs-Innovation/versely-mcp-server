@@ -110,6 +110,40 @@ const PLUGIN_BLOCK_FREE = {
   runpod_only: true,
 };
 
+/** A planned short drama as POST /drama/shows answers it: Episode 1 scripted and quoted. */
+function makeDramaShow(idea: string, seconds: 15 | 30): Record<string, unknown> {
+  return {
+    id: "drm_smoke000001",
+    title: "Day One",
+    logline: idea || "An intern buys the company on her first day.",
+    genre: "comedy",
+    format: "drama",
+    language: "en",
+    episode_seconds: seconds,
+    resolution: "720p",
+    bible: { premise: idea, tone: "light", world: "a glass office", continuity: [] },
+    cast: [
+      { key: "mara", name: "Mara", role: "lead", age: 24, look: "short dark bob, grey hoodie", voice: "bright, dry", personality: "Quiet new intern who owns more than she says.", portrait_url: "https://img.versely.studio/drama/mara.jpg", avatar_id: null },
+      { key: "dalton", name: "Dalton", role: "lead", age: 45, look: "grey vest, loud tie", voice: "booming", personality: "Smug manager who fires first.", portrait_url: "https://img.versely.studio/drama/dalton.jpg", avatar_id: null },
+    ],
+    locations: [{ key: "office", name: "Glass office", look: "open plan, city view" }],
+    episodes: [
+      {
+        n: 1, title: "Day One", goal: "", turn: "", cliffhanger: "", status: "scripted", credits: 197,
+        script: { clips: [{ seconds: 15, location: "office", cast: ["dalton", "mara"], shots: [
+          { camera: "close-up on dalton", action: "he points at the box", lines: [{ who: "dalton", line: "You're fired." }] },
+          { camera: "close-up on mara", action: "she shrugs", lines: [{ who: "mara", line: "That's fine. I just bought the company." }] },
+        ] }] },
+        video_url: null, poster_url: null, user_video_id: null, error: null, started_at: null, finished_at: null,
+      },
+      { n: 2, title: "The Board", goal: "", turn: "", cliffhanger: "", status: "planned", script: null, credits: null, video_url: null, poster_url: null, user_video_id: null, error: null, started_at: null, finished_at: null },
+      { n: 3, title: "Payback", goal: "", turn: "", cliffhanger: "", status: "planned", script: null, credits: null, video_url: null, poster_url: null, user_video_id: null, error: null, started_at: null, finished_at: null },
+    ],
+    created_at: "2026-11-04T10:00:00.000Z",
+    updated_at: "2026-11-04T10:00:00.000Z",
+  };
+}
+
 // --- Server ------------------------------------------------------------------
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -139,6 +173,8 @@ export async function startFakeBackend(opts: {
   const templateRunReads = new Map<string, number>();
   const quickReads = new Map<string, number>();
   const collectionReads = new Map<string, number>();
+  let drama: Record<string, unknown> | null = null;
+  let dramaReads = 0;
 
   function verifyProxy(headers: http.IncomingHttpHeaders): RecordedRequest["proxy"] {
     const raw = headers["x-versely-proxy"];
@@ -361,6 +397,51 @@ export async function startFakeBackend(opts: {
       if (method === "DELETE") return send(res, 200, { success: true, refunded: 1 });
       if (method === "PATCH") return send(res, 200, { success: true, post: { ...row, ...b } });
       return send(res, 200, { success: true, post: row, results: [] });
+    }
+
+    // --- short dramas: plan, edit, write, quote, film (409 on a stale price), follow ---
+    const dramaShow = /^\/api\/v1\/drama\/shows\/([^/]+)$/.exec(path);
+    const dramaEp = /^\/api\/v1\/drama\/shows\/([^/]+)\/episodes\/(\d+)\/(script|quote|film)$/.exec(path);
+    if (method === "POST" && path === "/api/v1/drama/shows") {
+      drama = makeDramaShow(String(b.idea ?? ""), b.episode_seconds === 15 ? 15 : 30);
+      dramaReads = 0;
+      return send(res, 200, { success: true, show: drama });
+    }
+    if (method === "GET" && path === "/api/v1/drama/shows") {
+      return send(res, 200, { success: true, shows: drama ? [{ id: drama.id, title: drama.title, logline: drama.logline, genre: drama.genre, episodes: { ready: 0, planned: 2, scripted: 1 }, cover_url: null, updated_at: "2026-11-04T10:00:00.000Z" }] : [] });
+    }
+    if (dramaShow && drama && dramaShow[1] === drama.id) {
+      const eps = drama.episodes as Array<Record<string, unknown>>;
+      if (method === "GET") {
+        // A filming episode is ready on the second read after the film call.
+        if (eps[0]!.status === "filming" && ++dramaReads > 1) {
+          eps[0] = { ...eps[0], status: "ready", video_url: `https://videos.versely.studio/drama/${drama.id}-1.mp4`, poster_url: `https://videos.versely.studio/drama/${drama.id}-1.jpg` };
+        }
+        return send(res, 200, { success: true, show: drama });
+      }
+      if (method === "PATCH") {
+        for (const k of ["title", "logline", "language", "episode_seconds", "resolution"]) if (b[k] !== undefined) drama[k] = b[k];
+        return send(res, 200, { success: true, show: drama });
+      }
+    }
+    if (dramaEp && drama && dramaEp[1] === drama.id) {
+      const eps = drama.episodes as Array<Record<string, unknown>>;
+      const ep = eps[Number(dramaEp[2]) - 1];
+      if (!ep) return send(res, 404, { success: false, error: "Episode not found" });
+      if (method === "POST" && dramaEp[3] === "script") {
+        Object.assign(ep, { status: "scripted", credits: 98, script: { clips: [{ seconds: 15, location: "office", cast: ["mara"], shots: [{ camera: "close-up on mara", action: "she smiles", lines: [{ who: "mara", line: `Notes: ${String(b.notes ?? "none")}` }] }] }] } });
+        return send(res, 200, { success: true, show: drama, episode: ep });
+      }
+      if (method === "GET" && dramaEp[3] === "quote") {
+        return send(res, 200, { success: true, credits: ep.credits, seconds: drama.episode_seconds, resolution: drama.resolution, balance: 250 });
+      }
+      if (method === "POST" && dramaEp[3] === "film") {
+        if (ep.status === "filming" || ep.status === "ready") return send(res, 409, { success: false, error: "already_filming", message: "This episode is already filming." });
+        if (b.confirm_credits !== ep.credits) return send(res, 409, { success: false, error: "price_changed", message: "The price changed.", credits: ep.credits });
+        Object.assign(ep, { status: "filming", started_at: new Date().toISOString() });
+        dramaReads = 0;
+        return send(res, 202, { success: true, episode: ep });
+      }
     }
 
     // --- hooks studio: library deck, collections, characters, beds; analytics ---

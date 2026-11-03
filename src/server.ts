@@ -102,7 +102,7 @@ function recordJobCheck(profile: Profile, tool: string, args: Json, result: Tool
       for (const k of keys) if (typeof o[k] === "string" && o[k]) return String(o[k]).slice(0, 80);
       return undefined;
     };
-    const idKeys = ["request_id", "task_id", "movie_id", "project_id", "run_id", "workflow_run_id", "slideshow_id", "id"];
+    const idKeys = ["request_id", "task_id", "movie_id", "show_id", "project_id", "run_id", "workflow_run_id", "slideshow_id", "id"];
     const firstText = result.content?.find((c) => c.type === "text") as { text?: string } | undefined;
     jobChecks.push({
       ts: new Date().toISOString(),
@@ -145,6 +145,7 @@ export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_hooks",
   "versely_get_hook_collection",
   "versely_get_movie_status",
+  "versely_get_drama_show",
   "versely_get_workflow_run",
   "versely_get_video_workflow_run",
   "versely_get_dub",

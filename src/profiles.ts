@@ -103,7 +103,11 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "category = niche) and recreate the one the user picks with versely_recreate_inspiration; versely_analyze_post " +
   "explains why a post worked. Hook videos: show ready-made clips with versely_browse (collection 'hook_library') " +
   "and remake the picks with versely_reuse_hooks, or write new ones for a brand with versely_create_hook_pack; " +
-  "quote the cost first with versely_quote_hooks.";
+  "quote the cost first with versely_quote_hooks. " +
+  "Short dramas (a series, web series, micro drama, sitcom or \"a show\"): ask at most 2 short multiple-choice rounds, " +
+  "then plan for free with versely_plan_drama_show; show the cast, episode titles, Episode 1's lines and the exact " +
+  "credits, and call versely_film_drama_episode with confirm_credits only after the user says yes. Characters are " +
+  "fictional adults; no real people or brands.";
 
 export function serverInstructions(profile: Profile): string | undefined {
   if (profile !== "openai") return undefined;

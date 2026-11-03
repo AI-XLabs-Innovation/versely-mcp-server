@@ -86,6 +86,8 @@ const OPENAI_TOOLS = [
   "versely_create_hook_character", "versely_upload_hook_character", "versely_get_hook_character",
   "versely_pick_character_portrait", "versely_delete_hook_character", "versely_get_social_analytics_overview",
   "versely_get_post_analytics", "versely_refresh_post_analytics", "versely_get_post_analytics_history",
+  "versely_plan_drama_show", "versely_update_drama_show", "versely_write_drama_episode", "versely_get_drama_quote",
+  "versely_film_drama_episode", "versely_get_drama_show", "versely_list_drama_shows",
 ];
 
 const failures: string[] = [];
@@ -307,7 +309,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
 
   const byName = (list: AnyTool[], n: string) => list.find((t) => t.name === n);
   const visibility = (t: AnyTool | undefined) => ((t?._meta?.ui as Record<string, unknown> | undefined)?.visibility ?? []) as string[];
-  for (const target of ["versely_get_movie_status", "versely_get_dub", "versely_get_workflow_run", "versely_get_video_workflow_run"]) {
+  for (const target of ["versely_get_movie_status", "versely_get_dub", "versely_get_workflow_run", "versely_get_video_workflow_run", "versely_get_drama_show"]) {
     assert(`poll target ${target} is visible to the app`, visibility(byName(fullTools, target)).includes("app"));
   }
   const findModels = byName(fullTools, "versely_find_models");
@@ -422,7 +424,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     return !(typeof a === "string" && typeof b === "string" && a.length > 0 && a.length <= 64 && b.length > 0 && b.length <= 64);
   });
   assert("every openai tool has invocation strings <= 64 chars", inv.length === 0, inv.map((t) => t.name).join(", "));
-  for (const target of ["versely_get_task_status", "versely_get_movie_status", "versely_get_dub"]) {
+  for (const target of ["versely_get_task_status", "versely_get_movie_status", "versely_get_dub", "versely_get_drama_show"]) {
     const m = (byName(oTools, target) as { _meta?: Record<string, unknown> } | undefined)?._meta ?? {};
     assert(`openai ${target} is widgetAccessible for the card`, m["openai/widgetAccessible"] === true);
   }
@@ -716,6 +718,29 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("get_post_analytics only reads (no collection job)", statsRead.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 0, JSON.stringify(statsRead));
   const stats = JSON.parse(textOf(await call(openai, "versely_refresh_post_analytics", { post_id: "post-db-9" }))) as { stats?: Record<string, unknown> };
   assert("refresh_post_analytics collects then reads the stats", stats.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 1, JSON.stringify(stats));
+  // Short dramas: plan free, show cast + lines + price, film only with the
+  // approved price (a stale one is refused, nothing charged), follow it to the video.
+  const planned = await call(openai, "versely_plan_drama_show", { idea: "An intern buys the company on day one", episode_seconds: 30 });
+  const planText = textOf(planned);
+  const planSc = planned.structuredContent as Record<string, any> | undefined;
+  assert("plan_drama_show forwards the idea and shows cast, Episode 1 lines and price", lastBody("/api/v1/drama/shows").idea === "An intern buys the company on day one" && planText.includes("Mara") && planText.includes("Dalton: \"You're fired.\"") && planText.includes("197 credits") && planText.includes("confirm_credits: 197"), planText);
+  assert("plan_drama_show's card shows the cast portraits", planSc?.status === "completed" && planSc?.assets?.[0]?.url === "https://img.versely.studio/drama/mara.jpg", JSON.stringify(planSc));
+  const stale = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 150 });
+  assert("film_drama_episode with a stale price is refused with the new one", stale.isError === true && textOf(stale).includes("now 197 credits") && textOf(stale).includes("nothing charged"), textOf(stale));
+  const filming = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 197 });
+  const filmSc = filming.structuredContent as Record<string, any> | undefined;
+  assert("film_drama_episode sends confirm_credits and follows the episode", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/1/film").confirm_credits === 197 && filmSc?.status === "pending" && filmSc?.poll?.tool_name === "versely_get_drama_show" && filmSc?.poll?.args?.n === 1 && textOf(filming).includes("about 10 minutes"), JSON.stringify(filmSc));
+  const filmAgain = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 197, confirm_repeat: true });
+  assert("filming the same episode again is refused", filmAgain.isError === true && textOf(filmAgain).includes("already filming"), textOf(filmAgain));
+  const epDone = (await call(openai, "versely_get_drama_show", { show_id: "drm_smoke000001", n: 1 })).structuredContent as Record<string, any> | undefined;
+  assert("get_drama_show ends with the filmed episode", epDone?.status === "completed" && epDone?.assets?.[0]?.url === "https://videos.versely.studio/drama/drm_smoke000001-1.mp4", JSON.stringify(epDone));
+  const ep2 = textOf(await call(openai, "versely_write_drama_episode", { show_id: "drm_smoke000001", n: 2, notes: "more comedy" }));
+  assert("write_drama_episode returns the lines and the price", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/2/script").notes === "more comedy" && ep2.includes("Mara: \"Notes: more comedy\"") && ep2.includes("98 credits"), ep2);
+  const dramaQuote = textOf(await call(openai, "versely_get_drama_quote", { show_id: "drm_smoke000001", n: 2 }));
+  assert("get_drama_quote gives the exact price and balance", dramaQuote.includes("98 credits") && dramaQuote.includes("confirm_credits: 98") && dramaQuote.includes("Balance: 250"), dramaQuote);
+  const dramaDescs = oTools.filter((t) => t.name.includes("drama")).map((t) => t.description ?? "").join(" ");
+  assert("drama tools name no provider", !/vidu|runpod|higgsfield|sume|seedance|nano.?banana|z-image/i.test(dramaDescs));
+  assert("only filming a drama episode spends credits", (byName(oTools, "versely_film_drama_episode")?.inputSchema.required ?? []).includes("confirm_credits") && (byName(oTools, "versely_get_drama_quote")?.annotations as Record<string, unknown> | undefined)?.readOnlyHint === true);
   const hintsOf = (n: string) => (byName(oTools, n)?.annotations ?? {}) as Record<string, unknown>;
   assert("the stats reader is read-only and the refresher is not", hintsOf("versely_get_post_analytics").readOnlyHint === true && hintsOf("versely_refresh_post_analytics").readOnlyHint === false && hintsOf("versely_refresh_post_analytics").openWorldHint === true);
   assert("skip_trial (charges a card today) is destructive", (byName(fullTools, "versely_skip_trial")?.annotations as Record<string, unknown> | undefined)?.destructiveHint === true);

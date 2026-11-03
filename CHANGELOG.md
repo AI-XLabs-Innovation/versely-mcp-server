@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Short dramas (2026-11-04)
+
+- **Seven tools wrapping `/api/v1/drama` 1:1** (`src/tools/drama.ts`), in both profiles (177 tools; 163 in the ChatGPT plugin): `versely_plan_drama_show` (free: season, cast portraits, locations, Episode 1 script), `versely_update_drama_show` and `versely_write_drama_episode` (free), `versely_get_drama_quote`, `versely_film_drama_episode` (the one paid call: `confirm_credits` must equal the current quote; a stale price comes back as a plain "not filmed, nothing charged, the price is now N" error), `versely_get_drama_show` and `versely_list_drama_shows`.
+- The descriptions carry the flow: at most 2 multiple-choice rounds (3 premises when there is no idea), plan for free, show the cast, episode titles, Episode 1's lines and the exact credits, film only after the user says yes, about 10 minutes per episode, the same cast every episode, fictional adults only, no real people or brands. No provider names. The ChatGPT server instructions gained one sentence on the same flow.
+- Filming returns a pending media card that polls `versely_get_drama_show` every 15 s (a card poll target, app-visible and `widgetAccessible`); the card then shows the finished episodes, or the cast portraits before anything is filmed.
+- Policy rows (`plan` create/free, `update` and `write` edit, `quote`/`get`/`list` read, `film` create/paid), fake-backend routes and smoke assertions for the whole flow; TOOLS.md regenerated.
+
 ### Added — ChatGPT plugin
 
 - **Per-tool auth (2026-10-01).** Every tool declares `securitySchemes` (OAuth 2.0 plus the one scope that describes it: read, generate, slideshow, ugc, post, manage_accounts, workflows or analytics), mirrored under `_meta` for clients that only read `_meta` (`src/tools/_security.ts`). A call the backend refuses with 401 mid-session returns `_meta["mcp/www_authenticate"]`, so ChatGPT offers to sign in again instead of showing a dead error. Every token Versely issues carries all scopes, so this is disclosure, not a new gate.

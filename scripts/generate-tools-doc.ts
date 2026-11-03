@@ -10,6 +10,7 @@ import { userTools } from "../src/tools/user.js";
 import { generateTools } from "../src/tools/generate.js";
 import { slideshowTools } from "../src/tools/slideshow.js";
 import { movieTools } from "../src/tools/movie.js";
+import { dramaTools } from "../src/tools/drama.js";
 import { ugcTools } from "../src/tools/ugc.js";
 import { socialTools } from "../src/tools/social.js";
 import { statusTools } from "../src/tools/status.js";
@@ -43,6 +44,7 @@ const categories: Array<[string, Tool[]]> = [
   ["Inspiration, outliers + hooks", inspirationTools],
   ["Hooks studio + post analytics", hooksStudioTools],
   ["Movie (multi-scene)", movieTools],
+  ["Short dramas", dramaTools],
   ["UGC (overlays + captions)", ugcTools],
   ["Social media", socialTools],
   ["Status / async polling", statusTools],

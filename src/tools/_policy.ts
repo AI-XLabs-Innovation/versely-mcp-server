@@ -662,6 +662,54 @@ const ROWS: Record<string, Row> = {
     },
   },
 
+  // ── Short dramas (both profiles; owner, 2026-11-04) ─────────────────────
+  // Planning, edits, scripts and quotes are free; filming one episode is the
+  // only paid call, and it carries the price the user approved (confirm_credits).
+  versely_plan_drama_show: {
+    title: "Plan a short drama", cls: "create", what: "short-drama plan", openai: true, spends: false,
+    inv: ["Planning your show", "Show planned"],
+    why: {
+      readOnly:
+        "Creates a new short-drama plan (season, cast portraits, Episode 1 script) in the user's private Versely library. It does not spend credits; nothing is filmed until the user approves an episode.",
+    },
+  },
+  versely_update_drama_show: {
+    title: "Edit short drama", cls: "edit", what: "short drama", openai: true,
+    inv: ["Updating your show", "Show updated"],
+    why: {
+      destructive:
+        "Overwrites the fields it is given, and a redrawn portrait replaces the old one; episodes already filmed are kept.",
+    },
+  },
+  versely_write_drama_episode: {
+    title: "Write drama episode", cls: "edit", what: "short-drama episode script", openai: true,
+    inv: ["Writing the episode", "Episode written"],
+    why: {
+      readOnly: "Writes or rewrites the script of one episode of the user's short drama; it does not spend credits.",
+      destructive: "A rewrite replaces that episode's earlier, unfilmed script.",
+    },
+  },
+  versely_get_drama_quote: {
+    title: "Price drama episode", cls: "read", what: "the price to film one episode of the user's short drama", openai: true,
+    inv: ["Pricing the episode", "Priced the episode"],
+  },
+  versely_film_drama_episode: {
+    title: "Film drama episode", cls: "create", what: "short-drama episode video", openai: true,
+    inv: ["Filming your episode", "Episode filming started"],
+    why: {
+      readOnly:
+        "Films one episode of the user's short drama into their private Versely library and spends the credits the user approved for it (refunded if filming fails).",
+    },
+  },
+  versely_get_drama_show: {
+    title: "Get short drama", cls: "read", what: "one of the user's short dramas and its episodes", openai: true,
+    inv: ["Loading your show", "Loaded your show"],
+  },
+  versely_list_drama_shows: {
+    title: "List short dramas", cls: "read", what: "the user's short dramas", openai: true,
+    inv: ["Loading your shows", "Loaded your shows"],
+  },
+
   // ── UGC editing ─────────────────────────────────────────────────────────
   versely_add_video_overlay: {
     title: "Overlay video", cls: "create", what: "composited video", openai: true,

@@ -3,6 +3,7 @@ import { userTools } from "./user.js";
 import { generateTools } from "./generate.js";
 import { slideshowTools } from "./slideshow.js";
 import { movieTools } from "./movie.js";
+import { dramaTools } from "./drama.js";
 import { ugcTools } from "./ugc.js";
 import { socialTools } from "./social.js";
 import { statusTools } from "./status.js";
@@ -36,6 +37,7 @@ export const standardTools: Tool[] = [
   ...inspirationTools,
   ...hooksStudioTools,
   ...movieTools,
+  ...dramaTools,
   ...ugcTools,
   ...socialTools,
   ...statusTools,
