@@ -1,9 +1,13 @@
 // Short dramas (backend /drama/*, web /dramas): a vertical 9:16 series made
 // from one idea. The planner writes the season, casts 2 leads + up to 4
-// supporting characters (with portraits), builds the locations and writes
-// Episode 1, all free. Each episode is then filmed after the user approves
-// its script and one credit price (~10 min in the background), with the same
-// cast every episode. The REST API is wrapped 1:1:
+// supporting characters (with portraits; the user's own avatars first, then
+// Versely's ready-made characters, a new character only when none fits),
+// builds the locations and writes Episode 1, all free. Each episode is then
+// filmed after the user approves its script and one credit price (~10 min in
+// the background), with the same cast every episode. Two quality tiers,
+// "Standard" and "High quality", set per show (quality + resolution) and
+// changeable for free until filming; they set the price. The REST API is
+// wrapped 1:1:
 //
 //   POST   /drama/shows                          plan (free, sync, <= ~40 s)
 //   GET    /drama/shows                          list
@@ -40,6 +44,10 @@ const GENRES = [
   "other",
 ] as const;
 
+const QUALITIES = ["standard", "high"] as const;
+/** Standard films at 540p or 720p, High quality at 480p or 720p; the backend moves a mismatch to the tier's lower one. */
+const RESOLUTIONS = ["480p", "540p", "720p"] as const;
+
 type EpisodeStatus = "planned" | "scripted" | "filming" | "ready" | "failed";
 
 interface DramaCharacter {
@@ -51,6 +59,8 @@ interface DramaCharacter {
   voice?: string;
   personality?: string;
   portrait_url?: string | null;
+  full_url?: string | null;
+  avatar_id?: string | null;
 }
 
 interface DramaLine {
@@ -84,6 +94,8 @@ interface DramaShow {
   format?: string;
   language?: string;
   episode_seconds?: number;
+  /** Shows planned before the tiers read as "standard". */
+  quality?: string;
   resolution?: string;
   cast?: DramaCharacter[];
   locations?: Array<{ key: string; name: string }>;
@@ -108,6 +120,16 @@ function nextEpisode(show: DramaShow): DramaEpisode | undefined {
 
 function credits(n: number | null | undefined): string {
   return typeof n === "number" ? `${n} credit${n === 1 ? "" : "s"}` : "price not quoted yet";
+}
+
+/** The user-facing tier name: exactly "Standard" or "High quality". */
+function qualityLabel(q: unknown): string {
+  return q === "high" ? "High quality" : "Standard";
+}
+
+/** "High quality 720p", "Standard 540p". */
+function tierOf(show: Pick<DramaShow, "quality" | "resolution">): string {
+  return [qualityLabel(show.quality), show.resolution].filter(Boolean).join(" ");
 }
 
 function clip(s: string | undefined, max: number): string {
@@ -160,7 +182,7 @@ function nextStep(show: DramaShow, ep: DramaEpisode | undefined): string {
         : "";
       return (
         failed +
-        `Show the user Episode ${ep.n}'s lines and the exact price (${credits(ep.credits)}). Film it only after they say yes: ` +
+        `Show the user Episode ${ep.n}'s lines and the exact price (${credits(ep.credits)}, ${tierOf(show)}). Film it only after they say yes: ` +
         `versely_film_drama_episode { show_id: ${id}, n: ${ep.n}, confirm_credits: ${typeof ep.credits === "number" ? ep.credits : "<the quoted price>"} }.`
       );
     }
@@ -173,7 +195,7 @@ function showText(show: DramaShow, focus: DramaEpisode | undefined, lead?: strin
     show.genre ? `${show.genre.replace(/-/g, " ")} ${show.format === "sitcom" ? "sitcom" : "drama"}` : null,
     eps.length ? `${eps.length} episodes` : null,
     show.episode_seconds ? `${show.episode_seconds} s each` : null,
-    show.resolution ?? null,
+    tierOf(show),
     show.language ? `dialogue: ${show.language}` : null,
   ]
     .filter(Boolean)
@@ -312,6 +334,18 @@ const RULES =
   "Rules: every character is a fictional adult (18+). Never cast minors, real people, celebrities or brands, " +
   "and turn down ideas built on them. Never name the services that film the episodes.";
 
+/** The two tiers and their prices (owner table, 2026-11-04); the episode's quote is always the exact figure. */
+const TIERS =
+  "Quality, set per show: offer both tiers by these names with their prices (credits per episode, 15 s / 30 s). " +
+  "Standard (good quality, lowest price): 540p 68 / 135, 720p 142 / 284. " +
+  "High quality (most realistic: faces, outfits and motion stay true to each character's photo): 480p 160 / 320, " +
+  "720p 320 / 640. These are guides; the episode's quote is the exact price.";
+
+const QUALITY_TEXT = "'standard': Standard, good quality, lowest price. 'high': High quality, the most realistic, costs more.";
+const RESOLUTION_TEXT =
+  "Standard films at 540p or 720p, High quality at 480p or 720p (a mismatch moves to the tier's lower one: " +
+  "Standard 480p becomes 540p, High quality 540p becomes 480p). The lower one costs about half.";
+
 // --- Tools -------------------------------------------------------------------------
 
 const versely_plan_drama_show = defineTool({
@@ -321,15 +355,19 @@ const versely_plan_drama_show = defineTool({
     "FREE, no credits; takes up to ~40 s. Use it when the user asks for a drama, series, web series, micro drama, " +
     "short drama, sitcom or \"a show\". The flow:\n" +
     "1. Interview briefly first: at most 2 rounds of short multiple-choice questions, recommended answer first " +
-    "(story or genre, episode length, the two leads). With no idea yet, pitch 3 one-line premises to pick from.\n" +
+    "(story or genre, episode length, the two leads, and quality: Standard ~135 credits for 30 s at 540p / ~284 at " +
+    "720p, or High quality ~320 at 480p / ~640 at 720p). With no idea yet, pitch 3 one-line premises to pick from.\n" +
     "2. Call this once. It writes the season (episode titles), casts 2 leads and up to 4 supporting actors with " +
-    "portraits, builds the locations and writes Episode 1.\n" +
+    "portraits (the user's own characters from cast_avatar_ids first, then Versely's ready-made characters; a new " +
+    "face only when none fits), builds the locations and writes Episode 1.\n" +
     "3. Show the user the cast (names, one line each), the episode titles, Episode 1's lines and its exact price in " +
-    "credits. Their yes is the approval.\n" +
+    "credits with its tier. Their yes is the approval.\n" +
     "4. Only then call versely_film_drama_episode (n: 1, confirm_credits: that price). Filming takes about 10 " +
     "minutes; say so, then check with versely_get_drama_show.\n" +
     "5. Each later episode: versely_write_drama_episode, show its lines and price, yes, versely_film_drama_episode.\n" +
-    "Edit names, looks, voices or settings for free with versely_update_drama_show. " +
+    "Edit names, looks, voices, quality or other settings for free with versely_update_drama_show. " +
+    TIERS +
+    " " +
     RULES,
   meta: metaForMediaCard(),
   inputSchema: z.object({
@@ -346,12 +384,16 @@ const versely_plan_drama_show = defineTool({
       .union([z.literal(15), z.literal(30)])
       .optional()
       .describe("Episode length: 30 (default, two clips) or 15 (one clip, about half the price)."),
-    resolution: z.enum(["540p", "720p"]).optional().describe("Default '720p'. 540p costs less."),
+    quality: z.enum(QUALITIES).optional().describe(`Default 'standard'. ${QUALITY_TEXT}`),
+    resolution: z.enum(RESOLUTIONS).optional().describe(`Default '720p'. ${RESOLUTION_TEXT}`),
     cast_avatar_ids: z
       .array(z.string().min(1))
       .max(6)
       .optional()
-      .describe("Cast the user's own characters (ids from versely_list_hook_characters); their portraits are reused."),
+      .describe(
+        "Cast the user's own characters (ids from versely_list_hook_characters); their portraits are reused. " +
+          "The rest of the cast comes from Versely's ready-made characters.",
+      ),
   }),
   handler: async (input, ctx) => {
     const res = await ctx.client.post("/api/v1/drama/shows", input, { timeoutMs: SYNC_TIMEOUT_MS });
@@ -365,10 +407,13 @@ const versely_plan_drama_show = defineTool({
 const versely_update_drama_show = defineTool({
   name: "versely_update_drama_show",
   description:
-    "Edit a short drama: title, logline, dialogue language, episode length (15 or 30 s), resolution, or a cast " +
-    "member's name, look, voice or personality (regenerate_portrait: true draws a new portrait). FREE. Refused while " +
-    "an episode is filming. A new length or resolution changes the price of unfilmed episodes: get the new price with " +
-    "versely_get_drama_quote and show it before filming. Edits apply to the episodes filmed from now on. " +
+    "Edit a short drama: title, logline, dialogue language, episode length (15 or 30 s), quality (Standard or High " +
+    "quality), resolution, or a cast member's name, look, voice or personality (regenerate_portrait: true draws a new " +
+    "portrait). FREE. Refused while an episode is filming. A new length, quality or resolution re-prices every " +
+    "scripted episode and keeps its script: show the new price (in the result, or from versely_get_drama_quote) " +
+    "before filming. Edits apply to the episodes filmed from now on. " +
+    TIERS +
+    " " +
     RULES,
   inputSchema: z.object({
     show_id: ShowId,
@@ -376,7 +421,8 @@ const versely_update_drama_show = defineTool({
     logline: z.string().min(1).max(500).optional(),
     language: z.string().min(2).max(35).optional().describe("Dialogue language, BCP-47 ('en', 'hi', 'es'...)."),
     episode_seconds: z.union([z.literal(15), z.literal(30)]).optional(),
-    resolution: z.enum(["540p", "720p"]).optional(),
+    quality: z.enum(QUALITIES).optional().describe(QUALITY_TEXT),
+    resolution: z.enum(RESOLUTIONS).optional().describe(RESOLUTION_TEXT),
     cast: z
       .array(
         z.object({
@@ -433,9 +479,9 @@ const versely_write_drama_episode = defineTool({
 const versely_get_drama_quote = defineTool({
   name: "versely_get_drama_quote",
   description:
-    "The exact credits to film episode n of a short drama as it is scripted now, with its length, resolution and " +
-    "the user's balance. FREE. Use it to re-check the price before asking the user to approve filming, and pass it " +
-    "as confirm_credits to versely_film_drama_episode.",
+    "The exact credits to film episode n of a short drama as it is scripted now, with its length, quality (Standard " +
+    "or High quality), resolution and the user's balance. FREE. Use it to re-check the price before asking the user " +
+    "to approve filming, and pass it as confirm_credits to versely_film_drama_episode.",
   inputSchema: z.object({ show_id: ShowId, n: EpisodeN }),
   handler: async (input, ctx) => {
     const res = await ctx.client.get<Record<string, unknown>>(
@@ -446,7 +492,9 @@ const versely_get_drama_quote = defineTool({
     const parts = [
       `Episode ${input.n}: ${credits(q.credits)} to film`,
       typeof q.seconds === "number" ? `${q.seconds} s` : null,
-      typeof q.resolution === "string" ? q.resolution : null,
+      typeof q.quality === "string" || typeof q.resolution === "string"
+        ? tierOf({ quality: q.quality as string | undefined, resolution: q.resolution as string | undefined })
+        : null,
     ].filter(Boolean);
     const balance = typeof q.balance === "number" ? ` Balance: ${q.balance} credits.` : "";
     return {
@@ -528,16 +576,21 @@ function filmConflict(err: VerselyApiError, showId: string, n: number, offered: 
   const body = (err.body ?? {}) as Record<string, unknown>;
   const nested = [body, body.data, body.quote, (body.data as Record<string, unknown> | undefined)?.quote];
   let fresh: number | undefined;
+  let tier = "";
   for (const src of nested) {
-    const v = (src as Record<string, unknown> | undefined)?.credits;
+    const q = src as Record<string, unknown> | undefined;
+    const v = q?.credits;
     if (typeof v === "number" && Number.isFinite(v)) {
       fresh = v;
+      if (typeof q?.quality === "string" || typeof q?.resolution === "string") {
+        tier = `, ${tierOf({ quality: q?.quality as string | undefined, resolution: q?.resolution as string | undefined })}`;
+      }
       break;
     }
   }
   if (fresh !== undefined && fresh !== offered) {
     return errorResult(
-      `Not filmed, nothing charged: the price of episode ${n} is now ${credits(fresh)} (you passed ${offered}). ` +
+      `Not filmed, nothing charged: the price of episode ${n} is now ${credits(fresh)}${tier} (you passed ${offered}). ` +
         `Show the user the new price and ask again; if they agree, call versely_film_drama_episode with confirm_credits: ${fresh}.`,
     );
   }

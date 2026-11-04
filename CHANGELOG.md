@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Short drama quality tiers (2026-11-04)
+
+- **`quality` on `versely_plan_drama_show` and `versely_update_drama_show`**: `"standard"` (default; shown as "Standard", good quality, lowest price) or `"high"` (shown as "High quality": faces, outfits and motion stay true to each character's photo). `resolution` now takes `480p | 540p | 720p` (Standard films at 540p or 720p, High quality at 480p or 720p; the backend moves a mismatch to the tier's lower one).
+- The descriptions have the assistant offer both tiers with their prices (credits per episode, 15 s / 30 s: Standard 540p 68 / 135, 720p 142 / 284; High quality 480p 160 / 320, 720p 320 / 640) and say that changing quality or resolution re-prices every scripted episode while keeping its script. Planning casts the user's avatars first, then Versely's ready-made characters. The ChatGPT server instructions name both tiers in the interview round.
+- Show text, `versely_get_drama_quote` and the stale-price refusal carry the tier ("High quality 480p"). Fake-backend tier normalisation and re-pricing, plus smoke assertions; TOOLS.md regenerated (still 177 tools, 163 in the plugin).
+
 ### Added — Short dramas (2026-11-04)
 
 - **Seven tools wrapping `/api/v1/drama` 1:1** (`src/tools/drama.ts`), in both profiles (177 tools; 163 in the ChatGPT plugin): `versely_plan_drama_show` (free: season, cast portraits, locations, Episode 1 script), `versely_update_drama_show` and `versely_write_drama_episode` (free), `versely_get_drama_quote`, `versely_film_drama_episode` (the one paid call: `confirm_credits` must equal the current quote; a stale price comes back as a plain "not filmed, nothing charged, the price is now N" error), `versely_get_drama_show` and `versely_list_drama_shows`.

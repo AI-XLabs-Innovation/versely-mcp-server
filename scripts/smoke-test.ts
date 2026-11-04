@@ -724,6 +724,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const planText = textOf(planned);
   const planSc = planned.structuredContent as Record<string, any> | undefined;
   assert("plan_drama_show forwards the idea and shows cast, Episode 1 lines and price", lastBody("/api/v1/drama/shows").idea === "An intern buys the company on day one" && planText.includes("Mara") && planText.includes("Dalton: \"You're fired.\"") && planText.includes("197 credits") && planText.includes("confirm_credits: 197"), planText);
+  assert("plan_drama_show shows the tier (Standard by default)", planText.includes("Standard 720p") && !planText.includes("High quality"), planText);
   assert("plan_drama_show's card shows the cast portraits", planSc?.status === "completed" && planSc?.assets?.[0]?.url === "https://img.versely.studio/drama/mara.jpg", JSON.stringify(planSc));
   const stale = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 150 });
   assert("film_drama_episode with a stale price is refused with the new one", stale.isError === true && textOf(stale).includes("now 197 credits") && textOf(stale).includes("nothing charged"), textOf(stale));
@@ -738,8 +739,21 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("write_drama_episode returns the lines and the price", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/2/script").notes === "more comedy" && ep2.includes("Mara: \"Notes: more comedy\"") && ep2.includes("98 credits"), ep2);
   const dramaQuote = textOf(await call(openai, "versely_get_drama_quote", { show_id: "drm_smoke000001", n: 2 }));
   assert("get_drama_quote gives the exact price and balance", dramaQuote.includes("98 credits") && dramaQuote.includes("confirm_credits: 98") && dramaQuote.includes("Balance: 250"), dramaQuote);
-  const dramaDescs = oTools.filter((t) => t.name.includes("drama")).map((t) => t.description ?? "").join(" ");
-  assert("drama tools name no provider", !/vidu|runpod|higgsfield|sume|seedance|nano.?banana|z-image/i.test(dramaDescs));
+  // Quality tiers: switching to High quality re-prices the scripted episode; a
+  // Standard-only resolution moves to the tier's lower one (540p -> 480p).
+  const hq = textOf(await call(openai, "versely_update_drama_show", { show_id: "drm_smoke000001", quality: "high", resolution: "540p" }));
+  const patchBody = (backend.requests.filter((r) => r.method === "PATCH" && r.path === "/api/v1/drama/shows/drm_smoke000001").at(-1)?.body ?? {}) as Record<string, unknown>;
+  assert("update_drama_show forwards quality and shows the new tier and price", patchBody.quality === "high" && patchBody.resolution === "540p" && hq.includes("High quality 480p") && hq.includes("320 credits") && hq.includes("confirm_credits: 320"), hq);
+  const hqQuote = textOf(await call(openai, "versely_get_drama_quote", { show_id: "drm_smoke000001", n: 2 }));
+  assert("get_drama_quote passes the quality through", hqQuote.includes("320 credits") && hqQuote.includes("High quality 480p") && hqQuote.includes("confirm_credits: 320"), hqQuote);
+  const tierEnum = (n: string, p: string) => JSON.stringify(((byName(oTools, n)?.inputSchema.properties ?? {}) as Record<string, { enum?: unknown }>)[p]?.enum);
+  assert("plan and update take quality and the three resolutions", ["versely_plan_drama_show", "versely_update_drama_show"].every((n) => tierEnum(n, "quality") === '["standard","high"]' && tierEnum(n, "resolution") === '["480p","540p","720p"]'));
+  for (const n of ["versely_plan_drama_show", "versely_update_drama_show"]) {
+    const d = byName(oTools, n)?.description ?? "";
+    assert(`${n} offers both tiers with their prices`, ["Standard", "High quality", "68 / 135", "142 / 284", "160 / 320", "320 / 640"].every((s) => d.includes(s)), d);
+  }
+  const dramaDescs = oTools.filter((t) => t.name.includes("drama")).map((t) => JSON.stringify([t.description, t.inputSchema])).join(" ");
+  assert("drama tools name no provider", !/vidu|runpod|higgsfield|sume|seedance|nano.?banana|z-image|gpt.?image|openai|\bfal\b/i.test(dramaDescs));
   assert("only filming a drama episode spends credits", (byName(oTools, "versely_film_drama_episode")?.inputSchema.required ?? []).includes("confirm_credits") && (byName(oTools, "versely_get_drama_quote")?.annotations as Record<string, unknown> | undefined)?.readOnlyHint === true);
   const hintsOf = (n: string) => (byName(oTools, n)?.annotations ?? {}) as Record<string, unknown>;
   assert("the stats reader is read-only and the refresher is not", hintsOf("versely_get_post_analytics").readOnlyHint === true && hintsOf("versely_refresh_post_analytics").readOnlyHint === false && hintsOf("versely_refresh_post_analytics").openWorldHint === true);

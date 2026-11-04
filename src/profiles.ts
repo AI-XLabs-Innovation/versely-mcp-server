@@ -105,6 +105,7 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "and remake the picks with versely_reuse_hooks, or write new ones for a brand with versely_create_hook_pack; " +
   "quote the cost first with versely_quote_hooks. " +
   "Short dramas (a series, web series, micro drama, sitcom or \"a show\"): ask at most 2 short multiple-choice rounds, " +
+  "including the quality: Standard (about 135 credits for 30 s) or High quality (about 320 at 480p, 640 at 720p); " +
   "then plan for free with versely_plan_drama_show; show the cast, episode titles, Episode 1's lines and the exact " +
   "credits, and call versely_film_drama_episode with confirm_credits only after the user says yes. Characters are " +
   "fictional adults; no real people or brands.";

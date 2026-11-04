@@ -110,8 +110,23 @@ const PLUGIN_BLOCK_FREE = {
   runpod_only: true,
 };
 
+/** Credits per episode by tier, resolution and length (the owner's table, 2026-11-04). */
+const DRAMA_PRICES: Record<string, Record<string, Record<number, number>>> = {
+  standard: { "540p": { 15: 68, 30: 135 }, "720p": { 15: 142, 30: 284 } },
+  high: { "480p": { 15: 160, 30: 320 }, "720p": { 15: 320, 30: 640 } },
+};
+
+/** Like the backend: Standard is 540p | 720p, High quality 480p | 720p; a mismatch moves to the tier's lower one. */
+function dramaTier(quality: unknown, resolution: unknown): { quality: "standard" | "high"; resolution: string } {
+  const q = quality === "high" ? "high" : "standard";
+  let r = resolution === "480p" || resolution === "540p" || resolution === "720p" ? resolution : "720p";
+  if (q === "standard" && r === "480p") r = "540p";
+  if (q === "high" && r === "540p") r = "480p";
+  return { quality: q, resolution: r };
+}
+
 /** A planned short drama as POST /drama/shows answers it: Episode 1 scripted and quoted. */
-function makeDramaShow(idea: string, seconds: 15 | 30): Record<string, unknown> {
+function makeDramaShow(idea: string, seconds: 15 | 30, tier: { quality: string; resolution: string }): Record<string, unknown> {
   return {
     id: "drm_smoke000001",
     title: "Day One",
@@ -120,7 +135,8 @@ function makeDramaShow(idea: string, seconds: 15 | 30): Record<string, unknown> 
     format: "drama",
     language: "en",
     episode_seconds: seconds,
-    resolution: "720p",
+    quality: tier.quality,
+    resolution: tier.resolution,
     bible: { premise: idea, tone: "light", world: "a glass office", continuity: [] },
     cast: [
       { key: "mara", name: "Mara", role: "lead", age: 24, look: "short dark bob, grey hoodie", voice: "bright, dry", personality: "Quiet new intern who owns more than she says.", portrait_url: "https://img.versely.studio/drama/mara.jpg", avatar_id: null },
@@ -403,7 +419,7 @@ export async function startFakeBackend(opts: {
     const dramaShow = /^\/api\/v1\/drama\/shows\/([^/]+)$/.exec(path);
     const dramaEp = /^\/api\/v1\/drama\/shows\/([^/]+)\/episodes\/(\d+)\/(script|quote|film)$/.exec(path);
     if (method === "POST" && path === "/api/v1/drama/shows") {
-      drama = makeDramaShow(String(b.idea ?? ""), b.episode_seconds === 15 ? 15 : 30);
+      drama = makeDramaShow(String(b.idea ?? ""), b.episode_seconds === 15 ? 15 : 30, dramaTier(b.quality, b.resolution));
       dramaReads = 0;
       return send(res, 200, { success: true, show: drama });
     }
@@ -420,7 +436,13 @@ export async function startFakeBackend(opts: {
         return send(res, 200, { success: true, show: drama });
       }
       if (method === "PATCH") {
-        for (const k of ["title", "logline", "language", "episode_seconds", "resolution"]) if (b[k] !== undefined) drama[k] = b[k];
+        for (const k of ["title", "logline", "language", "episode_seconds"]) if (b[k] !== undefined) drama[k] = b[k];
+        // A new length, quality or resolution re-prices every scripted episode; the scripts stay.
+        if (b.quality !== undefined || b.resolution !== undefined || b.episode_seconds !== undefined) {
+          Object.assign(drama, dramaTier(b.quality ?? drama.quality, b.resolution ?? drama.resolution));
+          const price = DRAMA_PRICES[String(drama.quality)]?.[String(drama.resolution)]?.[Number(drama.episode_seconds)];
+          for (const ep of eps) if (ep.status === "scripted" && price !== undefined) ep.credits = price;
+        }
         return send(res, 200, { success: true, show: drama });
       }
     }
@@ -433,7 +455,7 @@ export async function startFakeBackend(opts: {
         return send(res, 200, { success: true, show: drama, episode: ep });
       }
       if (method === "GET" && dramaEp[3] === "quote") {
-        return send(res, 200, { success: true, credits: ep.credits, seconds: drama.episode_seconds, resolution: drama.resolution, balance: 250 });
+        return send(res, 200, { success: true, credits: ep.credits, seconds: drama.episode_seconds, resolution: drama.resolution, quality: drama.quality, balance: 250 });
       }
       if (method === "POST" && dramaEp[3] === "film") {
         if (ep.status === "filming" || ep.status === "ready") return send(res, 409, { success: false, error: "already_filming", message: "This episode is already filming." });
