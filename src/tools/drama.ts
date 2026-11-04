@@ -5,9 +5,10 @@
 // builds the locations and writes Episode 1, all free. Each episode is then
 // filmed after the user approves its script and one credit price (~10 min in
 // the background), with the same cast every episode. Two quality tiers,
-// "Standard" and "High quality", set per show (quality + resolution) and
-// changeable for free until filming; they set the price. The REST API is
-// wrapped 1:1:
+// "Standard" and "High quality", set per show and changeable for free until
+// filming; they set the price. Standard is always 1080p (shot by shot, each
+// shot filmed from the cast's photos); the resolution only matters for High
+// quality (480p or 720p). The REST API is wrapped 1:1:
 //
 //   POST   /drama/shows                          plan (free, sync, <= ~40 s)
 //   GET    /drama/shows                          list
@@ -45,8 +46,12 @@ const GENRES = [
 ] as const;
 
 const QUALITIES = ["standard", "high"] as const;
-/** Standard films at 540p or 720p, High quality at 480p or 720p; the backend moves a mismatch to the tier's lower one. */
-const RESOLUTIONS = ["480p", "540p", "720p"] as const;
+/**
+ * Standard always films at 1080p, whatever is sent. High quality films at 480p
+ * or 720p; the backend reads 1080p as 720p and 540p (still accepted from older
+ * callers) as 480p.
+ */
+const RESOLUTIONS = ["480p", "540p", "720p", "1080p"] as const;
 
 type EpisodeStatus = "planned" | "scripted" | "filming" | "ready" | "failed";
 
@@ -127,7 +132,7 @@ function qualityLabel(q: unknown): string {
   return q === "high" ? "High quality" : "Standard";
 }
 
-/** "High quality 720p", "Standard 540p". */
+/** "High quality 720p", "Standard 1080p". */
 function tierOf(show: Pick<DramaShow, "quality" | "resolution">): string {
   return [qualityLabel(show.quality), show.resolution].filter(Boolean).join(" ");
 }
@@ -334,17 +339,19 @@ const RULES =
   "Rules: every character is a fictional adult (18+). Never cast minors, real people, celebrities or brands, " +
   "and turn down ideas built on them. Never name the services that film the episodes.";
 
-/** The two tiers and their prices (owner table, 2026-11-04); the episode's quote is always the exact figure. */
+/** The two tiers and their prices (owner table, 2026-11-04, Standard at 1080p); the episode's quote is always the exact figure. */
 const TIERS =
-  "Quality, set per show: offer both tiers by these names with their prices (credits per episode, 15 s / 30 s). " +
-  "Standard (good quality, lowest price): 540p 68 / 135, 720p 142 / 284. " +
-  "High quality (most realistic: faces, outfits and motion stay true to each character's photo): 480p 160 / 320, " +
-  "720p 320 / 640. These are guides; the episode's quote is the exact price.";
+  "Quality, set per show: offer both tiers by these names with their prices (credits per episode). " +
+  "Standard (sharp 1080p; each shot is filmed from the cast's photos): always 1080p, about 150 for 15 s and about " +
+  "300 for 30 s (the exact price also depends on how many shots the script has). " +
+  "High quality (most realistic: faces, outfits and motion stay true to each character's photo), 15 s / 30 s: " +
+  "480p 160 / 320, 720p 320 / 640. The resolution only matters for High quality. These are guides; the episode's " +
+  "quote is the exact price.";
 
-const QUALITY_TEXT = "'standard': Standard, good quality, lowest price. 'high': High quality, the most realistic, costs more.";
+const QUALITY_TEXT = "'standard': Standard, sharp 1080p, lowest price. 'high': High quality, the most realistic, costs more.";
 const RESOLUTION_TEXT =
-  "Standard films at 540p or 720p, High quality at 480p or 720p (a mismatch moves to the tier's lower one: " +
-  "Standard 480p becomes 540p, High quality 540p becomes 480p). The lower one costs about half.";
+  "Only matters for High quality: '480p' or '720p' (480p costs about half; '1080p' is read as 720p). Standard is " +
+  "always 1080p whatever is sent, so leave it out for Standard. '540p' is still accepted (High quality reads it as 480p).";
 
 // --- Tools -------------------------------------------------------------------------
 
@@ -355,8 +362,9 @@ const versely_plan_drama_show = defineTool({
     "FREE, no credits; takes up to ~40 s. Use it when the user asks for a drama, series, web series, micro drama, " +
     "short drama, sitcom or \"a show\". The flow:\n" +
     "1. Interview briefly first: at most 2 rounds of short multiple-choice questions, recommended answer first " +
-    "(story or genre, episode length, the two leads, and quality: Standard ~135 credits for 30 s at 540p / ~284 at " +
-    "720p, or High quality ~320 at 480p / ~640 at 720p). With no idea yet, pitch 3 one-line premises to pick from.\n" +
+    "(story or genre, episode length, the two leads, and quality: Standard, sharp 1080p, ~150 credits for 15 s / " +
+    "~300 for 30 s, or High quality ~320 for 30 s at 480p / ~640 at 720p). With no idea yet, pitch 3 one-line " +
+    "premises to pick from.\n" +
     "2. Call this once. It writes the season (episode titles), casts 2 leads and up to 4 supporting actors with " +
     "portraits (the user's own characters from cast_avatar_ids first, then Versely's ready-made characters; a new " +
     "face only when none fits), builds the locations and writes Episode 1.\n" +
@@ -385,7 +393,7 @@ const versely_plan_drama_show = defineTool({
       .optional()
       .describe("Episode length: 30 (default, two clips) or 15 (one clip, about half the price)."),
     quality: z.enum(QUALITIES).optional().describe(`Default 'standard'. ${QUALITY_TEXT}`),
-    resolution: z.enum(RESOLUTIONS).optional().describe(`Default '720p'. ${RESOLUTION_TEXT}`),
+    resolution: z.enum(RESOLUTIONS).optional().describe(`Default: 720p for High quality. ${RESOLUTION_TEXT}`),
     cast_avatar_ids: z
       .array(z.string().min(1))
       .max(6)
@@ -408,8 +416,9 @@ const versely_update_drama_show = defineTool({
   name: "versely_update_drama_show",
   description:
     "Edit a short drama: title, logline, dialogue language, episode length (15 or 30 s), quality (Standard or High " +
-    "quality), resolution, or a cast member's name, look, voice or personality (regenerate_portrait: true draws a new " +
-    "portrait). FREE. Refused while an episode is filming. A new length, quality or resolution re-prices every " +
+    "quality), resolution (High quality only), or a cast member's name, look, voice or personality " +
+    "(regenerate_portrait: true draws a new portrait). FREE. Refused while an episode is filming. A new length, " +
+    "quality or resolution re-prices every " +
     "scripted episode and keeps its script: show the new price (in the result, or from versely_get_drama_quote) " +
     "before filming. Edits apply to the episodes filmed from now on. " +
     TIERS +

@@ -720,37 +720,44 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("refresh_post_analytics collects then reads the stats", stats.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 1, JSON.stringify(stats));
   // Short dramas: plan free, show cast + lines + price, film only with the
   // approved price (a stale one is refused, nothing charged), follow it to the video.
-  const planned = await call(openai, "versely_plan_drama_show", { idea: "An intern buys the company on day one", episode_seconds: 30 });
+  const planned = await call(openai, "versely_plan_drama_show", { idea: "An intern buys the company on day one", episode_seconds: 30, resolution: "720p" });
   const planText = textOf(planned);
   const planSc = planned.structuredContent as Record<string, any> | undefined;
-  assert("plan_drama_show forwards the idea and shows cast, Episode 1 lines and price", lastBody("/api/v1/drama/shows").idea === "An intern buys the company on day one" && planText.includes("Mara") && planText.includes("Dalton: \"You're fired.\"") && planText.includes("197 credits") && planText.includes("confirm_credits: 197"), planText);
-  assert("plan_drama_show shows the tier (Standard by default)", planText.includes("Standard 720p") && !planText.includes("High quality"), planText);
+  assert("plan_drama_show forwards the idea and shows cast, Episode 1 lines and price", lastBody("/api/v1/drama/shows").idea === "An intern buys the company on day one" && planText.includes("Mara") && planText.includes("Dalton: \"You're fired.\"") && planText.includes("286 credits") && planText.includes("confirm_credits: 286"), planText);
+  assert("plan_drama_show shows the tier (Standard by default, always 1080p)", lastBody("/api/v1/drama/shows").resolution === "720p" && planText.includes("Standard 1080p") && !planText.includes("High quality"), planText);
   assert("plan_drama_show's card shows the cast portraits", planSc?.status === "completed" && planSc?.assets?.[0]?.url === "https://img.versely.studio/drama/mara.jpg", JSON.stringify(planSc));
   const stale = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 150 });
-  assert("film_drama_episode with a stale price is refused with the new one", stale.isError === true && textOf(stale).includes("now 197 credits") && textOf(stale).includes("nothing charged"), textOf(stale));
-  const filming = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 197 });
+  assert("film_drama_episode with a stale price is refused with the new one", stale.isError === true && textOf(stale).includes("now 286 credits") && textOf(stale).includes("nothing charged"), textOf(stale));
+  const filming = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 286 });
   const filmSc = filming.structuredContent as Record<string, any> | undefined;
-  assert("film_drama_episode sends confirm_credits and follows the episode", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/1/film").confirm_credits === 197 && filmSc?.status === "pending" && filmSc?.poll?.tool_name === "versely_get_drama_show" && filmSc?.poll?.args?.n === 1 && textOf(filming).includes("about 10 minutes"), JSON.stringify(filmSc));
-  const filmAgain = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 197, confirm_repeat: true });
+  assert("film_drama_episode sends confirm_credits and follows the episode", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/1/film").confirm_credits === 286 && filmSc?.status === "pending" && filmSc?.poll?.tool_name === "versely_get_drama_show" && filmSc?.poll?.args?.n === 1 && textOf(filming).includes("about 10 minutes"), JSON.stringify(filmSc));
+  const filmAgain = await call(openai, "versely_film_drama_episode", { show_id: "drm_smoke000001", n: 1, confirm_credits: 286, confirm_repeat: true });
   assert("filming the same episode again is refused", filmAgain.isError === true && textOf(filmAgain).includes("already filming"), textOf(filmAgain));
   const epDone = (await call(openai, "versely_get_drama_show", { show_id: "drm_smoke000001", n: 1 })).structuredContent as Record<string, any> | undefined;
   assert("get_drama_show ends with the filmed episode", epDone?.status === "completed" && epDone?.assets?.[0]?.url === "https://videos.versely.studio/drama/drm_smoke000001-1.mp4", JSON.stringify(epDone));
   const ep2 = textOf(await call(openai, "versely_write_drama_episode", { show_id: "drm_smoke000001", n: 2, notes: "more comedy" }));
-  assert("write_drama_episode returns the lines and the price", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/2/script").notes === "more comedy" && ep2.includes("Mara: \"Notes: more comedy\"") && ep2.includes("98 credits"), ep2);
+  assert("write_drama_episode returns the lines and the price", lastBody("/api/v1/drama/shows/drm_smoke000001/episodes/2/script").notes === "more comedy" && ep2.includes("Mara: \"Notes: more comedy\"") && ep2.includes("137 credits"), ep2);
   const dramaQuote = textOf(await call(openai, "versely_get_drama_quote", { show_id: "drm_smoke000001", n: 2 }));
-  assert("get_drama_quote gives the exact price and balance", dramaQuote.includes("98 credits") && dramaQuote.includes("confirm_credits: 98") && dramaQuote.includes("Balance: 250"), dramaQuote);
-  // Quality tiers: switching to High quality re-prices the scripted episode; a
-  // Standard-only resolution moves to the tier's lower one (540p -> 480p).
+  assert("get_drama_quote gives the exact price and balance", dramaQuote.includes("137 credits") && dramaQuote.includes("confirm_credits: 137") && dramaQuote.includes("Balance: 250"), dramaQuote);
+  // Quality tiers: switching to High quality re-prices the scripted episode
+  // (15 s at 480p = 160); the legacy 540p reads as 480p, 1080p as 720p, and
+  // Standard is 1080p whatever is sent.
+  const lastPatch = () => (backend.requests.filter((r) => r.method === "PATCH" && r.path === "/api/v1/drama/shows/drm_smoke000001").at(-1)?.body ?? {}) as Record<string, unknown>;
   const hq = textOf(await call(openai, "versely_update_drama_show", { show_id: "drm_smoke000001", quality: "high", resolution: "540p" }));
-  const patchBody = (backend.requests.filter((r) => r.method === "PATCH" && r.path === "/api/v1/drama/shows/drm_smoke000001").at(-1)?.body ?? {}) as Record<string, unknown>;
-  assert("update_drama_show forwards quality and shows the new tier and price", patchBody.quality === "high" && patchBody.resolution === "540p" && hq.includes("High quality 480p") && hq.includes("320 credits") && hq.includes("confirm_credits: 320"), hq);
+  const patchBody = lastPatch();
+  assert("update_drama_show forwards quality and shows the new tier and price", patchBody.quality === "high" && patchBody.resolution === "540p" && hq.includes("High quality 480p") && hq.includes("160 credits") && hq.includes("confirm_credits: 160"), hq);
   const hqQuote = textOf(await call(openai, "versely_get_drama_quote", { show_id: "drm_smoke000001", n: 2 }));
-  assert("get_drama_quote passes the quality through", hqQuote.includes("320 credits") && hqQuote.includes("High quality 480p") && hqQuote.includes("confirm_credits: 320"), hqQuote);
+  assert("get_drama_quote passes the quality through", hqQuote.includes("160 credits") && hqQuote.includes("High quality 480p") && hqQuote.includes("confirm_credits: 160"), hqQuote);
+  const hq1080 = textOf(await call(openai, "versely_update_drama_show", { show_id: "drm_smoke000001", resolution: "1080p" }));
+  assert("High quality reads 1080p as 720p and re-prices", lastPatch().resolution === "1080p" && hq1080.includes("High quality 720p") && hq1080.includes("320 credits"), hq1080);
+  const backToStd = textOf(await call(openai, "versely_update_drama_show", { show_id: "drm_smoke000001", quality: "standard", resolution: "540p" }));
+  assert("Standard is always 1080p (a sent 540p too) and re-prices from the script", backToStd.includes("Standard 1080p") && backToStd.includes("137 credits") && !backToStd.includes("540p"), backToStd);
   const tierEnum = (n: string, p: string) => JSON.stringify(((byName(oTools, n)?.inputSchema.properties ?? {}) as Record<string, { enum?: unknown }>)[p]?.enum);
-  assert("plan and update take quality and the three resolutions", ["versely_plan_drama_show", "versely_update_drama_show"].every((n) => tierEnum(n, "quality") === '["standard","high"]' && tierEnum(n, "resolution") === '["480p","540p","720p"]'));
+  assert("plan and update take quality and the four resolutions (540p still accepted)", ["versely_plan_drama_show", "versely_update_drama_show"].every((n) => tierEnum(n, "quality") === '["standard","high"]' && tierEnum(n, "resolution") === '["480p","540p","720p","1080p"]'));
   for (const n of ["versely_plan_drama_show", "versely_update_drama_show"]) {
     const d = byName(oTools, n)?.description ?? "";
-    assert(`${n} offers both tiers with their prices`, ["Standard", "High quality", "68 / 135", "142 / 284", "160 / 320", "320 / 640"].every((s) => d.includes(s)), d);
+    assert(`${n} offers both tiers with their prices`, ["Standard", "High quality", "always 1080p", "about 150 for 15 s", "about 300 for 30 s", "160 / 320", "320 / 640", "only matters for High quality"].every((s) => d.includes(s)), d);
+    assert(`${n} carries none of the old Standard figures`, !/\b(68|70|135|142|284|285)\b|540p/.test(d), d);
   }
   const dramaDescs = oTools.filter((t) => t.name.includes("drama")).map((t) => JSON.stringify([t.description, t.inputSchema])).join(" ");
   assert("drama tools name no provider", !/vidu|runpod|higgsfield|sume|seedance|nano.?banana|z-image|gpt.?image|openai|\bfal\b/i.test(dramaDescs));

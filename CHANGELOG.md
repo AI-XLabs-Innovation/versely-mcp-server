@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — Short drama Standard is always 1080p (2026-11-04)
+
+- **Standard films shot by shot at 1080p**, each shot from the cast's photos, so it has no resolution choice: about 150 credits for a 15 s episode and about 300 for 30 s (the exact quote also counts the script's shots). High quality is unchanged (480p 160 / 320, 720p 320 / 640). `resolution` on `versely_plan_drama_show` and `versely_update_drama_show` takes `480p | 720p | 1080p` and only matters for High quality (the backend reads 1080p as 720p there); `540p` is still accepted (High quality reads it as 480p). Descriptions and the ChatGPT server instructions carry the new prices and drop the old 540p / 720p Standard figures. The fake backend prices a script from its seconds and shots like the server; smoke asserts the mapping, the re-pricing and that no old figure is left. TOOLS.md regenerated (still 177 tools, 163 in the plugin).
+
 ### Added — Short drama quality tiers (2026-11-04)
 
 - **`quality` on `versely_plan_drama_show` and `versely_update_drama_show`**: `"standard"` (default; shown as "Standard", good quality, lowest price) or `"high"` (shown as "High quality": faces, outfits and motion stay true to each character's photo). `resolution` now takes `480p | 540p | 720p` (Standard films at 540p or 720p, High quality at 480p or 720p; the backend moves a mismatch to the tier's lower one).

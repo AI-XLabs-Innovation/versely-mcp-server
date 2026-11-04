@@ -110,23 +110,53 @@ const PLUGIN_BLOCK_FREE = {
   runpod_only: true,
 };
 
-/** Credits per episode by tier, resolution and length (the owner's table, 2026-11-04). */
-const DRAMA_PRICES: Record<string, Record<string, Record<number, number>>> = {
-  standard: { "540p": { 15: 68, 30: 135 }, "720p": { 15: 142, 30: 284 } },
-  high: { "480p": { 15: 160, 30: 320 }, "720p": { 15: 320, 30: 640 } },
+/**
+ * Credits per second and per shot by tier and resolution, as the backend
+ * quotes a script (2026-11-04): Standard films every shot at 1080p, so it
+ * pays per second and per shot; High quality pays per second only. The
+ * episode is rounded up once: Standard 15 s of 5 shots = 150, 30 s of 10
+ * shots = 299; High quality 480p 160 / 320, 720p 320 / 640 (15 s / 30 s).
+ */
+const DRAMA_RATES: Record<string, Record<string, { second: number; shot: number }>> = {
+  standard: { "1080p": { second: 8.87574, shot: 3.25444 } },
+  high: { "480p": { second: 10.65089, shot: 0 }, "720p": { second: 21.30178, shot: 0 } },
 };
 
-/** Like the backend: Standard is 540p | 720p, High quality 480p | 720p; a mismatch moves to the tier's lower one. */
+/** Like the backend: Standard is always 1080p; High quality is 480p | 720p (1080p -> 720p, anything else -> 480p). Default 720p. */
 function dramaTier(quality: unknown, resolution: unknown): { quality: "standard" | "high"; resolution: string } {
-  const q = quality === "high" ? "high" : "standard";
-  let r = resolution === "480p" || resolution === "540p" || resolution === "720p" ? resolution : "720p";
-  if (q === "standard" && r === "480p") r = "540p";
-  if (q === "high" && r === "540p") r = "480p";
-  return { quality: q, resolution: r };
+  if (quality !== "high") return { quality: "standard", resolution: "1080p" };
+  const r = resolution === undefined || resolution === null ? "720p" : String(resolution);
+  return { quality: "high", resolution: r === "720p" || r === "1080p" ? "720p" : "480p" };
+}
+
+type DramaScriptShape = { clips?: Array<{ seconds?: number; shots?: unknown[] }> } | null | undefined;
+
+/** The exact quote for a script at a tier, like the backend's: seconds and shots, rounded up once. */
+function dramaCredits(tier: { quality: string; resolution: string }, script: DramaScriptShape): number | null {
+  const rate = DRAMA_RATES[tier.quality]?.[tier.resolution];
+  const clips = script?.clips ?? [];
+  if (!rate || !clips.length) return null;
+  const seconds = clips.reduce((a, c) => a + Math.round(c.seconds ?? 0), 0);
+  const shots = clips.reduce((a, c) => a + Math.max(1, c.shots?.length ?? 0), 0);
+  return Math.ceil(parseFloat((seconds * rate.second + shots * rate.shot).toFixed(6)));
 }
 
 /** A planned short drama as POST /drama/shows answers it: Episode 1 scripted and quoted. */
 function makeDramaShow(idea: string, seconds: 15 | 30, tier: { quality: string; resolution: string }): Record<string, unknown> {
+  // Episode 1: one 15 s clip, or two for a 30 s episode, three shots each.
+  const clips = [
+    { seconds: 15, location: "office", cast: ["dalton", "mara"], shots: [
+      { camera: "wide on the open-plan office", action: "dalton drops a box on mara's desk", lines: [] },
+      { camera: "close-up on dalton", action: "he points at the box", lines: [{ who: "dalton", line: "You're fired." }] },
+      { camera: "close-up on mara", action: "she shrugs", lines: [{ who: "mara", line: "That's fine. I just bought the company." }] },
+    ] },
+    { seconds: 15, location: "office", cast: ["dalton", "mara"], shots: [
+      { camera: "close-up on dalton's phone", action: "an email lands: new owner", lines: [] },
+      { camera: "medium on dalton", action: "his face falls", lines: [{ who: "dalton", line: "Is this a joke?" }] },
+      { camera: "close-up on mara", action: "she hands him the box", lines: [{ who: "mara", line: "You'll need this more than me." }] },
+    ] },
+  ].slice(0, seconds === 15 ? 1 : 2);
+  const script = { clips };
   return {
     id: "drm_smoke000001",
     title: "Day One",
@@ -145,11 +175,8 @@ function makeDramaShow(idea: string, seconds: 15 | 30, tier: { quality: string; 
     locations: [{ key: "office", name: "Glass office", look: "open plan, city view" }],
     episodes: [
       {
-        n: 1, title: "Day One", goal: "", turn: "", cliffhanger: "", status: "scripted", credits: 197,
-        script: { clips: [{ seconds: 15, location: "office", cast: ["dalton", "mara"], shots: [
-          { camera: "close-up on dalton", action: "he points at the box", lines: [{ who: "dalton", line: "You're fired." }] },
-          { camera: "close-up on mara", action: "she shrugs", lines: [{ who: "mara", line: "That's fine. I just bought the company." }] },
-        ] }] },
+        n: 1, title: "Day One", goal: "", turn: "", cliffhanger: "", status: "scripted", credits: dramaCredits(tier, script),
+        script,
         video_url: null, poster_url: null, user_video_id: null, error: null, started_at: null, finished_at: null,
       },
       { n: 2, title: "The Board", goal: "", turn: "", cliffhanger: "", status: "planned", script: null, credits: null, video_url: null, poster_url: null, user_video_id: null, error: null, started_at: null, finished_at: null },
@@ -437,11 +464,12 @@ export async function startFakeBackend(opts: {
       }
       if (method === "PATCH") {
         for (const k of ["title", "logline", "language", "episode_seconds"]) if (b[k] !== undefined) drama[k] = b[k];
-        // A new length, quality or resolution re-prices every scripted episode; the scripts stay.
+        // A new quality or resolution re-prices every scripted episode from its script; the scripts stay.
+        // Like the backend, a new quality keeps the resolution tier (Standard's 1080p becomes High quality 720p).
         if (b.quality !== undefined || b.resolution !== undefined || b.episode_seconds !== undefined) {
-          Object.assign(drama, dramaTier(b.quality ?? drama.quality, b.resolution ?? drama.resolution));
-          const price = DRAMA_PRICES[String(drama.quality)]?.[String(drama.resolution)]?.[Number(drama.episode_seconds)];
-          for (const ep of eps) if (ep.status === "scripted" && price !== undefined) ep.credits = price;
+          const tier = dramaTier(b.quality ?? drama.quality, b.resolution ?? drama.resolution);
+          Object.assign(drama, tier);
+          for (const ep of eps) if (ep.status === "scripted") ep.credits = dramaCredits(tier, ep.script as DramaScriptShape);
         }
         return send(res, 200, { success: true, show: drama });
       }
@@ -451,7 +479,8 @@ export async function startFakeBackend(opts: {
       const ep = eps[Number(dramaEp[2]) - 1];
       if (!ep) return send(res, 404, { success: false, error: "Episode not found" });
       if (method === "POST" && dramaEp[3] === "script") {
-        Object.assign(ep, { status: "scripted", credits: 98, script: { clips: [{ seconds: 15, location: "office", cast: ["mara"], shots: [{ camera: "close-up on mara", action: "she smiles", lines: [{ who: "mara", line: `Notes: ${String(b.notes ?? "none")}` }] }] }] } });
+        const script = { clips: [{ seconds: 15, location: "office", cast: ["mara"], shots: [{ camera: "close-up on mara", action: "she smiles", lines: [{ who: "mara", line: `Notes: ${String(b.notes ?? "none")}` }] }] }] };
+        Object.assign(ep, { status: "scripted", credits: dramaCredits({ quality: String(drama.quality), resolution: String(drama.resolution) }, script), script });
         return send(res, 200, { success: true, show: drama, episode: ep });
       }
       if (method === "GET" && dramaEp[3] === "quote") {

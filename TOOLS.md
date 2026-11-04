@@ -1384,12 +1384,12 @@ _7 tools_
 **Plan a short drama** · create · also in the ChatGPT plugin
 
 Plan a short drama series (vertical 9:16 episodes of 15 or 30 s, the same AI cast in every episode) from one idea. FREE, no credits; takes up to ~40 s. Use it when the user asks for a drama, series, web series, micro drama, short drama, sitcom or "a show". The flow:
-1. Interview briefly first: at most 2 rounds of short multiple-choice questions, recommended answer first (story or genre, episode length, the two leads, and quality: Standard ~135 credits for 30 s at 540p / ~284 at 720p, or High quality ~320 at 480p / ~640 at 720p). With no idea yet, pitch 3 one-line premises to pick from.
+1. Interview briefly first: at most 2 rounds of short multiple-choice questions, recommended answer first (story or genre, episode length, the two leads, and quality: Standard, sharp 1080p, ~150 credits for 15 s / ~300 for 30 s, or High quality ~320 for 30 s at 480p / ~640 at 720p). With no idea yet, pitch 3 one-line premises to pick from.
 2. Call this once. It writes the season (episode titles), casts 2 leads and up to 4 supporting actors with portraits (the user's own characters from cast_avatar_ids first, then Versely's ready-made characters; a new face only when none fits), builds the locations and writes Episode 1.
 3. Show the user the cast (names, one line each), the episode titles, Episode 1's lines and its exact price in credits with its tier. Their yes is the approval.
 4. Only then call versely_film_drama_episode (n: 1, confirm_credits: that price). Filming takes about 10 minutes; say so, then check with versely_get_drama_show.
 5. Each later episode: versely_write_drama_episode, show its lines and price, yes, versely_film_drama_episode.
-Edit names, looks, voices, quality or other settings for free with versely_update_drama_show. Quality, set per show: offer both tiers by these names with their prices (credits per episode, 15 s / 30 s). Standard (good quality, lowest price): 540p 68 / 135, 720p 142 / 284. High quality (most realistic: faces, outfits and motion stay true to each character's photo): 480p 160 / 320, 720p 320 / 640. These are guides; the episode's quote is the exact price. Rules: every character is a fictional adult (18+). Never cast minors, real people, celebrities or brands, and turn down ideas built on them. Never name the services that film the episodes.
+Edit names, looks, voices, quality or other settings for free with versely_update_drama_show. Quality, set per show: offer both tiers by these names with their prices (credits per episode). Standard (sharp 1080p; each shot is filmed from the cast's photos): always 1080p, about 150 for 15 s and about 300 for 30 s (the exact price also depends on how many shots the script has). High quality (most realistic: faces, outfits and motion stay true to each character's photo), 15 s / 30 s: 480p 160 / 320, 720p 320 / 640. The resolution only matters for High quality. These are guides; the episode's quote is the exact price. Rules: every character is a fictional adult (18+). Never cast minors, real people, celebrities or brands, and turn down ideas built on them. Never name the services that film the episodes.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -1399,15 +1399,15 @@ Edit names, looks, voices, quality or other settings for free with versely_updat
 | `language` | string | — | Dialogue language as a BCP-47 code: 'en' (default), 'hi', 'es'... |
 | `episodes` | integer | — | Season length, 3-10 (default 10). Only filmed episodes cost credits. |
 | `episode_seconds` | any | — | Episode length: 30 (default, two clips) or 15 (one clip, about half the price). |
-| `quality` | enum("standard" \| "high") | — | Default 'standard'. 'standard': Standard, good quality, lowest price. 'high': High quality, the most realistic, costs more. |
-| `resolution` | enum("480p" \| "540p" \| "720p") | — | Default '720p'. Standard films at 540p or 720p, High quality at 480p or 720p (a mismatch moves to the tier's lower one: Standard 480p becomes 540p, High quality 540p becomes 480p). The lower one costs about half. |
+| `quality` | enum("standard" \| "high") | — | Default 'standard'. 'standard': Standard, sharp 1080p, lowest price. 'high': High quality, the most realistic, costs more. |
+| `resolution` | enum("480p" \| "540p" \| "720p" \| "1080p") | — | Default: 720p for High quality. Only matters for High quality: '480p' or '720p' (480p costs about half; '1080p' is read as 720p). Standard is always 1080p whatever is sent, so leave it out for Standard. '540p' is still accepted (High quality reads it as 480p). |
 | `cast_avatar_ids` | string[] | — | Cast the user's own characters (ids from versely_list_hook_characters); their portraits are reused. The rest of the cast comes from Versely's ready-made characters. |
 
 ### `versely_update_drama_show`
 
 **Edit short drama** · edit (destructive) · also in the ChatGPT plugin
 
-Edit a short drama: title, logline, dialogue language, episode length (15 or 30 s), quality (Standard or High quality), resolution, or a cast member's name, look, voice or personality (regenerate_portrait: true draws a new portrait). FREE. Refused while an episode is filming. A new length, quality or resolution re-prices every scripted episode and keeps its script: show the new price (in the result, or from versely_get_drama_quote) before filming. Edits apply to the episodes filmed from now on. Quality, set per show: offer both tiers by these names with their prices (credits per episode, 15 s / 30 s). Standard (good quality, lowest price): 540p 68 / 135, 720p 142 / 284. High quality (most realistic: faces, outfits and motion stay true to each character's photo): 480p 160 / 320, 720p 320 / 640. These are guides; the episode's quote is the exact price. Rules: every character is a fictional adult (18+). Never cast minors, real people, celebrities or brands, and turn down ideas built on them. Never name the services that film the episodes.
+Edit a short drama: title, logline, dialogue language, episode length (15 or 30 s), quality (Standard or High quality), resolution (High quality only), or a cast member's name, look, voice or personality (regenerate_portrait: true draws a new portrait). FREE. Refused while an episode is filming. A new length, quality or resolution re-prices every scripted episode and keeps its script: show the new price (in the result, or from versely_get_drama_quote) before filming. Edits apply to the episodes filmed from now on. Quality, set per show: offer both tiers by these names with their prices (credits per episode). Standard (sharp 1080p; each shot is filmed from the cast's photos): always 1080p, about 150 for 15 s and about 300 for 30 s (the exact price also depends on how many shots the script has). High quality (most realistic: faces, outfits and motion stay true to each character's photo), 15 s / 30 s: 480p 160 / 320, 720p 320 / 640. The resolution only matters for High quality. These are guides; the episode's quote is the exact price. Rules: every character is a fictional adult (18+). Never cast minors, real people, celebrities or brands, and turn down ideas built on them. Never name the services that film the episodes.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -1416,8 +1416,8 @@ Edit a short drama: title, logline, dialogue language, episode length (15 or 30 
 | `logline` | string | — |  |
 | `language` | string | — | Dialogue language, BCP-47 ('en', 'hi', 'es'...). |
 | `episode_seconds` | any | — |  |
-| `quality` | enum("standard" \| "high") | — | 'standard': Standard, good quality, lowest price. 'high': High quality, the most realistic, costs more. |
-| `resolution` | enum("480p" \| "540p" \| "720p") | — | Standard films at 540p or 720p, High quality at 480p or 720p (a mismatch moves to the tier's lower one: Standard 480p becomes 540p, High quality 540p becomes 480p). The lower one costs about half. |
+| `quality` | enum("standard" \| "high") | — | 'standard': Standard, sharp 1080p, lowest price. 'high': High quality, the most realistic, costs more. |
+| `resolution` | enum("480p" \| "540p" \| "720p" \| "1080p") | — | Only matters for High quality: '480p' or '720p' (480p costs about half; '1080p' is read as 720p). Standard is always 1080p whatever is sent, so leave it out for Standard. '540p' is still accepted (High quality reads it as 480p). |
 | `cast` | object[] | — | Only the characters to change, by key, with only the fields to change. |
 
 ### `versely_write_drama_episode`
