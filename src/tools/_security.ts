@@ -47,11 +47,43 @@ export function securitySchemesFor(name: string, cls: ToolClass): SecurityScheme
 
 export const WWW_AUTHENTICATE_META = "mcp/www_authenticate";
 
+/**
+ * The directory plugin's own endpoint (the URL in openai/mcp.json).
+ *
+ * ChatGPT and Codex share one plugin directory. ChatGPT's tokens carry the
+ * signed `ck: "openai"` claim, so on /mcp it already gets the openai profile.
+ * Codex signs in from the user's own machine (a loopback redirect), so its
+ * token looks like any other desktop client's and /mcp would serve it the full
+ * catalog, checkout tools included. Everything that arrives on this path is
+ * served the openai profile, whoever it is.
+ */
+export const OPENAI_MCP_PATH = "/mcp/openai";
+
+/** True for the plugin endpoint, with or without a trailing slash. */
+export function isOpenaiPath(path: string): boolean {
+  return path.replace(/\/+$/, "") === OPENAI_MCP_PATH;
+}
+
+/**
+ * The plugin endpoint's own resource identifier (RFC 9728 wants the metadata's
+ * `resource` to be the URL the client connected to). The authorization server
+ * accepts it next to the canonical one and still mints canonical-audience
+ * tokens, so one token works on both paths.
+ */
+export function openaiResourceUrl(resourceUrl: string): string {
+  return `${new URL(resourceUrl).origin}${OPENAI_MCP_PATH}`;
+}
+
+/** Where the protected-resource metadata lives for a connection on this path. */
+export function resourceMetadataUrl(resourceUrl: string, openaiPath = false): string {
+  const base = `${new URL(resourceUrl).origin}/.well-known/oauth-protected-resource`;
+  return openaiPath ? `${base}${OPENAI_MCP_PATH}` : base;
+}
+
 /** RFC 7235 challenge for a token the backend no longer accepts. */
-export function tokenChallenge(resourceUrl: string): string {
-  const metadata = `${new URL(resourceUrl).origin}/.well-known/oauth-protected-resource`;
+export function tokenChallenge(resourceUrl: string, openaiPath = false): string {
   return (
-    `Bearer resource_metadata="${metadata}", error="invalid_token", ` +
+    `Bearer resource_metadata="${resourceMetadataUrl(resourceUrl, openaiPath)}", error="invalid_token", ` +
     `error_description="Your Versely sign-in has expired or was revoked. Sign in again to continue."`
   );
 }

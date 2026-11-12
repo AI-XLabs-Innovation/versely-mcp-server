@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — The directory plugin has its own endpoint, `/mcp/openai` (2026-11-13)
+
+- ChatGPT and Codex share one plugin directory. ChatGPT's tokens carry `ck: "openai"`, so `/mcp` already served it the plugin's tools. Codex installs the same plugin but signs in from the user's machine (loopback redirect), so its token is an ordinary one and `/mcp` would have served it the full catalog, checkout and plan tools included. `/mcp/openai` serves the `openai` profile to every caller.
+- The endpoint has its own protected-resource metadata (`/.well-known/oauth-protected-resource/mcp/openai`, `resource` = the endpoint), and its 401s and tool-level sign-in challenges point there. The backend accepts that resource next to the canonical one and still mints canonical-audience tokens, so one token works on both paths.
+- `openai/mcp.json` now names `https://mcp.versely.studio/mcp/openai` and declares OAuth with dynamic client registration. The portal cannot change a plugin's MCP URL after the first connection, so this goes in before the first upload. `/mcp` is unchanged for every other client.
+- `openai/plugin.json`: the developer is AI XLabs Innovation, the publisher named on versely.studio/privacy and /terms.
+
 ### Changed — The iPhone app's first week is paid too (2026-11-13)
 
 - `versely_list_plans` no longer says the iPhone app has a free 3-day App Store trial with 24 credits. It now describes the App Store offer as the Weekly plan's first week for $2.99 (US price, charged by Apple, once per Apple ID, refunds through Apple), with 100 credits (80 + 20 bonus), then $8.99 a week. TOOLS.md regenerated. Ship only after the offer is switched in App Store Connect.

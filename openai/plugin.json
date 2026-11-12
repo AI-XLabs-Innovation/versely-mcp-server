@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Create videos, AI hooks, UGC-style videos, slideshows, voiceovers and music, then publish them to your social accounts.",
   "author": {
-    "name": "Versely",
+    "name": "AI XLabs Innovation",
     "email": "contact@versely.studio",
     "url": "https://www.versely.studio"
   },
@@ -40,7 +40,7 @@
         "displayName": "Versely",
         "shortDescription": "Make videos, hooks & slides",
         "longDescription": "Create short-form content in ChatGPT and post it where your audience is.\n\nGenerate videos from a prompt or a photo, images and product shots, voiceovers, music and sound effects. Make AI hooks: a reaction clip with your line on screen, then a cut to your product. Make UGC-style videos with an AI presenter reading your script, TikTok and Instagram photo carousels with text on every slide, lip-synced clips, dubbed videos and multi-scene movies.\n\nStart from what already works. Browse outlier posts that did far better than the size of the account that posted them, by niche and format, see the trending sounds behind them, and recreate a format for your brand. Save a brand from its website so your hooks and slideshows use its colors and voice.\n\nWhen a piece is ready, preview it, then schedule or publish it to the social accounts you connected in Versely, and check how each post performed.\n\nGeneration uses Versely credits from your account. Results vary by model, and you can check your balance and recent creations at any time. Nothing is published unless you ask for it, and only to accounts you connected yourself. For help, visit versely.studio/support.",
-        "developerName": "Versely",
+        "developerName": "AI XLabs Innovation",
         "category": "Creativity",
         "capabilities": [
           "Generate videos from text or images",

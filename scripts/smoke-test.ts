@@ -936,6 +936,60 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("a successful call carries no challenge", !okCall._meta?.["mcp/www_authenticate"]);
   await revoked.close();
 
+  // ─── the plugin endpoint (/mcp/openai) ─────────────────────────────────────
+  // The directory plugin's URL. ChatGPT and Codex share the directory and
+  // Codex's token carries no `ck` claim, so the path itself picks the profile:
+  // a plain vsk_ key here must see the plugin's tools and nothing else.
+  const PLUGIN_URL = `${BASE_URL}/mcp/openai`;
+  const pluginPrm = await fetch(`${BASE_URL}/.well-known/oauth-protected-resource/mcp/openai`);
+  const pluginPrmJson = (await pluginPrm.json()) as Record<string, unknown>;
+  assert(
+    "the plugin endpoint has its own protected-resource metadata",
+    pluginPrm.status === 200 && pluginPrmJson.resource === `${RESOURCE_URL}/openai` &&
+      JSON.stringify(pluginPrmJson.authorization_servers) === JSON.stringify(prmJson.authorization_servers),
+    JSON.stringify(pluginPrmJson),
+  );
+  const pluginNoAuth = await fetch(PLUGIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  assert(
+    "POST /mcp/openai without auth → 401 naming the plugin endpoint's metadata",
+    pluginNoAuth.status === 401 &&
+      (pluginNoAuth.headers.get("www-authenticate") ?? "").includes('resource_metadata="https://mcp.versely.studio/.well-known/oauth-protected-resource/mcp/openai"'),
+    pluginNoAuth.headers.get("www-authenticate") ?? "",
+  );
+  assert(
+    "POST /mcp without auth still names the canonical metadata",
+    (noAuth.headers.get("www-authenticate") ?? "").includes('resource_metadata="https://mcp.versely.studio/.well-known/oauth-protected-resource"'),
+    noAuth.headers.get("www-authenticate") ?? "",
+  );
+  const plugin = await connect(PLUGIN_URL, TOKEN);
+  const pluginNames = ((await plugin.listTools()).tools as AnyTool[]).map((t) => t.name).sort();
+  assert(
+    `/mcp/openai serves exactly the ${OPENAI_TOOLS.length} plugin tools to any caller`,
+    JSON.stringify(pluginNames) === JSON.stringify([...OPENAI_TOOLS].sort()),
+    `got ${pluginNames.length}`,
+  );
+  assert("/mcp/openai carries the plugin's server instructions", (plugin.getInstructions() ?? "").length > 0);
+  const pluginSlash = await connect(`${PLUGIN_URL}/`, TOKEN);
+  assert(
+    "a trailing slash on /mcp/openai/ does not widen the catalog",
+    ((await pluginSlash.listTools()).tools as AnyTool[]).length === OPENAI_TOOLS.length,
+  );
+  await pluginSlash.close();
+  const pluginCredits = await call(plugin, "versely_get_credits", {});
+  assert("a tool call works on /mcp/openai", pluginCredits.isError !== true);
+  await plugin.close();
+  const pluginRevoked = await connect(PLUGIN_URL, "vsk_revoked_smoke_token_value");
+  const pluginRefused = (await pluginRevoked.callTool({ name: "versely_get_credits", arguments: {} })) as { isError?: boolean; _meta?: Record<string, unknown> };
+  const pluginChallenge = pluginRefused._meta?.["mcp/www_authenticate"] as string[] | undefined;
+  assert(
+    "a refused token on /mcp/openai names the plugin endpoint's metadata",
+    pluginRefused.isError === true && (pluginChallenge?.[0] ?? "").startsWith('Bearer resource_metadata="https://mcp.versely.studio/.well-known/oauth-protected-resource/mcp/openai", error="invalid_token"'),
+    JSON.stringify(pluginRefused._meta),
+  );
+  await pluginRevoked.close();
+  const pluginWrongMethod = await fetch(PLUGIN_URL, { method: "PUT", headers: { Authorization: `Bearer ${TOKEN}` } });
+  assert("PUT /mcp/openai → 405", pluginWrongMethod.status === 405);
+
   // ─── session/profile binding ───────────────────────────────────────────────
   const init = await fetch(`${MCP_URL}?profile=openai`, {
     method: "POST",
@@ -977,7 +1031,18 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const plainJwt = await connect(MCP_URL, mintJwt(backend.url, {}));
   assert("an OAuth JWT without ck gets the full profile", ((await plainJwt.listTools()).tools as AnyTool[]).length === fullTools.length);
 
-  await Promise.all([full.close(), openai.close(), chatgpt.close(), plainJwt.close()]);
+  // Codex installs the same directory plugin but signs in from the user's
+  // machine, so its token has no ck: on the plugin endpoint it still gets the
+  // plugin's tools, and a canonical-audience token is accepted there.
+  const codexJwt = await connect(`${BASE_URL}/mcp/openai`, mintJwt(backend.url, {}));
+  const codexNames = ((await codexJwt.listTools()).tools as AnyTool[]).map((t) => t.name);
+  assert(
+    "an OAuth JWT without ck gets the openai profile on /mcp/openai",
+    codexNames.length === OPENAI_TOOLS.length && codexNames.every((n) => OPENAI_TOOLS.includes(n)),
+    `got ${codexNames.length}`,
+  );
+
+  await Promise.all([full.close(), openai.close(), chatgpt.close(), plainJwt.close(), codexJwt.close()]);
   void proc;
 }
 

@@ -79,6 +79,12 @@ if (openai.onboardingSkill) {
 
 const servers = Object.values(mcp.mcpServers ?? {});
 check(servers.length === 1 && servers[0].type === "streamable-http" && /^https:\/\//.test(servers[0].url), "mcp.json: exactly one streamable-http https server");
+// The plugin endpoint, not /mcp: Codex installs the same directory plugin with
+// an ordinary token, and only this path serves it the plugin's tools. The
+// portal cannot change the URL later.
+check(servers[0]?.url === "https://mcp.versely.studio/mcp/openai", "mcp.json: the server URL is the plugin endpoint, https://mcp.versely.studio/mcp/openai");
+const auth = servers[0]?.extensions?.["com.openai"]?.auth;
+check(auth?.type === "oauth" && auth?.client?.mode === "dcr" && !("clientId" in (auth.client ?? {})), "mcp.json: OAuth with dynamic client registration, no client credentials");
 
 const secretish = /(vsk_[A-Za-z0-9]{8,}|password|passwd|secret|api[_-]?key)/i;
 check(!secretish.test(JSON.stringify(manifest)) && !secretish.test(JSON.stringify(mcp)), "no credentials or keys in the package");

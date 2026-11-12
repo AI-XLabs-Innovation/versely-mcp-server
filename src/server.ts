@@ -46,6 +46,8 @@ export interface ServerOptions {
    * share a result.
    */
   ownerKey: string;
+  /** The connection came in on the plugin endpoint (/mcp/openai): auth challenges name its own metadata. */
+  openaiPath?: boolean;
 }
 
 // --- Registry ------------------------------------------------------------------
@@ -387,7 +389,7 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
             // hosts hydrate the linked ui:// iframe with that payload.
             return await entry.handler(parsed.data, ctx);
           } catch (err) {
-            if (err instanceof VerselyApiError && err.status === 401) challenge = tokenChallenge(config.resourceUrl);
+            if (err instanceof VerselyApiError && err.status === 401) challenge = tokenChallenge(config.resourceUrl, opts.openaiPath === true);
             return errorResult(formatErr(err));
           }
         });

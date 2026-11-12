@@ -15,6 +15,10 @@ import { buildServer, getRegisteredToolCount, recentJobChecks, validateServerSet
 import { verifyAccessToken, looksLikeJwt } from "../oauth.js";
 import { resolveProfile, type Profile } from "../profiles.js";
 import { OPENAI_APPS_CHALLENGE_TOKEN } from "../openaiChallenge.js";
+import { OPENAI_MCP_PATH, isOpenaiPath, openaiResourceUrl, resourceMetadataUrl } from "../tools/_security.js";
+
+/** Both MCP endpoints: the general one and the directory plugin's (openai profile for everyone). */
+const MCP_PATHS = ["/mcp", OPENAI_MCP_PATH];
 
 const PROCESS_START_MS = Date.now();
 
@@ -124,12 +128,14 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
 }
 
 /**
- * What the request asked for: `?profile=` and/or `X-Versely-Profile`. Only
- * ever used to NARROW to the openai profile (resolveProfile) — it can't widen
- * a ChatGPT token's profile, whose `ck` claim decides on its own.
+ * What the request asked for: the plugin endpoint itself, `?profile=` and/or
+ * `X-Versely-Profile`. Only ever used to NARROW to the openai profile
+ * (resolveProfile) — it can't widen a ChatGPT token's profile, whose `ck`
+ * claim decides on its own.
  */
 function requestedProfile(req: Request): string[] {
   const out: string[] = [];
+  if (isOpenaiPath(req.path)) out.push("openai");
   const q = req.query.profile;
   if (typeof q === "string") out.push(q);
   else if (Array.isArray(q)) for (const v of q) if (typeof v === "string") out.push(v);
@@ -143,8 +149,10 @@ function makeAuthMiddleware(config: Config) {
   // WWW-Authenticate header pointing clients at our protected-resource metadata
   // so they can discover the authorization server and start an OAuth flow.
   // mcp.versely.studio/.well-known/oauth-protected-resource is served below.
-  const resourceMetadataUrl = `${new URL(config.resourceUrl).origin}/.well-known/oauth-protected-resource`;
-  const challenge = `Bearer realm="versely-mcp", resource_metadata="${resourceMetadataUrl}"`;
+  // The plugin endpoint names its own metadata document, whose `resource` is
+  // that endpoint, so a client that compares the two finds them equal.
+  const challengeFor = (req: Request) =>
+    `Bearer realm="versely-mcp", resource_metadata="${resourceMetadataUrl(config.resourceUrl, isOpenaiPath(req.path))}"`;
 
   return function requireBearer(req: AuthedRequest, res: Response, next: NextFunction): void {
     // Once the bearer is verified: decide the tool profile from the SIGNED
@@ -154,6 +162,7 @@ function makeAuthMiddleware(config: Config) {
       next();
     };
     const send401 = (error: string, description?: string) => {
+      const challenge = challengeFor(req);
       res.setHeader("WWW-Authenticate", description
         ? `${challenge}, error="${error}", error_description="${description}"`
         : `${challenge}, error="${error}"`);
@@ -373,9 +382,9 @@ export async function startHttpServer(config: Config): Promise<void> {
   // server protects this MCP endpoint and which scopes/auth methods are supported.
   // Also served at the path-suffixed form RFC 9728 §3.1 derives for a resource
   // with a path (/mcp) — some clients only look there.
-  const protectedResourceMetadata = (_req: Request, res: Response) => {
+  const protectedResourceMetadata = (resource: string) => (_req: Request, res: Response) => {
     res.json({
-      resource: config.resourceUrl,
+      resource,
       authorization_servers: [config.authServerUrl],
       scopes_supported: [
         "generate", "post", "manage_accounts", "slideshow",
@@ -385,8 +394,13 @@ export async function startHttpServer(config: Config): Promise<void> {
       resource_documentation: DOCS_URL,
     });
   };
-  app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata);
-  app.get("/.well-known/oauth-protected-resource/mcp", protectedResourceMetadata);
+  app.get("/.well-known/oauth-protected-resource", protectedResourceMetadata(config.resourceUrl));
+  app.get("/.well-known/oauth-protected-resource/mcp", protectedResourceMetadata(config.resourceUrl));
+  // The plugin endpoint's own document (RFC 9728 §3.1 path-suffixed form).
+  app.get(
+    `/.well-known/oauth-protected-resource${OPENAI_MCP_PATH}`,
+    protectedResourceMetadata(openaiResourceUrl(config.resourceUrl)),
+  );
 
   app.get("/", (_req, res) => {
     res.json({
@@ -395,6 +409,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       transport: "streamable-http",
       endpoints: {
         mcp: "POST /mcp (requires Authorization: Bearer <vsk_... or OAuth JWT>)",
+        mcp_plugin: `POST ${OPENAI_MCP_PATH} (the ChatGPT and Codex plugin endpoint)`,
         health: "GET /healthz",
         oauth_protected_resource: "GET /.well-known/oauth-protected-resource",
       },
@@ -404,7 +419,7 @@ export async function startHttpServer(config: Config): Promise<void> {
 
   const requireBearer = makeAuthMiddleware(config);
 
-  app.post("/mcp", requireBearer, async (req: AuthedRequest, res) => {
+  app.post(MCP_PATHS, requireBearer, async (req: AuthedRequest, res) => {
     const apiKey = req.apiKey!;
     const profile = req.profile ?? "full";
     const ownerKey = ownerKeyOf(req);
@@ -446,7 +461,7 @@ export async function startHttpServer(config: Config): Promise<void> {
     // harmlessly; auth is per-request either way.
     const serveOneShot = async (): Promise<void> => {
       const client = new VerselyClient(config, apiKey, { profile });
-      const server = buildServer(config, client, { profile, ownerKey });
+      const server = buildServer(config, client, { profile, ownerKey, openaiPath: isOpenaiPath(req.path) });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
@@ -506,7 +521,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       // --- No session yet + initialize: mint one. ---------------------------
       if (isInitializeBody(req.body)) {
         const client = new VerselyClient(config, apiKey, { profile });
-        const server = buildServer(config, client, { profile, ownerKey });
+        const server = buildServer(config, client, { profile, ownerKey, openaiPath: isOpenaiPath(req.path) });
         const owner = sessionOwner(req);
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -583,7 +598,7 @@ export async function startHttpServer(config: Config): Promise<void> {
    * so /debug/recent-calls finally shows whether claude.ai's GETs reach us
    * at all, or die earlier at Anthropic's proxy / Cloudflare.
    */
-  app.get("/mcp", requireBearer, async (req: AuthedRequest, res) => {
+  app.get(MCP_PATHS, requireBearer, async (req: AuthedRequest, res) => {
     const sid = req.header("mcp-session-id");
     recordMcpCall({
       ts: new Date().toISOString(),
@@ -646,7 +661,7 @@ export async function startHttpServer(config: Config): Promise<void> {
   // DELETE /mcp — spec session termination. Routes to the session's
   // transport (which closes it; onclose sweeps the map). Without a known
   // session there is nothing to terminate: 405, as the spec allows.
-  app.delete("/mcp", requireBearer, async (req: AuthedRequest, res) => {
+  app.delete(MCP_PATHS, requireBearer, async (req: AuthedRequest, res) => {
     const sid = req.header("mcp-session-id");
     if (!sid) {
       res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET"] });
@@ -671,7 +686,7 @@ export async function startHttpServer(config: Config): Promise<void> {
   });
 
   // Method-not-allowed for anything else (PUT, PATCH, ...).
-  app.all("/mcp", (_req, res) => {
+  app.all(MCP_PATHS, (_req, res) => {
     res.status(405).json({ error: "method_not_allowed", allow: ["POST", "GET", "DELETE"] });
   });
 
