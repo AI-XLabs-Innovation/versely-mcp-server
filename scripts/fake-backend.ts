@@ -533,7 +533,7 @@ export async function startFakeBackend(opts: {
     }
     // The real answer for an account without a subscription.
     if (method === "GET" && path === "/api/v1/social-analytics/overview") {
-      return send(res, 403, { success: false, error: "Post analytics comes with a subscription, and with the free trial while it runs." });
+      return send(res, 403, { success: false, error: "Post analytics comes with a subscription, and with the trial while it runs." });
     }
     const analyticsCollect = /^\/api\/v1\/social-analytics\/([^/]+)\/collect$/.exec(path);
     if (method === "POST" && analyticsCollect) return send(res, 200, { success: true });
@@ -725,8 +725,35 @@ export async function startFakeBackend(opts: {
     // --- billing (billing.controller's reply shapes) ---
     const SUB = { status: "active", plan_label: "Pro Monthly", plan_key: "pro_monthly", provider: "dodo", current_period_end: "2026-10-24T00:00:00.000Z", is_trial: false, cancel_at_period_end: false };
     if (method === "GET" && path === "/api/v1/billing/subscription") return send(res, 200, { success: true, subscription: SUB });
+    // The plan list and the web trial offer, as GET /billing/plans and GET
+    // /billing/trial answer since 2026-11-12 (the first week for $3, Weekly only).
+    if (method === "GET" && path === "/api/v1/billing/plans") {
+      return send(res, 200, {
+        success: true,
+        configured: true,
+        addonRequiresSubscription: true,
+        plans: [
+          { key: "weekly", label: "Weekly", kind: "subscription", priceUsd: 9, credits: 240, addon: false },
+          { key: "monthly", label: "Monthly", kind: "subscription", priceUsd: 29, credits: 774, addon: false },
+          { key: "credits_100", label: "134 credits", kind: "one_time", priceUsd: 5, credits: 134, addon: true },
+        ],
+      });
+    }
+    if (method === "GET" && path === "/api/v1/billing/trial") {
+      return send(res, 200, {
+        success: true, cap: 100, taken: 86, left: 14, open: true, days: 7,
+        fee: { cents: 300, label: "$3" },
+        includes: { credits: 100, bonus_credits: 20, slideshows: 0, posts: 999, posts_unlimited: true, analytics: true, automations: true },
+        plan_keys: ["weekly"],
+        first_purchase_gift: null,
+      });
+    }
     if (method === "POST" && path === "/api/v1/billing/checkout") {
       if (b.plan_key === "pack_small") return send(res, 403, { success: false, code: "subscription_required", message: "Credit packs need an active subscription." });
+      // createCheckout: the trial is the Weekly plan's first week, and no other plan's.
+      if (b.trial === true && b.plan_key !== "weekly") {
+        return send(res, 400, { success: false, code: "trial_unavailable", message: "Only the Weekly plan starts with the $3 first week." });
+      }
       return send(res, 200, { success: true, url: `https://checkout.dodopayments.test/session/${String(b.plan_key)}` });
     }
     if (method === "POST" && path === "/api/v1/billing/subscription/cancel") {

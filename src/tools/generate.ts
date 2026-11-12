@@ -135,7 +135,9 @@ const FIND_MODELS_OPENAI = defineVariant({
     "latest independent leaderboard, with its score), with price. ALWAYS call this before the generate tools and " +
     "pass an entry's `name` as `model`; never guess one. `free_trial: true` marks the models an account on the free " +
     "trial can use: when `on_free_trial` is true, generate ONLY with those (the list `free_trial_models` gives their " +
-    "exact names), though you may still describe any model. Other accounts can use any model. `credits` is the " +
+    "exact names), though you may still describe any model. The free trial here is the plugin's free credits for an " +
+    "account that has never paid, not a subscription trial. Other accounts, including ones on a subscription trial, " +
+    "can use any model. `credits` is the " +
     "starting price; a model with `credits_per_second` is billed per second of output (a 30-second video costs 30 × " +
     "that), so quote it that way. For a model's inputs " +
     "call versely_get_model_inputs with its name. " +

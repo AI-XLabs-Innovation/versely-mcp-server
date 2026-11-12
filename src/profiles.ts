@@ -89,7 +89,9 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "versely_find_models, free_account in versely_get_credits) spends free plugin credits and can generate " +
   "images, videos and voiceovers only with models marked free_trial; if the user asks for another model, " +
   "say it isn't included in the free trial and suggest the best free_trial one. Other features return a " +
-  "message saying they are unavailable, and nothing is charged for them. Do not offer or link to credit purchases. " +
+  "message saying they are unavailable, and nothing is charged for them. That free trial is only the plugin's " +
+  "free credits for an account that has never paid: a subscription trial (on_trial in versely_get_subscription) " +
+  "is a different thing, is not always free, and has none of these limits. Do not offer or link to credit purchases. " +
   "Social posting: to connect an account, give the user the link from versely_get_social_auth_url; once they " +
   "say they connected, call versely_refresh_social_accounts, then versely_list_social_accounts for the account " +
   "ids. Confirm the caption, media and accounts with the user before versely_publish_post. " +

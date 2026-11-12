@@ -27,13 +27,15 @@ interface PluginBlock {
 }
 
 // openai: the balance in the plugin's own terms. `trial` / `trial_offer`
-// describe the web app's free trial, which the plugin can't start and must
-// not advertise, so they never appear here.
+// describe the web app's trial (the first week for $3 since 2026-11-12), which
+// the plugin can't start and must not advertise, so they never appear here.
 /**
- * The account's plugin status: on the free trial (`free_account`: never paid,
- * never subscribed, spending the free plugin credits) or not. The backend adds
- * the `plugin` block only to ChatGPT-plugin requests, so any other caller reads
- * as not on the trial.
+ * The account's plugin status: on the plugin's free trial (`free_account`:
+ * never paid, never subscribed, never started a web or app trial, spending the
+ * free plugin credits) or not. That is NOT the web trial: an account on a web
+ * or app trial has a subscription, so it reads as not free here and can use
+ * every model. The backend adds the `plugin` block only to ChatGPT-plugin
+ * requests, so any other caller reads as not on the plugin's free trial.
  */
 export async function loadTrialStatus(ctx: ToolContext): Promise<{ freeAccount: boolean; remaining: number; credits: number }> {
   const userId = await ctx.client.getCurrentUserId();
@@ -87,7 +89,7 @@ const versely_get_credits = defineTool({
     const data = await ctx.client.get(
       `/api/v1/user/${encodeURIComponent(userId)}/credits`,
     );
-    // `trial_offer` is the web app's "start a free trial" pitch (spots left,
+    // `trial_offer` is the web app's "start a trial" pitch (spots left,
     // eligibility). It is an upsell, not a balance, and has no place in an
     // assistant's answer to "how many credits do I have".
     if (data && typeof data === "object" && !Array.isArray(data)) {

@@ -202,10 +202,10 @@ const ROWS: Record<string, Row> = {
     },
   },
   versely_skip_trial: {
-    title: "End free trial now", cls: "edit", what: "subscription",
+    title: "End trial now", cls: "edit", what: "subscription",
     hints: { destructiveHint: true, openWorldHint: true },
     why: {
-      readOnly: "Ends the user's free trial now, so their card is charged for the plan today.",
+      readOnly: "Ends the user's trial now, so their card is charged for the plan today.",
       destructive: "Charges the user's card today; the payment can't be undone from here.",
       openWorld: "Charges the user's card through Dodo Payments.",
     },

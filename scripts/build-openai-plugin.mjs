@@ -30,7 +30,9 @@ check(len(ui.displayName) > 0 && len(ui.displayName) <= 30, "displayName: 1-30 c
 check(!/\b(mcp|plugin)\b/i.test(ui.displayName ?? ""), "displayName: no MCP / Plugin suffix");
 check(len(ui.shortDescription) > 0 && len(ui.shortDescription) <= 30, "shortDescription: 1-30 characters");
 check(len(ui.longDescription) > 0 && len(ui.longDescription) <= 4000, "longDescription: 1-4000 characters");
-check(!/\b(price|pricing|\$\d|subscri|free trial|trial|discount|promo|coupon|free credits)\b/i.test(ui.longDescription ?? ""), "longDescription: no pricing, subscriptions, trials, discounts or promotions");
+// Word stems, so "subscription", "trials" and "priced" are caught too, and a
+// dollar amount on its own ("the first week for $3": \b never matches before "$").
+check(!/\b(pric(e|ing)|subscri|trial|first week for|discount|promo|coupon|free credits)|\$\s?\d/i.test(ui.longDescription ?? ""), "longDescription: no pricing, subscriptions, trials, discounts or promotions");
 check(len(ui.developerName) > 0 && len(ui.developerName) <= 80, "developerName: 1-80 characters");
 for (const k of ["websiteURL", "supportURL", "privacyPolicyURL", "termsOfServiceURL"]) {
   check(/^https:\/\/\S+$/.test(ui[k] ?? "") && len(ui[k]) <= 1024, `${k}: an https URL of at most 1024 characters`);

@@ -462,6 +462,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   for (const m of instructions.match(/versely_[a-z0-9_]+/g) ?? []) if (!allowed.has(m)) strays.push(`instructions → ${m}`);
   assert("no openai description names a tool outside the profile", strays.length === 0, strays.join("; "));
   assert("openai instructions carry the free-trial model rule", instructions.includes("free_trial"));
+  assert("openai instructions tell the plugin's free credits apart from a subscription trial", /plugin's free credits[^.]*: a subscription trial \(on_trial in versely_get_subscription\)/.test(instructions));
 
   const oResources = await openai.listResources();
   const oCard = await openai.readResource({ uri: "ui://versely/media-card" });
@@ -783,6 +784,42 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("get_subscription answers in plain terms", subView.plan === "Pro Monthly" && subView.status === "active" && subView.renews_at === "2026-10-24T00:00:00.000Z" && subView.billed_through === "web" && !("dodo_subscription_id" in subView), JSON.stringify(subView));
   const checkout = await call(full, "versely_create_checkout_link", { plan_key: "pro_monthly" });
   assert("create_checkout_link puts the Dodo link in the text", textOf(checkout).includes("https://checkout.dodopayments.test/session/pro_monthly") && !checkout.isError, textOf(checkout));
+  // The web trial is the Weekly plan's first week for $3 (2026-11-12): nothing an
+  // assistant reads may call it free, and a trial link carries what is charged.
+  assert("get_subscription says on_trial, and keeps on_free_trial as the same value", subView.on_trial === false && subView.on_free_trial === false, JSON.stringify(subView));
+  const WEB_TRIAL_TOOLS = ["versely_get_subscription", "versely_list_plans", "versely_create_checkout_link", "versely_skip_trial"];
+  const calledFree = WEB_TRIAL_TOOLS.filter((n) => {
+    const t = byName(fullTools, n);
+    // "not a free trial" / "is not free" are the only places the word may sit next to the web trial.
+    return !t || /free.trial/i.test([t.title ?? "", ...descriptionsOf(t)].join(" ").replace(/not a free trial/gi, "").replace(/`(on_)?free_trial`/g, ""));
+  });
+  assert("no billing tool calls the web trial free", calledFree.length === 0, calledFree.join(", "));
+  assert("skip_trial is titled End trial now", byName(fullTools, "versely_skip_trial")?.title === "End trial now" && /^End the user's trial now and start the paid plan/.test(byName(fullTools, "versely_skip_trial")?.description ?? ""));
+  const checkoutDescs = descriptionsOf(byName(fullTools, "versely_create_checkout_link")!).join(" ");
+  assert(
+    "create_checkout_link tells the assistant what to confirm before a trial link",
+    /the first week for \$3 \(Weekly plan only\)/.test(checkoutDescs) && /confirm with the user/i.test(checkoutDescs) && /\$3 \(plus tax where it applies\) is charged at checkout and is not refunded/.test(checkoutDescs) && /and that \$9 a week follows after 7 days unless they cancel first/.test(checkoutDescs),
+    checkoutDescs,
+  );
+  const plans = JSON.parse(textOf(await call(full, "versely_list_plans", {}))) as { subscriptions: Array<{ key: string }>; credit_packs: unknown[]; trial_offer?: Record<string, unknown>; free_trial?: Record<string, unknown> };
+  assert(
+    "list_plans carries the trial offer as trial_offer (and under its old name)",
+    plans.subscriptions.length === 2 && plans.credit_packs.length === 1 && (plans.trial_offer?.fee as { label?: string } | undefined)?.label === "$3" && plans.trial_offer?.days === 7 &&
+      JSON.stringify(plans.trial_offer?.plan_keys) === '["weekly"]' && !("success" in (plans.trial_offer ?? {})) && JSON.stringify(plans.free_trial) === JSON.stringify(plans.trial_offer),
+    JSON.stringify(plans),
+  );
+  const trialLink = await call(full, "versely_create_checkout_link", { plan_key: "weekly", trial: true });
+  const trialBody = backend.requests.filter((r) => r.path === "/api/v1/billing/checkout").at(-1)?.body as Record<string, unknown> | undefined;
+  assert(
+    "a trial checkout link says what is charged now and what follows",
+    !trialLink.isError && trialBody?.trial === true && textOf(trialLink).includes("https://checkout.dodopayments.test/session/weekly") && /first week for \$3/.test(textOf(trialLink)) &&
+      /is not refunded/.test(textOf(trialLink)) && /\$9 a week follows after 7 days/.test(textOf(trialLink)) && trialLink.structuredContent?.trial === true && !/free/i.test(textOf(trialLink)),
+    textOf(trialLink),
+  );
+  const plainBody = backend.requests.find((r) => r.path === "/api/v1/billing/checkout" && (r.body as Record<string, unknown> | undefined)?.plan_key === "pro_monthly")?.body as Record<string, unknown> | undefined;
+  assert("a plain checkout link sends no trial flag and no trial terms", !!plainBody && !("trial" in plainBody) && !/first week/.test(textOf(checkout)), JSON.stringify(plainBody));
+  const trialMonthly = await call(full, "versely_create_checkout_link", { plan_key: "monthly", trial: true });
+  assert("a trial on another plan is refused with the backend's reason", trialMonthly.isError === true && textOf(trialMonthly).includes("Only the Weekly plan starts with the $3 first week."), textOf(trialMonthly));
   const pack = await call(full, "versely_create_checkout_link", { plan_key: "pack_small" });
   assert("a credit pack without a subscription is refused with the reason", pack.isError === true && /subscription/i.test(textOf(pack)), textOf(pack));
   const cancelsBefore = backend.count((r) => r.path === "/api/v1/billing/subscription/cancel");

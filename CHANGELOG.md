@@ -6,6 +6,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — The web trial is the first week for $3 (2026-11-12)
+
+- **The web trial is no longer free.** Since 2026-11-12 it is the Weekly plan's first week for $3 (charged at checkout, not refunded), then $9 a week unless cancelled; no other plan has a trial. `versely_create_checkout_link` (`trial: true`), `versely_list_plans`, `versely_get_subscription` and `versely_skip_trial` (titled "End trial now") say so, and the checkout tool has the assistant confirm both charges with the user before it creates a trial link. A trial link's result carries the same terms.
+- **New result fields, old ones kept.** `versely_get_subscription` returns `on_trial`, and `versely_list_plans` returns `trial_offer`; `on_free_trial` and `free_trial` stay as the old names with the same values.
+- **The plugin's free trial is not the web trial.** `free_trial` / `on_free_trial` in `versely_find_models` (openai) are about the plugin's free credits for an account that has never paid. The description and the ChatGPT server instructions now say that a subscription trial is a different thing and has none of those limits.
+- The plugin listing check (`scripts/build-openai-plugin.mjs`) now also catches a dollar amount, "subscription" and "trials" in the long description. Fake-backend plan, trial-offer and trial-checkout routes, plus smoke assertions; TOOLS.md regenerated.
+
 ### Changed — Short drama Standard is always 1080p (2026-11-04)
 
 - **Standard films shot by shot at 1080p**, each shot from the cast's photos, so it has no resolution choice: about 150 credits for a 15 s episode and about 300 for 30 s (the exact quote also counts the script's shots). High quality is unchanged (480p 160 / 320, 720p 320 / 640). `resolution` on `versely_plan_drama_show` and `versely_update_drama_show` takes `480p | 720p | 1080p` and only matters for High quality (the backend reads 1080p as 720p there); `540p` is still accepted (High quality reads it as 480p). Descriptions and the ChatGPT server instructions carry the new prices and drop the old 540p / 720p Standard figures. The fake backend prices a script from its seconds and shots like the server; smoke asserts the mapping, the re-pricing and that no old figure is left. TOOLS.md regenerated (still 177 tools, 163 in the plugin).

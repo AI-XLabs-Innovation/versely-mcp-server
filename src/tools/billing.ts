@@ -34,6 +34,20 @@ const ReturnIntent = z
   .enum(["soon", "maybe_later", "unlikely", "unsure"])
   .describe("Would they come back: soon, maybe_later, unlikely, unsure.");
 
+// The web trial as it is sold since 2026-11-12: the Weekly plan's first week
+// for $3, then $9 a week (backend lib/trial.ts and lib/trialPlans.ts; before
+// that it was free, 3 days, on Weekly or Monthly). GET /billing/trial returns
+// the live terms (versely_list_plans); when they change, change this wording
+// with them. Web trials started before that date were free and are still
+// running, and the iPhone app's trial is a separate free App Store trial, so a
+// trial that already EXISTS is only ever called "a trial" here, never "free"
+// and never "$3".
+const TRIAL_OFFER = "the first week for $3 (Weekly plan only)";
+const TRIAL_CHARGED_NOW = "$3 (plus tax where it applies) is charged at checkout and is not refunded";
+const TRIAL_CHARGED_NEXT = "$9 a week follows after 7 days unless they cancel first";
+/** What an assistant must get a yes to before it creates a trial checkout link. */
+const TRIAL_CONFIRM = `confirm with the user that ${TRIAL_CHARGED_NOW}, and that ${TRIAL_CHARGED_NEXT}`;
+
 const SURVEY_NOTE =
   "Versely asks three short questions first: ask the user (don't guess) why, what would have kept them, and " +
   "whether they might come back, and pass their answers.";
@@ -59,6 +73,9 @@ function describeSubscription(sub: SubscriptionRow | null | undefined): Record<s
     plan: sub.plan_label ?? null,
     plan_key: sub.plan_key ?? null,
     status,
+    on_trial: sub.is_trial === true,
+    // The old name of `on_trial`, kept for clients that read it. A web trial
+    // started since 2026-11-12 has a fee, so the name no longer fits.
     on_free_trial: sub.is_trial === true,
     ...(sub.cancel_at_period_end ? { cancels_at_period_end: true } : {}),
     ...(sub.current_period_end
@@ -75,8 +92,10 @@ function describeSubscription(sub: SubscriptionRow | null | undefined): Record<s
 const versely_get_subscription = defineTool({
   name: "versely_get_subscription",
   description:
-    "The user's Versely subscription: plan, status (active, paused, cancelled...), whether it is on a free trial, " +
-    "when it renews or ends, whether it is set to cancel, and any plan switch scheduled.",
+    "The user's Versely subscription: plan, status (active, paused, cancelled...), whether it is on a trial " +
+    "(`on_trial`), when it renews or ends, whether it is set to cancel, and any plan switch scheduled. Call it a " +
+    "trial, not a free trial: a web trial can have a fee. `on_free_trial` is the old name of `on_trial` and always " +
+    "has the same value.",
   inputSchema: Empty,
   handler: async (_input, ctx) => {
     const data = await ctx.client.get<{ subscription?: SubscriptionRow | null }>("/api/v1/billing/subscription");
@@ -107,8 +126,15 @@ const versely_list_plans = defineTool({
   name: "versely_list_plans",
   description:
     "Versely's subscription plans and credit packs: key, name, price (USD) and credits. Credit packs are add-ons " +
-    "that top up a plan: they can only be bought while the account has an active subscription. Also says whether " +
-    "free-trial spots are open (the trial comes with a subscription, for accounts that never subscribed).",
+    "that top up a plan: they can only be bought while the account has an active subscription. `trial_offer` is the " +
+    `web trial, ${TRIAL_OFFER}: \`fee\` is charged at checkout and is not refunded, and after \`days\` days the ` +
+    "Weekly plan's price ($9 a week) is charged unless the user cancels first. It is once per account, for accounts " +
+    "that never subscribed, while spots are open (`open`, `left`). It includes `includes.credits` credits in total " +
+    "(`bonus_credits` are part of that number, not extra), post analytics, and auto-posts with no count when " +
+    "`posts_unlimited` is true (ignore `posts`; fair use is up to 5 posts a day for each connected account, and " +
+    "posts past that use credits). Monthly, Pro Monthly and the annual plans start without a trial. `free_trial` is " +
+    "the old name of `trial_offer` and holds the same data; the web trial is not free. The iPhone app has its own " +
+    "trial through the App Store (free, 3 days, 24 credits).",
   inputSchema: Empty,
   handler: async (_input, ctx) => {
     const [plans, trial] = await Promise.all([
@@ -121,7 +147,8 @@ const versely_list_plans = defineTool({
       subscriptions: list.filter((p) => p.kind === "subscription"),
       credit_packs: list.filter((p) => p.kind !== "subscription"),
       credit_packs_need_active_subscription: plans?.addonRequiresSubscription !== false,
-      ...(trial ? { free_trial: trialInfo } : {}),
+      // `free_trial` is the old name, kept for clients that read it.
+      ...(trial ? { trial_offer: trialInfo, free_trial: trialInfo } : {}),
     });
   },
 });
@@ -132,10 +159,18 @@ const versely_create_checkout_link = defineTool({
     "Create a Dodo Payments checkout link for a subscription plan or a credit pack (`plan_key` from " +
     "versely_list_plans), and give it to the user to open and pay. Nothing is charged until they pay there. A credit " +
     "pack needs an active subscription; an account that already has a plan switches with versely_change_plan " +
-    "instead. `trial: true` starts a subscription with the free trial, for accounts that never subscribed while spots are open.",
+    `instead. \`trial: true\` starts the web trial, ${TRIAL_OFFER}: once per account, for accounts that never ` +
+    `subscribed, while spots are open (versely_list_plans). Before creating a trial link, ${TRIAL_CONFIRM}. ` +
+    `Every other plan starts without a trial.`,
   inputSchema: z.object({
     plan_key: z.string().min(1).describe("The plan or credit pack `key` from versely_list_plans."),
-    trial: z.boolean().optional().describe("Start the subscription with the free trial (subscription plans only)."),
+    trial: z
+      .boolean()
+      .optional()
+      .describe(
+        "Start the Weekly plan with the first week for $3 (`plan_key` must be `weekly`; no other plan has a trial). " +
+          `First ${TRIAL_CONFIRM}.`,
+      ),
   }),
   handler: async (input, ctx) => {
     const data = await ctx.client.post<{ url?: string }>("/api/v1/billing/checkout", {
@@ -143,6 +178,20 @@ const versely_create_checkout_link = defineTool({
       ...(input.trial ? { trial: true } : {}),
     });
     if (typeof data?.url !== "string" || !data.url) return jsonResult(data);
+    // A trial link charges the trial's fee, not the plan's price, and the
+    // plan's own credits come when the trial ends: say so with the link.
+    if (input.trial) {
+      const terms =
+        `This link starts the Weekly plan with the first week for $3: ${TRIAL_CHARGED_NOW}. ${TRIAL_CHARGED_NEXT}. ` +
+        `The trial's credits are added to their Versely account as soon as the payment goes through; the plan's ` +
+        `full credits come when the plan's price is charged.`;
+      return {
+        content: [
+          { type: "text", text: `Checkout link: ${data.url}\n\nGive the user this link to pay with Dodo Payments. ${terms}` },
+        ],
+        structuredContent: { plan_key: input.plan_key, url: data.url, trial: true, terms },
+      };
+    }
     return {
       content: [
         {
@@ -221,8 +270,9 @@ const versely_resume_subscription = defineTool({
 const versely_skip_trial = defineTool({
   name: "versely_skip_trial",
   description:
-    "End the user's free trial now and start the paid plan: their card is charged now (instead of when the trial " +
-    "ends) and the plan's full credits are added. Web trials only. Confirm with the user first.",
+    "End the user's trial now and start the paid plan: their card is charged the plan's price now (instead of " +
+    "when the trial ends) and the plan's full credits are added. Anything already paid for the trial is not " +
+    "refunded. Web trials only. Confirm with the user first.",
   inputSchema: Empty,
   handler: async (_input, ctx) => {
     const data = await ctx.client.post<{ charge_at?: string }>("/api/v1/billing/subscription/skip-trial", {});
