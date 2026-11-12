@@ -39,9 +39,11 @@ const ReturnIntent = z
 // that it was free, 3 days, on Weekly or Monthly). GET /billing/trial returns
 // the live terms (versely_list_plans); when they change, change this wording
 // with them. Web trials started before that date were free and are still
-// running, and the iPhone app's trial is a separate free App Store trial, so a
-// trial that already EXISTS is only ever called "a trial" here, never "free"
-// and never "$3".
+// running, and the iPhone app's offer is a separate one through the App Store
+// (the first week for $2.99 with 100 credits since 2026-11-13; free, 3 days,
+// 24 credits before, and some of those are still running), so a trial that
+// already EXISTS is only ever called "a trial" here, never "free" and never
+// "$3".
 const TRIAL_OFFER = "the first week for $3 (Weekly plan only)";
 const TRIAL_CHARGED_NOW = "$3 (plus tax where it applies) is charged at checkout and is not refunded";
 const TRIAL_CHARGED_NEXT = "$9 a week follows after 7 days unless they cancel first";
@@ -134,7 +136,9 @@ const versely_list_plans = defineTool({
     "`posts_unlimited` is true (ignore `posts`; fair use is up to 5 posts a day for each connected account, and " +
     "posts past that use credits). Monthly, Pro Monthly and the annual plans start without a trial. `free_trial` is " +
     "the old name of `trial_offer` and holds the same data; the web trial is not free. The iPhone app has its own " +
-    "trial through the App Store (free, 3 days, 24 credits).",
+    "offer through the App Store, and it is not free either: the Weekly plan's first week for $2.99 (the US price; " +
+    "Apple sets it per country, charges it, gives it once per Apple ID and is the only one who can refund it), with " +
+    "100 credits (80 + 20 bonus), then $8.99 a week.",
   inputSchema: Empty,
   handler: async (_input, ctx) => {
     const [plans, trial] = await Promise.all([

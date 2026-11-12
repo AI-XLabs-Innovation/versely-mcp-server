@@ -6,6 +6,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — The iPhone app's first week is paid too (2026-11-13)
+
+- `versely_list_plans` no longer says the iPhone app has a free 3-day App Store trial with 24 credits. It now describes the App Store offer as the Weekly plan's first week for $2.99 (US price, charged by Apple, once per Apple ID, refunds through Apple), with 100 credits (80 + 20 bonus), then $8.99 a week. TOOLS.md regenerated. Ship only after the offer is switched in App Store Connect.
+
 ### Changed — The web trial is the first week for $3 (2026-11-12)
 
 - **The web trial is no longer free.** Since 2026-11-12 it is the Weekly plan's first week for $3 (charged at checkout, not refunded), then $9 a week unless cancelled; no other plan has a trial. `versely_create_checkout_link` (`trial: true`), `versely_list_plans`, `versely_get_subscription` and `versely_skip_trial` (titled "End trial now") say so, and the checkout tool has the assistant confirm both charges with the user before it creates a trial link. A trial link's result carries the same terms.
