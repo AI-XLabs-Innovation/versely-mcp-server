@@ -16,6 +16,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startFakeBackend, PLUGIN_MODELS, type FakeBackend } from "./fake-backend.js";
 import { mcpProxyKeyFromSecret, signMcpProxy } from "../src/proxySignature.js";
+import { isPublicAddress, unsafeUrlReason } from "../src/tools/_fetchGuard.js";
+import { describeUpload } from "../src/tools/media.js";
 
 const dist = resolve(process.cwd(), "dist", "index.js");
 const PORT = String(20000 + Math.floor(Math.random() * 10000));
@@ -54,7 +56,7 @@ const OPENAI_TOOLS = [
   "versely_list_user_media", "versely_delete_generation", "versely_generate_lipsync",
   "versely_get_social_auth_url", "versely_list_social_accounts", "versely_refresh_social_accounts",
   "versely_disconnect_social_account", "versely_preview_post", "versely_publish_post", "versely_list_posts",
-  "versely_get_post", "versely_update_post", "versely_delete_post",
+  "versely_get_post", "versely_update_post", "versely_delete_post", "versely_get_posting_plan",
   "versely_create_workflow", "versely_list_workflows", "versely_get_workflow", "versely_update_workflow",
   "versely_delete_workflow", "versely_duplicate_workflow", "versely_export_workflow", "versely_update_workflow_mode",
   "versely_update_workflow_schedule", "versely_update_workflow_dates", "versely_update_workflow_assets",
@@ -68,6 +70,7 @@ const OPENAI_TOOLS = [
   "versely_list_slideshow_options", "versely_estimate_slideshow_automation", "versely_create_slideshow_automation",
   "versely_list_automations", "versely_get_automation", "versely_update_automation", "versely_start_automation",
   "versely_pause_automation", "versely_run_automation_now", "versely_delete_automation", "versely_list_automation_runs",
+  "versely_quote_automation_posts", "versely_create_automation_posts", "versely_stop_automation",
   "versely_generate_sound_effect",
   "versely_get_me", "versely_list_purchases", "versely_get_subscription", "versely_list_credit_history",
   "versely_list_avatars",
@@ -87,7 +90,16 @@ const OPENAI_TOOLS = [
   "versely_pick_character_portrait", "versely_delete_hook_character", "versely_get_social_analytics_overview",
   "versely_get_post_analytics", "versely_refresh_post_analytics", "versely_get_post_analytics_history",
   "versely_plan_drama_show", "versely_update_drama_show", "versely_write_drama_episode", "versely_get_drama_quote",
-  "versely_film_drama_episode", "versely_get_drama_show", "versely_list_drama_shows",
+  "versely_film_drama_episode", "versely_get_drama_show", "versely_list_drama_shows", "versely_delete_drama_show",
+  "versely_upload_media",
+  "versely_quote_music_video", "versely_create_music_video", "versely_get_music_video",
+  "versely_list_photo_looks", "versely_apply_photo_look", "versely_get_photo_look",
+  "versely_list_caption_looks", "versely_caption_video", "versely_get_caption_job",
+  "versely_write_script", "versely_get_script", "versely_list_scripts", "versely_update_script", "versely_delete_script", "versely_get_voice_profile", "versely_build_voice_profile", "versely_delete_voice_profile",
+  "versely_list_ugc_actors", "versely_list_ugc_voices", "versely_write_ugc_script", "versely_quote_ugc_ads", "versely_create_ugc_ads", "versely_get_ugc_ads", "versely_list_ugc_ads",
+  "versely_list_ready_made_avatars", "versely_add_ready_made_avatar", "versely_list_avatar_creations",
+  "versely_list_ai_creator_options", "versely_make_ai_creator_rooms", "versely_get_ai_creator_rooms", "versely_create_ai_creator", "versely_update_ai_creator", "versely_test_ai_creator_episode", "versely_list_ai_creator_episodes", "versely_approve_ai_creator",
+  "versely_list_remix_trends", "versely_prepare_remix_clip", "versely_quote_swap", "versely_swap_video", "versely_get_swap",
 ];
 
 const failures: string[] = [];
@@ -424,7 +436,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     return !(typeof a === "string" && typeof b === "string" && a.length > 0 && a.length <= 64 && b.length > 0 && b.length <= 64);
   });
   assert("every openai tool has invocation strings <= 64 chars", inv.length === 0, inv.map((t) => t.name).join(", "));
-  for (const target of ["versely_get_task_status", "versely_get_movie_status", "versely_get_dub", "versely_get_drama_show"]) {
+  for (const target of ["versely_get_task_status", "versely_get_movie_status", "versely_get_dub", "versely_get_drama_show", "versely_get_swap"]) {
     const m = (byName(oTools, target) as { _meta?: Record<string, unknown> } | undefined)?._meta ?? {};
     assert(`openai ${target} is widgetAccessible for the card`, m["openai/widgetAccessible"] === true);
   }
@@ -519,13 +531,16 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   // Automations and workflow auto-post take Versely's account ids and send the
   // provider ids the backend matches on; an edit keeps the settings not named.
   const auto = JSON.parse(textOf(await call(openai, "versely_create_slideshow_automation", {
-    name: "Daily fitness", every_minutes: 1440, category: "fitness", model: "Flux Pro Ultra", post_account_ids: ["acct-db-1"],
-  }))) as { id?: string; config?: Record<string, unknown>; interval_seconds?: number; status?: string };
+    name: "Daily fitness", post_time: "09:00", timezone: "Europe/London", category: "fitness", model: "Flux Pro Ultra", post_account_ids: ["acct-db-1"],
+  }))) as { id?: string; config?: Record<string, unknown>; schedule?: { times?: string[]; timezone?: string }; status?: string; next?: string };
+  const autoCreateBody = (backend.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/automations").at(-1)?.body ?? {}) as Record<string, unknown>;
   assert("create_slideshow_automation maps account ids to provider ids", JSON.stringify(auto.config?.post_account_ids) === '["spc_ext_1"]' && auto.config?.source === "ai", JSON.stringify(auto));
-  assert("create_slideshow_automation sends the schedule in seconds and starts paused", auto.interval_seconds === 86400 && auto.status === "paused", JSON.stringify(auto));
+  assert("create_slideshow_automation sends the daily posting time (no interval, no start) and says nothing is made yet", JSON.stringify(autoCreateBody.schedule) === '{"times":["09:00"],"timezone":"Europe/London"}' && !("interval_seconds" in autoCreateBody) && !("start" in autoCreateBody) && auto.status === "paused" && String(auto.next).includes("versely_create_automation_posts"), JSON.stringify({ autoCreateBody, auto }));
+  const autoProps = byName(oTools, "versely_create_slideshow_automation")?.inputSchema.properties ?? {};
+  assert("create_slideshow_automation offers post_time + timezone and no longer every_minutes / start", "post_time" in autoProps && "timezone" in autoProps && !("every_minutes" in autoProps) && !("start" in autoProps), Object.keys(autoProps).join(","));
   const edited = JSON.parse(textOf(await call(openai, "versely_update_automation", { automation_id: String(auto.id), num_images: 8 }))) as { config?: Record<string, unknown> };
   assert("update_automation merges into the stored settings", edited.config?.num_images === 8 && edited.config?.category === "fitness" && JSON.stringify(edited.config?.post_account_ids) === '["spc_ext_1"]', JSON.stringify(edited));
-  const badAcct = await call(openai, "versely_create_slideshow_automation", { name: "x", every_minutes: 60, category: "fitness", model: "Flux Pro Ultra", post_account_ids: ["nope"] });
+  const badAcct = await call(openai, "versely_create_slideshow_automation", { name: "x", category: "fitness", model: "Flux Pro Ultra", post_account_ids: ["nope"] });
   assert("an unknown account id is refused before anything is created", badAcct.isError === true && textOf(badAcct).includes("versely_list_social_accounts"), textOf(badAcct));
   const wfAuto = JSON.parse(textOf(await call(openai, "versely_update_workflow_mode", {
     workflow_id: "wf-1", mode: "auto", schedule_cron: "0 9 * * *", auto_post: true, auto_post_account_ids: ["acct-db-1"],
@@ -611,7 +626,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const pinBody = lastBody("/api/v1/slideshow/create-pinterest-auto");
   assert("brand slideshow from Pinterest comes back finished", (pin.structuredContent as Record<string, any>)?.status === "completed" && pinBody.prompt === "cozy coffee corners" && (pinBody.text_style as Record<string, unknown>)?.stroke_width === 6, JSON.stringify(pinBody));
   const brandAuto = JSON.parse(textOf(await call(openai, "versely_create_slideshow_automation", {
-    name: "Acme weekly", every_minutes: 10080, brand_url: "https://acme-coffee.test", model: "Flux Pro Ultra",
+    name: "Acme weekly", brand_url: "https://acme-coffee.test", model: "Flux Pro Ultra",
   }))) as { config?: Record<string, unknown> };
   assert("a brand automation can start from the brand's link", typeof brandAuto.config?.brand_kit_id === "string" && String(brandAuto.config?.brand_kit_id).startsWith("brand-"), JSON.stringify(brandAuto));
   const brandEdited = JSON.parse(textOf(await call(openai, "versely_update_brand", { brand_id: "brand-1", voice_tone: "playful" }))) as { brand?: { brand_id?: string } };
@@ -719,6 +734,424 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("get_post_analytics only reads (no collection job)", statsRead.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 0, JSON.stringify(statsRead));
   const stats = JSON.parse(textOf(await call(openai, "versely_refresh_post_analytics", { post_id: "post-db-9" }))) as { stats?: Record<string, unknown> };
   assert("refresh_post_analytics collects then reads the stats", stats.stats?.views === 1200 && backend.count((r) => r.path === "/api/v1/social-analytics/post-db-9/collect") === 1, JSON.stringify(stats));
+  // ─── Uploads: a file from the chat lands in the user's own library ────────
+  const upTool = byName(oTools, "versely_upload_media");
+  const fileProp = (upTool?.inputSchema.properties as Record<string, any> | undefined)?.file;
+  assert(
+    "upload_media declares ChatGPT's file input the way the portal checks it",
+    JSON.stringify(upTool?._meta?.["openai/fileParams"]) === '["file"]' &&
+      JSON.stringify(fileProp?.required) === '["download_url","file_id"]' &&
+      ["download_url", "file_id", "mime_type", "file_name"].every((k) => k in (fileProp?.properties ?? {})) &&
+      fileProp?.additionalProperties === false,
+    JSON.stringify(fileProp),
+  );
+  const fullUp = byName(fullTools, "versely_upload_media");
+  assert("the full profile's upload_media takes a link and declares no file input", "url" in (fullUp?.inputSchema.properties ?? {}) && !("file" in (fullUp?.inputSchema.properties ?? {})) && !("openai/fileParams" in (fullUp?._meta ?? {})));
+  const up = await call(openai, "versely_upload_media", { file: { download_url: `${backend.url}/__files/clip.mp4`, file_id: "file_1", file_name: "My Clip (1).mp4" } });
+  const presign = lastBody("/api/v1/bucket/presign");
+  const put = backend.requests.filter((r) => r.method === "PUT").at(-1);
+  assert("upload_media presigns with the file's real size and type", presign.content_type === "video/mp4" && presign.size === 2048 && presign.file_name === "My_Clip_1.mp4", JSON.stringify(presign));
+  assert("upload_media PUTs the bytes with the signed length and type", put?.bytes === 2048 && put?.headers["content-type"] === "video/mp4" && put?.headers["content-length"] === "2048" && put?.path === "/__r2/videos/usr/user-smoke/My_Clip_1.mp4", JSON.stringify([put?.path, put?.bytes, put?.headers["content-type"]]));
+  assert("upload_media returns the stored URL and says it was free", !up.isError && textOf(up).includes("https://videos.versely.studio/usr/user-smoke/My_Clip_1.mp4") && textOf(up).includes("Nothing was charged") && textOf(up).includes("versely_prepare_remix_clip"), textOf(up));
+  await call(openai, "versely_upload_media", { file: { download_url: `${backend.url}/__files/photo.bin`, file_id: "file_2", mime_type: "image/png" } });
+  assert("an untyped download takes the type the host declared", lastBody("/api/v1/bucket/presign").content_type === "image/png" && lastBody("/api/v1/bucket/presign").file_name === "photo.png", JSON.stringify(lastBody("/api/v1/bucket/presign")));
+  const presignsBefore = backend.count((r) => r.path === "/api/v1/bucket/presign");
+  const pdf = await call(openai, "versely_upload_media", { file: { download_url: `${backend.url}/__files/doc.pdf`, file_id: "file_3", file_name: "doc.pdf" } });
+  const huge = await call(openai, "versely_upload_media", { file: { download_url: `${backend.url}/__files/huge.png`, file_id: "file_4" } });
+  const gone = await call(openai, "versely_upload_media", { file: { download_url: `${backend.url}/__files/missing.mp4`, file_id: "file_5" } });
+  assert("upload_media refuses a document, an oversized photo and a dead link before storing anything",
+    pdf.isError === true && textOf(pdf).includes("can't be stored") && huge.isError === true && textOf(huge).includes("over 30 MB") && gone.isError === true && textOf(gone).includes("answered 404") &&
+      backend.count((r) => r.path === "/api/v1/bucket/presign") === presignsBefore,
+    [textOf(pdf), textOf(huge), textOf(gone)].join(" | "));
+  const viaLink = await call(full, "versely_upload_media", { url: `${backend.url}/__files/clip2.mp4` });
+  assert("the full profile stores a file from a link", !viaLink.isError && textOf(viaLink).includes("/usr/user-smoke/clip2.mp4"), textOf(viaLink));
+  // The address guard, in this process (the spawned server runs with it off to reach the fake backend).
+  assert("the fetch guard refuses private, loopback, link-local and metadata addresses",
+    ["127.0.0.1", "10.1.2.3", "172.20.0.5", "192.168.1.9", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fe80::1", "fd00::1", "::ffff:10.0.0.1", "224.0.0.1"].every((ip) => !isPublicAddress(ip)) &&
+      ["8.8.8.8", "104.18.2.3", "2606:4700::6810:203", "::ffff:8.8.8.8"].every((ip) => isPublicAddress(ip)));
+  assert("the fetch guard refuses http, credentials, odd ports, IP literals and internal names",
+    [
+      "http://example.com/a.mp4", "https://user:pw@example.com/a.mp4", "https://example.com:8443/a.mp4", "https://127.0.0.1/a.mp4",
+      "https://[::1]/a.mp4", "https://169.254.169.254/latest", "https://localhost/a.mp4", "https://storage.internal/a.mp4", "https://intranet/a.mp4", "ftp://example.com/a.mp4", "not a url",
+    ].every((u) => unsafeUrlReason(u) !== null) && unsafeUrlReason("https://files.example.com/a.mp4") === null && unsafeUrlReason("https://8.8.8.8/a.mp4") === null);
+  assert("describeUpload trusts the server's type first, then the host's, then the name",
+    describeUpload({ headerMime: "video/quicktime; charset=binary", name: "x.mp4" })?.fileName === "x.mov" &&
+      describeUpload({ headerMime: "application/octet-stream", declaredMime: "audio/x-m4a", name: "voice" })?.contentType === "audio/mp4" &&
+      describeUpload({ headerMime: "binary/octet-stream", name: "IMG_0001.HEIC" })?.kind === "image" &&
+      describeUpload({ headerMime: "text/html", name: "page.html" }) === null);
+
+  // ─── Remix: trends, a clip, the price, the swap ───────────────────────────
+  const trends = JSON.parse(textOf(await call(openai, "versely_list_remix_trends", {}))) as Record<string, any>;
+  assert("list_remix_trends returns tidy trend cards and the tabs", trends.available === true && trends.items?.[0]?.trend_id === "insp-dance-1" && trends.items[0].title === "POV: the hallway dance" && trends.items[0].creator === "@dancer.one" && trends.items[0].suggested === "swap" && trends.items[1].creator === "@duo" && trends.tabs?.[0]?.tab === "trending", JSON.stringify(trends));
+  const movesTab = JSON.parse(textOf(await call(openai, "versely_list_remix_trends", { tab: "versely" }))) as Record<string, any>;
+  assert("the versely tab lists ready-made moves by move_id", movesTab.items?.[0]?.move_id === "groove-two-step" && movesTab.items[0].suggested === "moves" && !("trend_id" in movesTab.items[0]), JSON.stringify(movesTab.items));
+  const trendPicker = ((await call(openai, "versely_browse", { collection: "remix_trends", category: "dance" }))._meta ?? {})["studio.versely/picker"] as { items?: Array<{ image?: string; badge?: string; pick: string }> } | undefined;
+  assert("browse remix_trends shows covers and a pick that carries the trend_id", String(trendPicker?.items?.[0]?.image).endsWith("t1.jpg") && trendPicker?.items?.[0]?.badge === "Swap" && trendPicker?.items?.[0]?.pick.includes("trend_id: insp-dance-1"), JSON.stringify(trendPicker?.items?.[0]));
+  const clip = await call(openai, "versely_prepare_remix_clip", { trend_id: "insp-dance-1" });
+  const clipSc = clip.structuredContent as Record<string, any> | undefined;
+  const clipId = /clip_id: ([0-9a-f-]{36})/.exec(textOf(clip))?.[1] ?? "";
+  assert("prepare_remix_clip previews the trend and cuts the suggested window", lastBody("/api/v1/remix/sources/preview").inspiration_id === "insp-dance-1" && lastBody("/api/v1/remix/sources").preview_id === "0a0a0a0a-0000-4000-8000-000000000001" && lastBody("/api/v1/remix/sources").start === 3 && lastBody("/api/v1/remix/sources").end === 11, JSON.stringify(lastBody("/api/v1/remix/sources")));
+  assert("prepare_remix_clip returns the clip_id, its length and a card of the clip", clipId.length === 36 && textOf(clip).includes("8 s") && textOf(clip).includes("Nothing was charged") && clipSc?.status === "completed" && String(clipSc?.assets?.[0]?.url).includes("/tmp/swap-sources/"), textOf(clip));
+  const previewsBefore = backend.count((r) => r.path === "/api/v1/remix/sources/preview");
+  const twoInputs = await call(openai, "versely_prepare_remix_clip", { trend_id: "insp-dance-1", link: "https://www.tiktok.com/@a/video/1" });
+  const badRange = await call(openai, "versely_prepare_remix_clip", { link: "https://www.tiktok.com/@a/video/1", start: 0, end: 30 });
+  assert("prepare_remix_clip refuses two inputs and a 30 s range before any call", twoInputs.isError === true && badRange.isError === true && textOf(badRange).includes("4 to 15 seconds") && backend.count((r) => r.path === "/api/v1/remix/sources/preview") === previewsBefore, textOf(badRange));
+  const notMine = await call(openai, "versely_prepare_remix_clip", { video_url: "https://cdn.example.com/clip.mp4" });
+  assert("a video that is not in the user's library points at upload_media", notMine.isError === true && textOf(notMine).includes("Upload the video to Versely first") && textOf(notMine).includes("versely_upload_media") && textOf(notMine).includes("Nothing was charged"), textOf(notMine));
+  const privatePost = await call(openai, "versely_prepare_remix_clip", { link: "https://www.instagram.com/reel/private123/" });
+  assert("a post that can't be fetched is said in the backend's words, with no API detail", privatePost.isError === true && textOf(privatePost).startsWith("We couldn't download that post.") && !textOf(privatePost).includes("/api/v1"), textOf(privatePost));
+  const myClip = await call(openai, "versely_prepare_remix_clip", { video_url: "https://videos.versely.studio/usr/user-smoke/My_Clip_1.mp4", start: 2, end: 8 });
+  assert("the user's own stored video is cut to the range they picked", !myClip.isError && lastBody("/api/v1/remix/sources").start === 2 && lastBody("/api/v1/remix/sources").end === 8 && textOf(myClip).includes("6 s"), textOf(myClip));
+
+  const swapQuote = textOf(await call(openai, "versely_quote_swap", { clip_id: clipId }));
+  const quoteBody = lastBody("/api/v1/remix/swap/quote");
+  assert("quote_swap prices the clip at 720p lite and sends the balance", quoteBody.source_id === clipId && quoteBody.mode === "swap" && quoteBody.resolution === "720p" && quoteBody.quality === "lite" && quoteBody.variants === 1 && quoteBody.fit_credits === 250, JSON.stringify(quoteBody));
+  assert("quote_swap states the price, the balance and the confirm value", swapQuote.includes("96 credits for 8 s at 720p") && swapQuote.includes("Balance: 250 credits") && swapQuote.includes("confirm_credits: 96"), swapQuote);
+  const shortQuote = textOf(await call(openai, "versely_quote_swap", { clip_id: clipId, resolution: "1080p", quality: "plus", versions: 2 }));
+  assert("a quote over the balance offers what the balance covers, and no way to start it", lastBody("/api/v1/remix/swap/quote").quality === "pro" && shortQuote.includes("768 credits (384 credits each for 2 versions)") && shortQuote.includes("1080p, Plus") && shortQuote.includes("8 s at 480p for 96 credits") && !shortQuote.includes("confirm_credits") && !/buy|purchase|top up|upgrade/i.test(shortQuote), shortQuote);
+  await call(openai, "versely_quote_swap", { clip_id: clipId, type: "moves" });
+  assert("type moves is sent as the motion mode", lastBody("/api/v1/remix/swap/quote").mode === "motion");
+
+  const me = "https://img.versely.studio/usr/user-smoke/me.png";
+  const swapsBefore = backend.count((r) => r.path === "/api/v1/remix/swap");
+  const staleSwap = await call(openai, "versely_swap_video", { clip_id: clipId, swaps: [{ replaces: "person", image_url: me }], confirm_credits: 50, rights_confirmed: true });
+  assert("swap_video with a stale price is refused with the new one and charges nothing", staleSwap.isError === true && textOf(staleSwap).includes("now 96 credits") && textOf(staleSwap).includes("nothing charged") && textOf(staleSwap).includes("confirm_credits: 96") && backend.count((r) => r.path === "/api/v1/remix/swap") === swapsBefore, textOf(staleSwap));
+  const noRights = await call(openai, "versely_swap_video", { clip_id: clipId, swaps: [{ replaces: "person", image_url: me }], confirm_credits: 96, rights_confirmed: false });
+  const twoSources = await call(openai, "versely_swap_video", { clip_id: clipId, swaps: [{ replaces: "person", image_url: me, avatar_id: "char-1" }], confirm_credits: 96, rights_confirmed: true });
+  assert("swap_video needs the rights confirmation and one photo source per swap", noRights.isError === true && twoSources.isError === true && textOf(twoSources).includes("exactly one of image_url or avatar_id") && backend.count((r) => r.path === "/api/v1/remix/swap") === swapsBefore, textOf(noRights));
+  const swapped = await call(openai, "versely_swap_video", { clip_id: clipId, swaps: [{ replaces: "person", target: " the dancer ", image_url: me }], note: "keep the hoodie", confirm_credits: 96, rights_confirmed: true });
+  const swapBody = lastBody("/api/v1/remix/swap");
+  const swapSc = swapped.structuredContent as Record<string, any> | undefined;
+  const swapJobs = (swapSc?.poll?.args?.job_ids ?? []) as string[];
+  assert("swap_video sends the slots, the rights tick and one batch id", swapBody.source_id === clipId && swapBody.mode === "swap" && JSON.stringify(swapBody.slots) === JSON.stringify([{ role: "person", target: "the dancer", image_url: me }]) && swapBody.note === "keep the hoodie" && swapBody.rights_confirmed === true && swapBody.keep_audio === true && swapBody.variants === 1 && swapBody.quality === "lite" && swapBody.resolution === "720p" && typeof swapBody.batch_id === "string", JSON.stringify(swapBody));
+  assert("swap_video's card follows the job through versely_get_swap", swapSc?.status === "pending" && swapSc?.poll?.tool_name === "versely_get_swap" && swapJobs.length === 1 && textOf(swapped).includes("96 credits held") && textOf(swapped).includes("NOT finished"), JSON.stringify(swapSc));
+  const swapPending = await call(openai, "versely_get_swap", { job_ids: swapJobs });
+  const swapDone = await call(openai, "versely_get_swap", { job_ids: swapJobs });
+  const swapDoneSc = swapDone.structuredContent as Record<string, any> | undefined;
+  assert("get_swap is pending, then ends with the remixed video (not its thumbnail)", (swapPending.structuredContent as any)?.status === "pending" && (swapPending.structuredContent as any)?.poll?.tool_name === "versely_get_swap" && swapDoneSc?.status === "completed" && swapDoneSc?.kind === "video" && swapDoneSc?.assets?.length === 1 && String(swapDoneSc?.assets?.[0]?.url).endsWith(".mp4"), JSON.stringify(swapDoneSc));
+  const nude = await call(openai, "versely_swap_video", { clip_id: clipId, swaps: [{ replaces: "person", image_url: "https://img.versely.studio/usr/user-smoke/nude.png" }], confirm_credits: 96, rights_confirmed: true });
+  assert("a picture refusal is relayed once, in the backend's words", nude.isError === true && textOf(nude).includes("nudity") && (textOf(nude).match(/Nothing was charged/g) ?? []).length === 1, textOf(nude));
+  const failing = await call(openai, "versely_swap_video", { clip_id: clipId, swaps: [{ replaces: "outfit", target: "fails", image_url: me }], confirm_credits: 96, rights_confirmed: true });
+  const failed = await call(openai, "versely_get_swap", { job_ids: (failing.structuredContent as any)?.poll?.args?.job_ids ?? [] });
+  assert("a swap the engine turns down ends failed and says the credits come back", failed.isError === true && (failed.structuredContent as any)?.status === "failed" && textOf(failed).includes("turned this clip down") && textOf(failed).includes("credits held for it are returned"), textOf(failed));
+  const two = await call(openai, "versely_swap_video", { clip_id: clipId, type: "moves", swaps: [{ replaces: "person", avatar_id: "char-1" }], versions: 2, confirm_credits: 192, rights_confirmed: true });
+  const twoJobs = ((two.structuredContent as any)?.poll?.args?.job_ids ?? []) as string[];
+  await call(openai, "versely_get_swap", { job_ids: twoJobs });
+  const twoDone = (await call(openai, "versely_get_swap", { job_ids: twoJobs })).structuredContent as Record<string, any> | undefined;
+  assert("two versions of Copy the moves end as a gallery of both", lastBody("/api/v1/remix/swap").mode === "motion" && JSON.stringify(lastBody("/api/v1/remix/swap").slots) === '[{"role":"person","avatar_id":"char-1"}]' && twoJobs.length === 2 && twoDone?.status === "completed" && twoDone?.kind === "gallery" && twoDone?.assets?.[1]?.label === "Version 2", JSON.stringify(twoDone));
+  const remixDescs = oTools.filter((t) => /remix|swap/.test(t.name)).map((t) => JSON.stringify([t.description, t.inputSchema])).join(" ");
+  assert("no remix tool names an engine or a vendor", !/\b(fal|kie|runpod|engine by|powered by)\b/i.test(remixDescs));
+
+  // ─── musicVideo (agent notes) ───
+  {
+  // AI music video: quote free, create only with the approved price (a stale one is refused before
+  // anything is sent), follow the job to the video or the failure.
+  const MV_JOB = "5f0c6a2e-8d1b-4c3a-9e7f-1a2b3c4d5e6f";
+  const mvQ = await call(openai, "versely_quote_music_video", { music_id: "mus-smoke-1", audio_id: "aud_smoke_1", style: "grainy 90s film" });
+  const mvQText = textOf(mvQ);
+  const mvQBody = lastBody("/api/v1/music-video/quote");
+  assert("quote_music_video sends the song and style and shows the price", mvQBody.music_id === "mus-smoke-1" && mvQBody.audio_id === "aud_smoke_1" && mvQBody.style === "grainy 90s film" && mvQText.includes("66 credits") && mvQText.includes("0:12-1:12") && mvQText.includes("lyrics timed on screen") && mvQText.includes("confirm_credits: 66") && !mvQ.isError, mvQText);
+  const mvNoSong = await call(openai, "versely_quote_music_video", { music_id: "mus-smoke-1" });
+  assert("quote_music_video asks for audio_id and points at list_user_media", mvNoSong.isError === true && textOf(mvNoSong).includes("versely_list_user_media"), textOf(mvNoSong));
+  const mvMissing = await call(openai, "versely_quote_music_video", { music_id: "mus-missing", audio_id: "aud_x" });
+  assert("quote_music_video explains a song that is not the user's", mvMissing.isError === true && textOf(mvMissing).includes("not found") && textOf(mvMissing).includes("Nothing was charged"), textOf(mvMissing));
+  const mvUp = textOf(await call(openai, "versely_quote_music_video", { audio_url: "https://user-files.versely.studio/user-jwt-smoke/song.mp3", duration_sec: 30, keep_audio_untouched: true, quality: "fast" }));
+  const mvUpBody = lastBody("/api/v1/music-video/quote");
+  assert("quote_music_video takes an uploaded song and the options", mvUpBody.audio_url === "https://user-files.versely.studio/user-jwt-smoke/song.mp3" && !("music_id" in mvUpBody) && mvUpBody.keep_audio_untouched === true && mvUpBody.duration_sec === 30 && mvUpBody.quality === "fast" && mvUp.includes("39 credits") && /no lyrics on screen/i.test(mvUp) && mvUp.includes("Fast (beta)"), mvUp);
+  const mvPosts = () => backend.count((r) => r.method === "POST" && r.path === "/api/v1/music-video");
+  const mvPostsBefore = mvPosts();
+  const mvStale = await call(openai, "versely_create_music_video", { music_id: "mus-smoke-1", audio_id: "aud_smoke_1", confirm_credits: 40 });
+  assert("create_music_video with a stale price is refused with the new one, nothing started", mvStale.isError === true && textOf(mvStale).includes("costs 66 credits now") && textOf(mvStale).includes("nothing charged") && textOf(mvStale).includes("confirm_credits: 66") && mvPosts() === mvPostsBefore, textOf(mvStale));
+  const mvGo = await call(openai, "versely_create_music_video", { music_id: "mus-smoke-1", audio_id: "aud_smoke_1", style: "grainy 90s film", aspect_ratio: "1:1", confirm_credits: 66 });
+  const mvGoSc = mvGo.structuredContent as Record<string, any> | undefined;
+  const mvGoBody = lastBody("/api/v1/music-video");
+  assert("create_music_video re-quotes, starts the job and the card follows it", mvPosts() === mvPostsBefore + 1 && mvGoBody.music_id === "mus-smoke-1" && mvGoBody.aspect_ratio === "1:1" && mvGoBody.style === "grainy 90s film" && textOf(mvGo).includes("66 credits charged") && textOf(mvGo).includes("NOT finished") && mvGoSc?.status === "pending" && mvGoSc?.kind === "video" && mvGoSc?.poll?.tool_name === "versely_get_music_video" && mvGoSc?.poll?.args?.job_id === MV_JOB, JSON.stringify(mvGoSc));
+  const mvMid = await call(openai, "versely_get_music_video", { job_id: MV_JOB });
+  const mvMidSc = mvMid.structuredContent as Record<string, any> | undefined;
+  assert("get_music_video shows progress while the stills are drawn", mvMidSc?.status === "pending" && typeof mvMidSc?.progress === "number" && mvMidSc.progress > 0.4 && mvMidSc?.poll?.tool_name === "versely_get_music_video" && textOf(mvMid).includes("9 of 18"), JSON.stringify(mvMidSc));
+  const mvDone = await call(openai, "versely_get_music_video", { job_id: MV_JOB });
+  const mvDoneSc = mvDone.structuredContent as Record<string, any> | undefined;
+  assert("get_music_video ends with the finished video", mvDoneSc?.status === "completed" && mvDoneSc?.assets?.[0]?.url === "https://videos.versely.studio/music-video/5f0c6a2e.mp4" && textOf(mvDone).includes("ready"), JSON.stringify(mvDoneSc));
+  const mvFail = await call(openai, "versely_create_music_video", { music_id: "mus-fails", audio_id: "aud_smoke_1", confirm_credits: 66 });
+  const mvFailId = ((mvFail.structuredContent as Record<string, any> | undefined)?.poll?.args?.job_id ?? "") as string;
+  const mvFailed = await call(openai, "versely_get_music_video", { job_id: mvFailId });
+  const mvFailedSc = mvFailed.structuredContent as Record<string, any> | undefined;
+  assert("get_music_video shows a failed job and its refund", mvFailedSc?.status === "failed" && String(mvFailedSc?.error).includes("refunded") && textOf(mvFailed).includes("failed"), JSON.stringify(mvFailedSc));
+  const mvGone = await call(openai, "versely_get_music_video", { job_id: "00000000-0000-4000-8000-000000000000" });
+  assert("get_music_video turns an unknown job into a failed card", (mvGone.structuredContent as Record<string, any> | undefined)?.status === "failed" && textOf(mvGone).includes("kept for a day"), textOf(mvGone));
+  }
+
+  // ─── aiLooks (agent notes) ───
+  {
+  // AI looks: the list is the price list (never the model), apply only with the approved price,
+  // follow the job to the photo or the failure.
+  const LOOK_JOB = "019a7f3c-5e00-7000-8000-00000000a1b2";
+  const looks = await call(openai, "versely_list_photo_looks", {});
+  const looksText = textOf(looks);
+  assert("list_photo_looks lists looks by group with prices and never the model", !looks.isError && looksText.includes("golden-hour") && looksText.includes("Golden hour & sunset") && looksText.includes("2 credits (3 held") && looksText.includes("night-flash") && looksText.includes("9 credits") && looksText.includes("versely_apply_photo_look") && !/nano banana|pruna/i.test(looksText), looksText);
+  const goldenOnly = textOf(await call(openai, "versely_list_photo_looks", { group: "golden" }));
+  assert("list_photo_looks filters by group", goldenOnly.includes("golden-hour") && !goldenOnly.includes("night-flash"), goldenOnly);
+  const lookPosts = () => backend.count((r) => r.method === "POST" && r.path === "/api/v1/ai-looks");
+  const lookPostsBefore = lookPosts();
+  const lookStale = await call(openai, "versely_apply_photo_look", { image_url: "https://img.versely.studio/me.jpg", look: "night-flash", confirm_credits: 4 });
+  assert("apply_photo_look with a stale price is refused, nothing started", lookStale.isError === true && textOf(lookStale).includes("costs 9 credits now") && textOf(lookStale).includes("nothing charged") && textOf(lookStale).includes("confirm_credits: 9") && lookPosts() === lookPostsBefore, textOf(lookStale));
+  const lookUnknown = await call(openai, "versely_apply_photo_look", { image_url: "https://img.versely.studio/me.jpg", look: "sepia-dream", confirm_credits: 9 });
+  assert("apply_photo_look names the looks for an unknown one", lookUnknown.isError === true && textOf(lookUnknown).includes("golden-hour") && lookPosts() === lookPostsBefore, textOf(lookUnknown));
+  const applied = await call(openai, "versely_apply_photo_look", { image_url: "https://img.versely.studio/me.jpg", look: "Golden hour", strength: "bold", confirm_credits: 2 });
+  const appliedSc = applied.structuredContent as Record<string, any> | undefined;
+  const lookBody = lastBody("/api/v1/ai-looks");
+  assert("apply_photo_look sends the look id and strength; the image card follows the job", lookBody.preset === "golden-hour" && lookBody.strength === 0.85 && lookBody.image_url === "https://img.versely.studio/me.jpg" && textOf(applied).includes("2 credits") && textOf(applied).includes("NOT finished") && appliedSc?.status === "pending" && appliedSc?.kind === "image" && appliedSc?.poll?.tool_name === "versely_get_photo_look" && appliedSc?.poll?.args?.job_id === LOOK_JOB && !/pruna|nano banana/i.test(JSON.stringify(applied)), JSON.stringify(appliedSc));
+  const lookMid = (await call(openai, "versely_get_photo_look", { job_id: LOOK_JOB })).structuredContent as Record<string, any> | undefined;
+  assert("get_photo_look stays pending while the look is made", lookMid?.status === "pending" && lookMid?.poll?.tool_name === "versely_get_photo_look", JSON.stringify(lookMid));
+  const lookDone = await call(openai, "versely_get_photo_look", { job_id: LOOK_JOB });
+  const lookDoneSc = lookDone.structuredContent as Record<string, any> | undefined;
+  assert("get_photo_look ends with the photo", lookDoneSc?.status === "completed" && lookDoneSc?.assets?.[0]?.url === "https://img.versely.studio/gen/ai-looks/look-a1b2.png" && textOf(lookDone).includes("Golden hour") && !/pruna/i.test(textOf(lookDone)), JSON.stringify(lookDoneSc));
+  const lookFail = await call(openai, "versely_apply_photo_look", { image_url: "https://img.versely.studio/fails.jpg", look: "golden-hour", confirm_credits: 3 });
+  const lookFailId = ((lookFail.structuredContent as Record<string, any> | undefined)?.poll?.args?.job_id ?? "") as string;
+  await call(openai, "versely_get_photo_look", { job_id: lookFailId });
+  const lookFailedSc = (await call(openai, "versely_get_photo_look", { job_id: lookFailId })).structuredContent as Record<string, any> | undefined;
+  assert("apply_photo_look accepts the held amount as the approved price; a failed look shows its refund", lookFailId.endsWith("f0f0") && lookFailedSc?.status === "failed" && String(lookFailedSc?.error).includes("refunded"), JSON.stringify(lookFailedSc));
+  const lookGone = await call(openai, "versely_get_photo_look", { job_id: "not-a-look" });
+  assert("get_photo_look turns an unknown job into a failed card", (lookGone.structuredContent as Record<string, any> | undefined)?.status === "failed", textOf(lookGone));
+  }
+
+  // ─── styledCaptions (agent notes) ───
+  {
+  // Captions studio: a free look starts at once; a premium look quotes first
+  // (nothing charged) and starts only with the exact price.
+  const capLooks = textOf(await call(openai, "versely_list_caption_looks", {}));
+  assert("list_caption_looks lists free looks and priced premium looks, never the vendor", capLooks.includes("- bold-pop: Bold pop.") && capLooks.includes("- premium-glass: Glass, 16 credits a minute") && capLooks.includes("Not available yet: backdrop") && !/veed/i.test(capLooks), capLooks);
+  const capFree = await call(openai, "versely_caption_video", { video_url: "https://videos.versely.studio/gen/talk.mp4", look: "bold-pop", position: "middle" });
+  const capFreeBody = lastBody("/api/v1/captions/styled");
+  const capFreeSc = capFree.structuredContent as Record<string, any> | undefined;
+  assert("caption_video sends a free look straight to the render", capFreeBody.style === "bold-pop" && capFreeBody.position === "middle" && capFreeBody.video_url === "https://videos.versely.studio/gen/talk.mp4" && textOf(capFree).includes("free, no credits"), JSON.stringify(capFreeBody));
+  assert("caption_video's card follows the job", capFreeSc?.status === "pending" && capFreeSc?.poll?.tool_name === "versely_get_caption_job" && typeof capFreeSc?.poll?.args?.job_id === "string", JSON.stringify(capFreeSc));
+  const capJobId = String(capFreeSc?.poll?.args?.job_id);
+  const capPending = await call(openai, "versely_get_caption_job", { job_id: capJobId });
+  assert("get_caption_job is pending while it renders", (capPending.structuredContent as any)?.status === "pending" && (capPending.structuredContent as any)?.poll?.tool_name === "versely_get_caption_job" && textOf(capPending).includes("NOT finished"), textOf(capPending));
+  const capDone = await call(openai, "versely_get_caption_job", { job_id: capJobId });
+  assert("get_caption_job ends with the captioned video", (capDone.structuredContent as any)?.status === "completed" && (capDone.structuredContent as any)?.assets?.[0]?.url === `https://videos.versely.studio/gen/styled-captions/${capJobId}/captioned.mp4` && textOf(capDone).includes("Captions done"), JSON.stringify(capDone.structuredContent));
+  const capRenders = () => backend.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/captions/styled").length;
+  const capMeasures = () => backend.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/captions/transcribe").length;
+  const capR0 = capRenders();
+  const capM0 = capMeasures();
+  const capQuote = await call(openai, "versely_caption_video", { video_url: "https://videos.versely.studio/gen/long-talk.mp4", look: "premium-glass" });
+  assert("caption_video quotes a premium look (16/min x 3 started minutes) without starting it", capRenders() === capR0 && !capQuote.isError && textOf(capQuote).includes("48 credits (3 started minutes x 16)") && textOf(capQuote).includes("confirm_credits: 48") && textOf(capQuote).includes("nothing charged") && (capQuote.structuredContent as any)?.status === "info" && lastBody("/api/v1/captions/transcribe").video_url === "https://videos.versely.studio/gen/long-talk.mp4", textOf(capQuote));
+  const capStale = await call(openai, "versely_caption_video", { video_url: "https://videos.versely.studio/gen/long-talk.mp4", look: "premium-glass", confirm_credits: 32 });
+  assert("caption_video refuses a premium look at a stale price", capStale.isError === true && textOf(capStale).includes("nothing charged") && textOf(capStale).includes("confirm_credits: 48") && capRenders() === capR0, textOf(capStale));
+  const capPaid = await call(openai, "versely_caption_video", { video_url: "https://videos.versely.studio/gen/long-talk.mp4", look: "premium-glass", confirm_credits: 48 });
+  assert("caption_video starts a premium look at the approved price, under the backend's id", lastBody("/api/v1/captions/styled").style === "veed-glass" && textOf(capPaid).includes("48 credits charged") && (capPaid.structuredContent as any)?.status === "pending" && !/veed/i.test(textOf(capPaid)), textOf(capPaid));
+  assert("the confirming calls reuse the measured length (one transcribe)", capMeasures() === capM0 + 1, String(capMeasures() - capM0));
+  const capMatte = await call(openai, "versely_caption_video", { video_url: "https://videos.versely.studio/gen/talk2.mp4", look: "backdrop" });
+  assert("caption_video passes the service's refusal on, nothing charged", capMatte.isError === true && textOf(capMatte).includes("Not started, nothing charged") && textOf(capMatte).includes("coming soon"), textOf(capMatte));
+  const capTooLong = await call(openai, "versely_caption_video", { video_url: "https://videos.versely.studio/gen/toolong.mp4", look: "premium-simple" });
+  assert("a premium quote on a too-long video is refused before any charge", capTooLong.isError === true && textOf(capTooLong).includes("up to 10 minutes") && textOf(capTooLong).includes("nothing charged"), textOf(capTooLong));
+  const capGone = await call(openai, "versely_get_caption_job", { job_id: "00000000-0000-4000-8000-000000000000" });
+  assert("get_caption_job explains a job past its 24 hours", capGone.isError === true && textOf(capGone).includes("24 hours") && (capGone.structuredContent as any)?.status === "failed", textOf(capGone));
+  const capDescs = oTools.filter((t) => ["versely_list_caption_looks", "versely_caption_video", "versely_get_caption_job"].includes(t.name)).map((t) => JSON.stringify([t.description, t.inputSchema])).join(" ");
+  assert("caption studio descriptions name no vendor", capDescs.length > 0 && !/veed|\bfal\b|cartesia/i.test(capDescs), capDescs.slice(0, 200));
+  }
+
+  // ─── scripts (agent notes) ───
+  {
+  // Scripts: the price first (nothing charged), the paid write only with that
+  // exact price, then free reads and edits; voice profile free from the user's own handle.
+  const scrGens = () => backend.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/scripts/generate").length;
+  const scrG0 = scrGens();
+  const scrQuote = await call(openai, "versely_write_script", { source_url: "https://www.instagram.com/reel/ABC123/", length_seconds: 30 });
+  assert("write_script quotes a link (script + watching the reel) without charging", scrGens() === scrG0 && !scrQuote.isError && textOf(scrQuote).includes("costs 3 credits (1 for the script + 2 to watch the reel") && textOf(scrQuote).includes("confirm_credits: 3") && textOf(scrQuote).includes("nothing charged"), textOf(scrQuote));
+  const scrStale = await call(openai, "versely_write_script", { source_url: "https://www.instagram.com/reel/ABC123/", length_seconds: 30, confirm_credits: 1 });
+  assert("write_script refuses a stale price", scrStale.isError === true && textOf(scrStale).includes("nothing charged") && textOf(scrStale).includes("confirm_credits: 3") && scrGens() === scrG0, textOf(scrStale));
+  const scrWritten = textOf(await call(openai, "versely_write_script", { source_url: "https://www.instagram.com/reel/ABC123/", length_seconds: 30, language: "hinglish", confirm_credits: 3 }));
+  const scrBody = lastBody("/api/v1/scripts/generate");
+  assert("write_script sends the link, language and length (not the price)", scrBody.source_url === "https://www.instagram.com/reel/ABC123/" && scrBody.language === "hinglish" && scrBody.length_seconds === 30 && !("confirm_credits" in scrBody), JSON.stringify(scrBody));
+  assert("write_script waits for and returns the finished script", scrWritten.includes("Script ready (3 credits charged)") && scrWritten.includes("1. Your salary isn't small. Your plan is. [bold claim] (chosen)") && scrWritten.includes("0-3s  Say: \"Your salary isn't small.") && scrWritten.includes("Remixed from: https://www.instagram.com/reel/ABC123/ (@moneywithmaya)"), scrWritten);
+  const scrId = /script_id ([0-9a-f-]{36})/.exec(scrWritten)?.[1] ?? "";
+  const scrIdeaQuote = textOf(await call(openai, "versely_write_script", { idea: "Morning routine for night-shift nurses" }));
+  assert("write_script prices an idea at the script alone", scrIdeaQuote.includes("costs 1 credit (1 for the script)") && scrIdeaQuote.includes("confirm_credits: 1"), scrIdeaQuote);
+  const scrTwo = await call(openai, "versely_write_script", { idea: "a b c", source_url: "https://www.tiktok.com/@a/video/1", confirm_credits: 3 });
+  assert("write_script takes exactly one source, nothing charged", scrTwo.isError === true && textOf(scrTwo).includes("exactly one") && scrGens() === scrG0 + 1, textOf(scrTwo));
+  const scrGot = textOf(await call(openai, "versely_get_script", { script_id: scrId }));
+  assert("get_script shows the beats, caption and hashtags", scrGot.includes("Say: \"Split it the day it lands") && scrGot.includes("On screen: 50 / 30 / 20") && scrGot.includes("Hashtags: #money #salary #personalfinance"), scrGot);
+  const scrListed = textOf(await call(openai, "versely_list_scripts", {}));
+  assert("list_scripts lists the script with where it came from", scrListed.includes(scrId) && scrListed.includes("remix of https://www.instagram.com/reel/ABC123/") && scrListed.includes("Hinglish"), scrListed);
+  const scrPatch = () => (backend.requests.filter((r) => r.method === "PATCH" && r.path === `/api/v1/scripts/${scrId}`).at(-1)?.body ?? {}) as Record<string, any>;
+  const scrUpd = textOf(await call(openai, "versely_update_script", { script_id: scrId, chosen_hook: 2, cta: "Save this for payday.", scheduled_for: "2026-11-20" }));
+  assert("update_script merges the edit into the full script (hook numbers are 1-based)", scrPatch().script?.chosen_hook === 1 && scrPatch().script?.cta === "Save this for payday." && scrPatch().script?.hooks?.length === 3 && scrPatch().script?.beats?.length === 3 && scrPatch().scheduled_for === "2026-11-20", JSON.stringify(scrPatch()));
+  assert("update_script shows the edited script", scrUpd.includes("2. Where did $400 go in 7 days? [question] (chosen)") && scrUpd.includes("Call to action: Save this for payday.") && scrUpd.includes("to film on 2026-11-20"), scrUpd);
+  await call(openai, "versely_update_script", { script_id: scrId, scheduled_for: "none", filmed: true });
+  assert("update_script clears the day and marks it filmed, without resending the script", scrPatch().scheduled_for === null && scrPatch().filmed === true && !("script" in scrPatch()), JSON.stringify(scrPatch()));
+  const scrDel = textOf(await call(openai, "versely_delete_script", { script_id: scrId }));
+  assert("delete_script deletes", scrDel.includes("Deleted script") && backend.requests.some((r) => r.method === "DELETE" && r.path === `/api/v1/scripts/${scrId}`), scrDel);
+
+  const scrNoVoice = textOf(await call(openai, "versely_get_voice_profile", {}));
+  assert("get_voice_profile says when there is none", scrNoVoice.includes("no voice profile yet") && scrNoVoice.includes("versely_build_voice_profile"), scrNoVoice);
+  const scrBuilt = await call(openai, "versely_build_voice_profile", { platform: "instagram", handle: "@MoneyWithMaya" });
+  const scrBuildBody = lastBody("/api/v1/scripts/voice-profile/build");
+  assert("build_voice_profile sends the handle and waits for the profile", scrBuildBody.platform === "instagram" && scrBuildBody.handle === "@MoneyWithMaya" && textOf(scrBuilt).includes("Voice profile ready (free)") && textOf(scrBuilt).includes("Language: Hinglish") && textOf(scrBuilt).includes("@moneywithmaya"), textOf(scrBuilt));
+  await call(openai, "versely_write_script", { idea: "Morning routine for night-shift nurses", confirm_credits: 1 });
+  assert("write_script defaults to the voice profile's language", lastBody("/api/v1/scripts/generate").language === "hinglish" && lastBody("/api/v1/scripts/generate").length_seconds === 30, JSON.stringify(lastBody("/api/v1/scripts/generate")));
+  const scrVoiceGone = textOf(await call(openai, "versely_delete_voice_profile", {}));
+  assert("delete_voice_profile deletes", scrVoiceGone.includes("deleted") && backend.requests.some((r) => r.method === "DELETE" && r.path === "/api/v1/scripts/voice-profile"), scrVoiceGone);
+  }
+
+  // ─── ugcAds (agent notes) ───
+  {
+  // UGC ads: presenters (Versely's + the user's avatars), voices (clones first),
+  // free scripts, a per-presenter quote, create only with the quoted price
+  // (re-priced inside the tool: the backend takes no confirm_credits), then the
+  // batch card follows the ads.
+  const ugcReqs = (p: string) => backend.requests.filter((r) => r.path === p);
+  const UGC_BATCH = "ua_7d3f9a2e-1c4b-4e8a-9b6d-2f5e8c1a7b30";
+  const UGC_SCRIPT = "Okay so I tried this serum for two weeks [laughs] and honestly my skin has never looked this good. Link is below!";
+
+  const actorsRes = await call(openai, "versely_list_ugc_actors", {});
+  const actorsText = textOf(actorsRes);
+  const actorsSc = actorsRes.structuredContent as Record<string, any> | undefined;
+  assert("list_ugc_actors merges Versely presenters with the user's own avatars", actorsText.includes("maya-selfie") && actorsText.includes("\"source\": \"yours\"") && actorsText.includes("Mia") && actorsText.includes("none of its own: pick one"), actorsText);
+  assert("list_ugc_actors flags talking-head-only presenters and names no engine or voice vendor", actorsText.includes("\"talking_head_only\": true") && !/heygen|cartesia/i.test(actorsText), actorsText);
+  assert("list_ugc_actors shows the portraits as a gallery card", actorsSc?.kind === "gallery" && (actorsSc?.assets ?? []).some((a: any) => a.url === "https://img.versely.studio/ugc/actors/maya-selfie.jpg"), JSON.stringify(actorsSc));
+  const productActors = textOf(await call(openai, "versely_list_ugc_actors", { format: "product_in_hand" }));
+  assert("list_ugc_actors with a product format drops talking-head-only presenters", productActors.includes("maya-selfie") && !productActors.includes("hg-anna-home"), productActors);
+
+  const voicesText = textOf(await call(openai, "versely_list_ugc_voices", { language: "es" }));
+  assert("list_ugc_voices puts the user's cloned voice first and filters by language (multilingual kept)", voicesText.includes("\"yours\": true") && voicesText.indexOf("clone:6f1c2d3e") > -1 && voicesText.indexOf("clone:6f1c2d3e") < voicesText.indexOf("Fernanda") && voicesText.includes("Liam") && !voicesText.includes("Skylar"), voicesText);
+  assert("list_ugc_voices drops provider names and vendor-hosted previews", !voicesText.includes("\"provider\"") && !voicesText.includes("preview_url") && !voicesText.includes("storage.googleapis"), voicesText);
+
+  const scriptsText = textOf(await call(openai, "versely_write_ugc_script", { brief: "A calming face serum for sensitive skin", brand_id: "8a1f0c2e-3b4d-4e5f-9a6b-7c8d9e0f1a2b", length_s: 15 }));
+  const scriptBody = lastBody("/api/v1/ugc/script");
+  assert("write_ugc_script sends brand_kit_id and the default format, and says it is free", scriptBody.brand_kit_id === "8a1f0c2e-3b4d-4e5f-9a6b-7c8d9e0f1a2b" && scriptBody.format === "talking_head" && scriptBody.length_s === 15 && scriptsText.includes("free, nothing charged") && scriptsText.includes("I almost gave up on my skin."), scriptsText);
+  const scriptPosts = ugcReqs("/api/v1/ugc/script").length;
+  const noBrief = await call(openai, "versely_write_ugc_script", { tone: "funny" });
+  assert("write_ugc_script with nothing to sell is refused before any request", noBrief.isError === true && textOf(noBrief).includes("brief") && ugcReqs("/api/v1/ugc/script").length === scriptPosts, textOf(noBrief));
+
+  const ugcQuote = textOf(await call(openai, "versely_quote_ugc_ads", { actor_ids: ["maya-selfie", "leo-car"], script: UGC_SCRIPT }));
+  const quoteQs = ugcReqs("/api/v1/ugc/ads/quote").slice(-2).map((r) => r.query);
+  assert("quote_ugc_ads prices each presenter on the cue-free script length", quoteQs.length === 2 && quoteQs.every((q) => q.script_chars === "104" && q.count === "1" && q.format === "talking_head" && q.voice_id === undefined) && quoteQs.map((q) => q.actor_id).sort().join(",") === "leo-car,maya-selfie", JSON.stringify(quoteQs));
+  assert("quote_ugc_ads gives the total and the confirm_credits to use", ugcQuote.includes("68 credits in total") && ugcQuote.includes("34 credits per ad") && ugcQuote.includes("confirm_credits: 68") && ugcQuote.includes("nothing charged"), ugcQuote);
+  const cloneQuote = textOf(await call(openai, "versely_quote_ugc_ads", { actor_ids: ["0b6d6c7e-6f0a-4c1e-9a52-3f1d2e4b5a69"], script: UGC_SCRIPT }));
+  assert("quote_ugc_ads prices the user's avatar in its linked cloned voice", ugcReqs("/api/v1/ugc/ads/quote").at(-1)?.query.voice_id === "clone:6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f" && cloneQuote.includes("36 credits in total"), cloneQuote);
+  const quotesBefore = ugcReqs("/api/v1/ugc/ads/quote").length;
+  const thOnly = await call(openai, "versely_quote_ugc_ads", { actor_ids: ["hg-anna-home"], script: UGC_SCRIPT, format: "product_in_hand" });
+  assert("quote_ugc_ads refuses a talking-head-only presenter for a product format, without naming its engine", thOnly.isError === true && textOf(thOnly).includes("can only make talking_head ads") && !/heygen/i.test(textOf(thOnly)) && ugcReqs("/api/v1/ugc/ads/quote").length === quotesBefore, textOf(thOnly));
+  const tooLong = await call(openai, "versely_quote_ugc_ads", { actor_ids: ["maya-selfie"], script: "word ".repeat(200) });
+  assert("quote_ugc_ads refuses a script over 60 s of speech", tooLong.isError === true && textOf(tooLong).includes("about 67 s"), textOf(tooLong));
+
+  const adPosts = () => backend.requests.filter((r) => r.method === "POST" && r.path === "/api/v1/ugc/ads").length;
+  const postsBefore = adPosts();
+  const ugcStale = await call(openai, "versely_create_ugc_ads", { actor_ids: ["maya-selfie", "leo-car"], script: UGC_SCRIPT, confirm_credits: 60 });
+  assert("create_ugc_ads with a stale price is refused with the new one, nothing posted", ugcStale.isError === true && textOf(ugcStale).includes("now cost 68 credits") && textOf(ugcStale).includes("nothing charged") && adPosts() === postsBefore, textOf(ugcStale));
+  const noPhoto = await call(openai, "versely_create_ugc_ads", { actor_ids: ["maya-selfie"], script: UGC_SCRIPT, format: "product_in_hand", confirm_credits: 38 });
+  assert("create_ugc_ads product_in_hand without a product photo is refused, nothing charged", noPhoto.isError === true && textOf(noPhoto).includes("product_image_url") && textOf(noPhoto).includes("nothing charged") && adPosts() === postsBefore, textOf(noPhoto));
+  const ugcStarted = await call(openai, "versely_create_ugc_ads", { actor_ids: ["maya-selfie", "leo-car"], script: UGC_SCRIPT, confirm_credits: 68 });
+  const ugcBody = lastBody("/api/v1/ugc/ads");
+  const ugcSc = ugcStarted.structuredContent as Record<string, any> | undefined;
+  assert("create_ugc_ads posts the script and presenters, without confirm_credits, a voice or images", ugcBody.script === UGC_SCRIPT && JSON.stringify(ugcBody.actor_ids) === JSON.stringify(["maya-selfie", "leo-car"]) && ugcBody.format === "talking_head" && !("confirm_credits" in ugcBody) && !("voice_id" in ugcBody) && !("product_image_url" in ugcBody), JSON.stringify(ugcBody));
+  assert("create_ugc_ads returns a pending card that polls versely_get_ugc_ads", ugcSc?.status === "pending" && ugcSc?.poll?.tool_name === "versely_get_ugc_ads" && ugcSc?.poll?.args?.batch_id === UGC_BATCH && textOf(ugcStarted).includes("68 credits charged") && textOf(ugcStarted).includes("Do not create these ads again"), JSON.stringify(ugcSc));
+  const ugcPoll1 = (await call(openai, "versely_get_ugc_ads", { batch_id: UGC_BATCH })).structuredContent as Record<string, any> | undefined;
+  assert("get_ugc_ads stays pending while the ads are filming", ugcPoll1?.status === "pending" && ugcPoll1?.assets?.length === 0 && typeof ugcPoll1?.progress === "number" && ugcPoll1?.poll?.tool_name === "versely_get_ugc_ads", JSON.stringify(ugcPoll1));
+  const ugcDoneRes = await call(openai, "versely_get_ugc_ads", { batch_id: UGC_BATCH });
+  const ugcDone = ugcDoneRes.structuredContent as Record<string, any> | undefined;
+  assert("get_ugc_ads ends with the finished ad and reports the failed one as refunded", ugcDone?.status === "completed" && ugcDone?.assets?.length === 1 && String(ugcDone?.assets?.[0]?.url).endsWith("_1.mp4") && !ugcDone?.poll && textOf(ugcDoneRes).includes("The video didn't render.") && textOf(ugcDoneRes).includes("refunded"), JSON.stringify(ugcDone));
+  const ugcList = textOf(await call(openai, "versely_list_ugc_ads", { limit: 10 }));
+  assert("list_ugc_ads groups the ads by batch", ugcList.includes(UGC_BATCH) && ugcList.includes("\"actor_name\": \"Maya\"") && backend.requests.filter((r) => r.method === "GET" && r.path === "/api/v1/ugc/ads").at(-1)?.query.limit === "10", ugcList);
+  }
+
+  // ─── avatarStudio (agent notes) ───
+  {
+  // Avatar Studio: the ready-made cast (type filter, portrait + full body),
+  // adding one returns a character id, the 12-avatar limit, creations.
+  const castRes = await call(openai, "versely_list_ready_made_avatars", { type: "creature" });
+  const castSc = castRes.structuredContent as Record<string, any> | undefined;
+  assert("list_ready_made_avatars filters by type and gives portrait and full-body links", textOf(castRes).includes("char-ziggy") && !textOf(castRes).includes("char-tessa") && textOf(castRes).includes("https://img.versely.studio/avatars/char-ziggy-full.jpg") && castSc?.kind === "gallery" && castSc?.assets?.[0]?.url === "https://img.versely.studio/avatars/char-ziggy.jpg", textOf(castRes));
+  const averageCast = textOf(await call(openai, "versely_list_ready_made_avatars", { type: "average" }));
+  assert("list_ready_made_avatars reads an untyped presenter as 'average'", averageCast.includes("char-tessa") && averageCast.includes("maya-selfie") && !averageCast.includes("char-ziggy"), averageCast);
+  const addedAvatar = await call(openai, "versely_add_ready_made_avatar", { avatar_id: "char-tessa" });
+  assert("add_ready_made_avatar sends actor_id and returns the character id and where it works", lastBody("/api/v1/hooks/characters/premade").actor_id === "char-tessa" && textOf(addedAvatar).includes("character_id 5b2f3c1e-8d4a-4f6b-9c7e-1a2b3c4d5e6f") && textOf(addedAvatar).includes("versely_swap_video") && textOf(addedAvatar).includes("char-tessa-full.jpg"), textOf(addedAvatar));
+  const avatarLimit = await call(openai, "versely_add_ready_made_avatar", { avatar_id: "char-limit" });
+  assert("add_ready_made_avatar at the 12-avatar limit says how to make room", avatarLimit.isError === true && textOf(avatarLimit).includes("12 avatars") && textOf(avatarLimit).includes("versely_delete_hook_character"), textOf(avatarLimit));
+  const unknownAvatar = await call(openai, "versely_add_ready_made_avatar", { avatar_id: "char-nobody" });
+  assert("add_ready_made_avatar with an unknown id points at the list", unknownAvatar.isError === true && textOf(unknownAvatar).includes("versely_list_ready_made_avatars"), textOf(unknownAvatar));
+  const madeWith = textOf(await call(openai, "versely_list_avatar_creations", { character_id: "5b2f3c1e-8d4a-4f6b-9c7e-1a2b3c4d5e6f" }));
+  assert("list_avatar_creations lists what the avatar was used in and where to open each", madeWith.includes("\"hook_pack\": 1") && madeWith.includes("versely_get_hook_collection") && madeWith.includes("versely_get_slideshow") && madeWith.includes("Serum hooks"), madeWith);
+  const creationReads = () => backend.requests.filter((r) => r.path.endsWith("/creations")).length;
+  const creationsBefore = creationReads();
+  const premadeHistory = await call(openai, "versely_list_avatar_creations", { character_id: "char-tessa" });
+  assert("list_avatar_creations refuses a ready-made id without calling the backend", premadeHistory.isError === true && textOf(premadeHistory).includes("versely_add_ready_made_avatar") && creationReads() === creationsBefore, textOf(premadeHistory));
+  }
+
+  // ─── aiCreator (agent notes) ───
+  {
+  // AI creators: options free, rooms and a test take paid with confirm_credits, create/edit free with the exact
+  // price, the card follows the take, approval states the schedule and the daily cost. No voice vendor ever shows.
+  const VENDOR = /cartesia|elevenlabs|gemini/i;
+  const aicOpts = textOf(await call(openai, "versely_list_ai_creator_options", {}));
+  assert("list_ai_creator_options lists voices by name with their language, no vendor ids", aicOpts.includes("\"voice\": \"Fernanda\"") && aicOpts.includes("\"language\": \"Spanish\"") && !VENDOR.test(aicOpts), aicOpts);
+  assert("list_ai_creator_options carries the room price, the episode price table and ready-made avatars", aicOpts.includes("\"credits_per_set\": 8") && aicOpts.includes("\"20\": 138") && aicOpts.includes("maya-kitchen") && aicOpts.includes("\"your_avatars\""), aicOpts);
+  const aicOptsMale = textOf(await call(openai, "versely_list_ai_creator_options", { avatar_gender: "male" }));
+  assert("list_ai_creator_options filters ready-made avatars by gender", aicOptsMale.includes("leo-studio") && !aicOptsMale.includes("maya-kitchen"), aicOptsMale);
+
+  const roomsStale = await call(openai, "versely_make_ai_creator_rooms", { avatar_id: "maya-kitchen", setting: "kitchen", confirm_credits: 4 });
+  assert("make_ai_creator_rooms with a stale price is refused with the new one", roomsStale.isError === true && textOf(roomsStale).includes("now costs 8 credits") && textOf(roomsStale).includes("nothing charged"), textOf(roomsStale));
+  const roomsCustom = await call(openai, "versely_make_ai_creator_rooms", { avatar_id: "maya-kitchen", setting: "custom", confirm_credits: 8 });
+  assert("make_ai_creator_rooms refuses a custom room without a note", roomsCustom.isError === true && textOf(roomsCustom).includes("nothing charged"), textOf(roomsCustom));
+  const rooms = await call(openai, "versely_make_ai_creator_rooms", { avatar_id: "maya-kitchen", setting: "kitchen", note: "lots of plants", confirm_credits: 8 });
+  const roomsSc = rooms.structuredContent as Record<string, any> | undefined;
+  const roomsBody = lastBody("/api/v1/automations/ai-creator/rooms") as Record<string, any>;
+  assert("make_ai_creator_rooms sends avatarId, setting and note and shows four rooms", roomsBody.avatarId === "maya-kitchen" && roomsBody.setting === "kitchen" && roomsBody.note === "lots of plants" && roomsBody.confirm_credits === undefined && roomsSc?.status === "completed" && roomsSc?.assets?.length === 4 && textOf(rooms).includes("8 credits charged"), JSON.stringify(roomsSc));
+  const room = String(roomsSc?.assets?.[0]?.url ?? "");
+  const roomsPostsBefore = backend.count((r) => r.method === "POST" && r.path === "/api/v1/automations/ai-creator/rooms");
+  const slowRooms = await call(openai, "versely_make_ai_creator_rooms", { avatar_id: "maya-kitchen", setting: "gym", note: "slow one", confirm_credits: 8 });
+  const madeAfter = /made_after: "([^"]+)"/.exec(textOf(slowRooms))?.[1] ?? "";
+  assert("a room set that outlasts the wait is not an error and points at get_ai_creator_rooms", slowRooms.isError !== true && textOf(slowRooms).includes("still being drawn") && textOf(slowRooms).includes("versely_get_ai_creator_rooms") && textOf(slowRooms).includes("Do NOT call this again") && madeAfter.length > 10 && backend.count((r) => r.method === "POST" && r.path === "/api/v1/automations/ai-creator/rooms") === roomsPostsBefore + 1, textOf(slowRooms));
+  const roomsMaking = await call(openai, "versely_get_ai_creator_rooms", { made_after: madeAfter });
+  assert("get_ai_creator_rooms says a set is still being drawn, not the older set", textOf(roomsMaking).includes("still being drawn") && (roomsMaking.structuredContent as any)?.assets?.length === 0, textOf(roomsMaking));
+  backend.finishRooms();
+  const roomsBack = await call(openai, "versely_get_ai_creator_rooms", { made_after: madeAfter });
+  assert("get_ai_creator_rooms returns the four pictures once they are done", textOf(roomsBack).includes("4 rooms made (8 credits charged)") && String((roomsBack.structuredContent as any)?.assets?.[3]?.url).includes("/gym-") && textOf(roomsBack).includes("room_image_url"), textOf(roomsBack));
+  const roomsNone = await call(openai, "versely_get_ai_creator_rooms", { made_after: "2099-01-01T00:00:00.000Z" });
+  assert("a set that never arrived is said plainly", textOf(roomsNone).includes("No new set of rooms was made") && textOf(roomsNone).includes("refunded"), textOf(roomsNone));
+
+  const created = textOf(await call(openai, "versely_create_ai_creator", {
+    avatar_id: "maya-kitchen", room_image_url: room, voice: "fernanda", format: "kitchen_tips", length_seconds: 20,
+    post_account_id: "acct-db-1", post_time: "18:00", timezone: "Europe/London",
+  }));
+  const createBody = lastBody("/api/v1/automations") as Record<string, any>;
+  assert("create_ai_creator sends the ai_creator config: voice id from the name, provider account id, schedule", createBody.kind === "ai_creator" && createBody.config?.voiceId === "cartesia:b4b8e2af-6139-466e-a93a-30c20d2e1fc5" && createBody.config?.avatarId === "maya-kitchen" && createBody.config?.roomImageUrl === room && createBody.config?.post_account_ids?.[0] === "spc_ext_1" && createBody.schedule?.times?.[0] === "18:00" && createBody.schedule?.timezone === "Europe/London", JSON.stringify(createBody));
+  assert("create_ai_creator returns the id, the exact price and the paid next step, nothing charged", created.includes("nothing charged") && created.includes("138 credits per episode, plus 1 credit for each post") && created.includes("18:00 (Europe/London time) to tiktok @smoke") && created.includes("confirm_credits: 138") && !VENDOR.test(created), created);
+  const creatorId = /creator_id ([0-9a-f-]{36})/.exec(created)?.[1] ?? "";
+  const badVoice = await call(openai, "versely_create_ai_creator", { avatar_id: "maya-kitchen", room_image_url: room, voice: "Nobody", format: "kitchen_tips" });
+  assert("create_ai_creator refuses an unknown voice name", badVoice.isError === true && textOf(badVoice).includes("versely_list_ai_creator_options"), textOf(badVoice));
+
+  const takeStale = await call(openai, "versely_test_ai_creator_episode", { creator_id: creatorId, confirm_credits: 100 });
+  assert("test_ai_creator_episode with a stale price is refused with the new one", takeStale.isError === true && textOf(takeStale).includes("now costs 138 credits") && textOf(takeStale).includes("nothing charged"), textOf(takeStale));
+  const take = await call(openai, "versely_test_ai_creator_episode", { creator_id: creatorId, confirm_credits: 138 });
+  const takeSc = take.structuredContent as Record<string, any> | undefined;
+  assert("test_ai_creator_episode starts the take and the card follows it", takeSc?.status === "pending" && takeSc?.poll?.tool_name === "versely_list_ai_creator_episodes" && takeSc?.poll?.args?.creator_id === creatorId && typeof takeSc?.poll?.args?.episode_id === "string" && textOf(take).includes("is not posted") && textOf(take).includes("NOT finished"), JSON.stringify(takeSc));
+  const takeAgain = await call(openai, "versely_test_ai_creator_episode", { creator_id: creatorId, confirm_credits: 138, confirm_repeat: true });
+  assert("a second take while one is being made is refused, nothing charged", takeAgain.isError === true && textOf(takeAgain).includes("already being made") && textOf(takeAgain).includes("nothing charged"), textOf(takeAgain));
+
+  const early = await call(openai, "versely_approve_ai_creator", { creator_id: creatorId, confirm_credits: 138 });
+  assert("approve_ai_creator waits for the newest take", early.isError === true && textOf(early).includes("still being made"), textOf(early));
+  const listed = await call(openai, "versely_list_ai_creator_episodes", { creator_id: creatorId });
+  const listSc = listed.structuredContent as Record<string, any> | undefined;
+  const listText = textOf(listed);
+  assert("list_ai_creator_episodes ends with the take's video, its lines and the approve step", listSc?.status === "completed" && String(listSc?.assets?.[0]?.url ?? "").endsWith("episode.mp4") && listText.includes("Lines:") && listText.includes("Wrap them in a damp paper towel.") && listText.includes("versely_approve_ai_creator") && listText.includes("in setup") && !VENDOR.test(listText), listText);
+
+  const approveStale = await call(openai, "versely_approve_ai_creator", { creator_id: creatorId, confirm_credits: 120 });
+  assert("approve_ai_creator with a stale price is refused, nothing started", approveStale.isError === true && textOf(approveStale).includes("now costs 138 credits") && textOf(approveStale).includes("nothing started"), textOf(approveStale));
+  const approved = await call(openai, "versely_approve_ai_creator", { creator_id: creatorId, confirm_credits: 138, post_test_episode: true });
+  const approveText = textOf(approved);
+  assert("approve_ai_creator sends postTestEpisode and states the schedule, account and daily cost", (lastBody(`/api/v1/automations/ai-creator/${creatorId}/approve`) as Record<string, any>).postTestEpisode === true && approveText.includes("is live") && approveText.includes("18:00 (Europe/London time)") && approveText.includes("tiktok @smoke") && approveText.includes("138 credits per episode") && approveText.includes("versely_pause_automation"), approveText);
+  const approveTwice = await call(openai, "versely_approve_ai_creator", { creator_id: creatorId, confirm_credits: 138, confirm_repeat: true });
+  assert("approving a live creator again changes nothing", approveTwice.isError === true && textOf(approveTwice).includes("already approved"), textOf(approveTwice));
+
+  const upd = textOf(await call(openai, "versely_update_ai_creator", { creator_id: creatorId, quality: "1080p", post_time: "09:30" }));
+  assert("update_ai_creator merges the config (the fake refuses a partial one), re-prices and keeps it live", upd.includes("now 198 credits (was 138)") && upd.includes("stays live") && upd.includes("09:30 (Europe/London time)"), upd);
+  const updNothing = await call(openai, "versely_update_ai_creator", { creator_id: creatorId });
+  assert("update_ai_creator with nothing to change is refused", updNothing.isError === true, textOf(updNothing));
+  }
+
   // Short dramas: plan free, show cast + lines + price, film only with the
   // approved price (a stale one is refused, nothing charged), follow it to the video.
   const planned = await call(openai, "versely_plan_drama_show", { idea: "An intern buys the company on day one", episode_seconds: 30, resolution: "720p" });
@@ -763,6 +1196,82 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const dramaDescs = oTools.filter((t) => t.name.includes("drama")).map((t) => JSON.stringify([t.description, t.inputSchema])).join(" ");
   assert("drama tools name no provider", !/vidu|runpod|higgsfield|sume|seedance|nano.?banana|z-image|gpt.?image|openai|\bfal\b/i.test(dramaDescs));
   assert("only filming a drama episode spends credits", (byName(oTools, "versely_film_drama_episode")?.inputSchema.required ?? []).includes("confirm_credits") && (byName(oTools, "versely_get_drama_quote")?.annotations as Record<string, unknown> | undefined)?.readOnlyHint === true);
+
+  // ── Audit fixes (2026-11-14): each proves the changed request or text ─────────
+  const hintsOfTool = (n: string) => (byName(oTools, n)?.annotations ?? {}) as Record<string, unknown>;
+  // D1: a new episode length drops every unfilmed script (back to planned); the description says so.
+  const shorter = textOf(await call(openai, "versely_update_drama_show", { show_id: "drm_smoke000001", episode_seconds: 15 }));
+  assert("a new episode length drops the unfilmed scripts, and update_drama_show says to write them again", lastPatch().episode_seconds === 15 && shorter.includes("2. The Board (planned)") && shorter.includes("not written yet") && (byName(oTools, "versely_update_drama_show")?.description ?? "").includes("its script is dropped"), shorter);
+  // D2: delete a show.
+  const dramaGone = await call(openai, "versely_delete_drama_show", { show_id: "drm_smoke000001" });
+  assert("delete_drama_show deletes the show", !dramaGone.isError && textOf(dramaGone).includes("Deleted") && backend.requests.some((r) => r.method === "DELETE" && r.path === "/api/v1/drama/shows/drm_smoke000001") && (byName(oTools, "versely_delete_drama_show")?.annotations as Record<string, unknown> | undefined)?.destructiveHint === true, textOf(dramaGone));
+
+  // H1-H4: hook lines are capped at the 90 characters the backend burns; the models tool promises no vibes; reveal is sent.
+  const reuseProps = (byName(oTools, "versely_reuse_hooks")?.inputSchema.properties ?? {}) as Record<string, any>;
+  const saveProps = (byName(oTools, "versely_save_hook")?.inputSchema.properties ?? {}) as Record<string, any>;
+  assert("reuse_hooks and save_hook cap lines at 90 characters", reuseProps.lines?.additionalProperties?.maxLength === 90 && saveProps.hook_line?.maxLength === 90, JSON.stringify({ lines: reuseProps.lines, hook_line: saveProps.hook_line }));
+  const hookModelsDesc = byName(oTools, "versely_list_hook_models")?.description ?? "";
+  assert("list_hook_models no longer promises the vibes", !hookModelsDesc.includes("settings (vibes)") && hookModelsDesc.includes("vibe") && hookModelsDesc.includes("free"), hookModelsDesc);
+  await call(openai, "versely_reuse_hooks", { hook_ids: ["plate-1"], lines: { "plate-1": "Watch this" }, reveal: { url: "https://img.versely.studio/p/product.jpg", seconds: 2.5 } });
+  assert("reuse_hooks sends the reveal", JSON.stringify(lastBody("/api/v1/hooks/collections").reveal) === '{"url":"https://img.versely.studio/p/product.jpg","seconds":2.5}', JSON.stringify(lastBody("/api/v1/hooks/collections")));
+
+  // S1-S4: videos use the captioned slides; avatar and brand slideshows; the avatar price per slide.
+  const vid = await call(openai, "versely_slideshow_to_video", { slideshow_id: "ss-1" });
+  assert("slideshow_to_video asks for the captioned slides by default", lastBody("/api/v1/slideshow/ss-1/video").use_edited_images === true && JSON.stringify(vid).includes("ss-1.mp4"), JSON.stringify(lastBody("/api/v1/slideshow/ss-1/video")));
+  await call(openai, "versely_slideshow_to_video", { slideshow_id: "ss-1", use_edited_images: false, transition: "fade" });
+  assert("slideshow_to_video can still use the bare slides", lastBody("/api/v1/slideshow/ss-1/video").use_edited_images === false);
+  await call(openai, "versely_create_automated_slideshow", { prompt: "morning routine tips", num_images: 3, brand_id: "brand-1", character_id: "11111111-2222-4333-8444-555555555555" });
+  const avatarBody = lastBody("/api/v1/slideshow/create-automated");
+  assert("create_automated_slideshow sends the avatar and the brand's facts (not its id)", avatarBody.character_id === "11111111-2222-4333-8444-555555555555" && String(avatarBody.brand_context).includes("Name: Acme Coffee") && !("brand_id" in avatarBody), JSON.stringify(avatarBody));
+  const slideOpts = textOf(await call(openai, "versely_list_slideshow_options", {}));
+  assert("list_slideshow_options gives the avatar slideshow's credits per slide, not its model", slideOpts.includes('"avatar_slide_credits": 4') && !/nano banana/i.test(slideOpts), slideOpts.slice(0, 300));
+
+  // SO1-SO6: no Bluesky link; the account limit without the upsell; the cost text; a short balance; tagging; the posting cost.
+  const authTool = byName(oTools, "versely_get_social_auth_url");
+  assert("get_social_auth_url no longer offers Bluesky and says how it connects", !JSON.stringify((authTool?.inputSchema.properties as Record<string, any> | undefined)?.platform?.enum).includes("bluesky") && (authTool?.description ?? "").includes("app password"), JSON.stringify((authTool?.inputSchema.properties as Record<string, any> | undefined)?.platform));
+  const limitHit = await call(openai, "versely_get_social_auth_url", { platform: "pinterest" });
+  assert("a full account limit is worded without the plan upsell", limitHit.isError === true && textOf(limitHit).includes("10 connected accounts") && textOf(limitHit).includes("versely_disconnect_social_account") && !/Pro includes|plan/i.test(textOf(limitHit)), textOf(limitHit));
+  const pubDesc = byName(oTools, "versely_publish_post")?.description ?? "";
+  assert("publish_post no longer promises 1 credit per account and points at the posting cost", !pubDesc.includes("currently 1 each") && pubDesc.includes("versely_get_posting_plan") && !/\b(plan|trial)\b/i.test(pubDesc), pubDesc);
+  const shortBalance = await call(openai, "versely_publish_post", { caption: "short balance", account_ids: ["acct-db-1"], media_urls: ["https://videos.versely.studio/out/a.mp4"] });
+  assert("a short balance on publish reads as credits, not as missing access", shortBalance.isError === true && textOf(shortBalance).includes("Not enough Versely credits") && !/access/i.test(textOf(shortBalance)), textOf(shortBalance));
+  await call(openai, "versely_publish_post", { caption: "tagged post", account_ids: ["acct-db-1"], media_urls: ["https://videos.versely.studio/out/a.mp4"], tagging: { instagram_people: ["@friend"], youtube_tags: ["coffee"] } });
+  assert("publish_post forwards tagging, and preview_post takes it too", JSON.stringify(lastBody("/api/v1/social/posts").tagging) === '{"instagram_people":["@friend"],"youtube_tags":["coffee"]}' && "tagging" in (byName(oTools, "versely_preview_post")?.inputSchema.properties ?? {}), JSON.stringify(lastBody("/api/v1/social/posts")));
+  const postingPlan = JSON.parse(textOf(await call(openai, "versely_get_posting_plan", {}))) as Record<string, unknown>;
+  assert("get_posting_plan gives the credits per post and the account limit, with no plan names", postingPlan.credits_per_post_per_account === 1 && postingPlan.can_connect_another === true && postingPlan.posting_costs_nothing === false && !/tier|label|standard/i.test(JSON.stringify(postingPlan)), JSON.stringify(postingPlan));
+
+  // A1-A3: start refuses an empty queue with the next step; posts are quoted (dry run), then queued with confirm_credits; stop.
+  const autoId = String(auto.id);
+  const postsPath = `/api/v1/automations/${autoId}/posts`;
+  const startEmpty = await call(openai, "versely_start_automation", { automation_id: autoId });
+  assert("start_automation with nothing queued points at queueing posts", startEmpty.isError === true && textOf(startEmpty).includes("nothing is queued") && textOf(startEmpty).includes("versely_create_automation_posts"), textOf(startEmpty));
+  const postsQuote = textOf(await call(openai, "versely_quote_automation_posts", { automation_id: autoId, count: 3 }));
+  const postsQuoteBody = lastBody(postsPath);
+  assert("quote_automation_posts is a dry run with the total and the days", postsQuoteBody.dry_run === true && postsQuoteBody.count === 3 && postsQuote.includes("60 credits") && postsQuote.includes("2026-11-15T09:00:00.000Z") && postsQuote.includes("confirm_credits: 60"), postsQuote);
+  const realPosts = () => backend.count((r) => r.method === "POST" && r.path === postsPath && (r.body as Record<string, unknown> | undefined)?.dry_run !== true);
+  const realBefore = realPosts();
+  const postsStale = await call(openai, "versely_create_automation_posts", { automation_id: autoId, count: 3, confirm_credits: 40 });
+  assert("create_automation_posts with a stale total is refused, nothing queued", postsStale.isError === true && textOf(postsStale).includes("now cost 60 credits") && textOf(postsStale).includes("nothing charged") && realPosts() === realBefore, textOf(postsStale));
+  const postsQueued = await call(openai, "versely_create_automation_posts", { automation_id: autoId, count: 3, confirm_credits: 60 });
+  const postsQueuedBody = lastBody(postsPath);
+  assert("create_automation_posts queues them after the quote matches", realPosts() === realBefore + 1 && postsQueuedBody.count === 3 && postsQueuedBody.dry_run === undefined && textOf(postsQueued).includes("Queued 3 posts") && textOf(postsQueued).includes("versely_stop_automation"), textOf(postsQueued));
+  assert("create_automation_posts is a confirmed, public-posting call", (byName(oTools, "versely_create_automation_posts")?.inputSchema.required ?? []).includes("confirm_credits") && hintsOfTool("versely_create_automation_posts").openWorldHint === true && hintsOfTool("versely_quote_automation_posts").readOnlyHint === true);
+  const resumed = await call(openai, "versely_start_automation", { automation_id: autoId });
+  assert("with posts queued, start_automation resumes them", !resumed.isError && textOf(resumed).includes("\"status\": \"active\""), textOf(resumed));
+  const stopped = await call(openai, "versely_stop_automation", { automation_id: autoId });
+  assert("stop_automation drops the queued posts", !stopped.isError && textOf(stopped).includes("Stopped") && backend.requests.some((r) => r.method === "POST" && r.path === `/api/v1/automations/${autoId}/stop`), textOf(stopped));
+  const libraryOnly = textOf(await call(openai, "versely_quote_automation_posts", { automation_id: autoId, count: 2, schedule_posts: false }));
+  assert("posts kept in the library are quoted without posting", lastBody(postsPath).schedule_posts === false && libraryOnly.includes("38 credits") && libraryOnly.includes("library only"), libraryOnly);
+  await call(openai, "versely_update_automation", { automation_id: autoId, post_time: "18:30" });
+  const autoPatch = (backend.requests.filter((r) => r.method === "PATCH" && r.path === `/api/v1/automations/${autoId}`).at(-1)?.body ?? {}) as Record<string, unknown>;
+  assert("update_automation changes the posting time and keeps the zone", JSON.stringify(autoPatch.schedule) === '{"times":["18:30"],"timezone":"Europe/London"}' && !("config" in autoPatch), JSON.stringify(autoPatch));
+
+  // Dubbing: the engine's name and job id stay out of what the model reads.
+  const dubList = textOf(await call(openai, "versely_list_dubs", {}));
+  assert("list_dubs leaves out the dubbing engine's name and job id", dubList.includes("dub-1") && !/elevenlabs|dubbing_id|el_job/i.test(dubList), dubList);
+  const dubRaw = await call(full, "versely_get_dub", { project_id: "dub-2" });
+  assert("get_dub's card data carries no engine name", !/elevenlabs|el_job|options/i.test(JSON.stringify(dubRaw.structuredContent)) && (dubRaw.structuredContent?.raw as Record<string, unknown> | undefined)?.id === "dub-2", JSON.stringify(dubRaw.structuredContent));
+  assert("openai instructions queue slideshow posts with the quote first", instructions.includes("versely_create_automation_posts") && instructions.includes("versely_quote_automation_posts") && !instructions.includes("cost per run"), instructions.slice(0, 200));
   const hintsOf = (n: string) => (byName(oTools, n)?.annotations ?? {}) as Record<string, unknown>;
   assert("the stats reader is read-only and the refresher is not", hintsOf("versely_get_post_analytics").readOnlyHint === true && hintsOf("versely_refresh_post_analytics").readOnlyHint === false && hintsOf("versely_refresh_post_analytics").openWorldHint === true);
   assert("skip_trial (charges a card today) is destructive", (byName(fullTools, "versely_skip_trial")?.annotations as Record<string, unknown> | undefined)?.destructiveHint === true);
@@ -1090,6 +1599,11 @@ async function main(): Promise<void> {
       MCP_ENABLE_DEBUG_TOOLS: "",
       MCP_DEDUPE_PROFILES: "openai",
       MCP_CARD_V2_PROFILES: "openai",
+      // The upload tool fetches from the fake backend on 127.0.0.1; its
+      // address guard is checked in-process instead (see "Uploads").
+      MCP_UPLOAD_FETCH_GUARD: "off-for-smoke-test",
+      // One room set in the fake backend never answers: the tool gives up waiting quickly here.
+      VERSELY_ROOMS_WAIT_MS: "1500",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

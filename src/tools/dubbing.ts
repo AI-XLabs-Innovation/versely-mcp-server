@@ -68,6 +68,24 @@ interface DubProject {
   error?: string | null;
 }
 
+/**
+ * A project row as a tool shows it. The row also carries the dubbing engine's
+ * name (options.engine, served_provider) and the engine's own job id
+ * (dubbing_id); those name a vendor and mean nothing to the user, so they are
+ * left out (the ChatGPT scrub only drops served_provider).
+ */
+const PUBLIC_PROJECT_KEYS = [
+  "id", "name", "status", "media_type", "source_url", "source_lang", "target_langs", "outputs", "error",
+  "credits_charged", "billed_duration_sec", "expected_duration_sec", "is_generating", "created_at", "completed_at",
+] as const;
+
+function publicProject(row: unknown): Record<string, unknown> {
+  const r = (row && typeof row === "object" ? row : {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of PUBLIC_PROJECT_KEYS) if (r[k] !== undefined) out[k] = r[k];
+  return out;
+}
+
 function projectOf(data: unknown): DubProject | null {
   const obj = data as Record<string, unknown> | null;
   const p = obj?.project;
@@ -111,7 +129,7 @@ function cardForProject(project: DubProject): ToolResult {
         status: "failed",
         task_id: project.id,
         error: String(err),
-        raw: project,
+        raw: publicProject(project),
       },
       isError: true,
     };
@@ -166,7 +184,7 @@ function cardForProject(project: DubProject): ToolResult {
       status: "pending",
       task_id: project.id,
       poll: dubPoll(project.id),
-      raw: project,
+      raw: publicProject(project),
     },
   };
 }
@@ -293,7 +311,8 @@ const versely_create_dub = defineTool({
       extra: {
         project_id: project.id,
         target_lang: input.target_lang,
-        engine: input.engine ?? "elevenlabs",
+        // The engine's name is a vendor's: the ChatGPT card never carries it.
+        ...(ctx.profile !== "openai" ? { engine: input.engine ?? "elevenlabs" } : {}),
       },
     });
   },
@@ -337,10 +356,11 @@ const versely_list_dubs = defineTool({
       .describe("Pagination cursor — an ISO timestamp; returns projects created before it."),
   }),
   handler: async (input, ctx) => {
-    const data = await ctx.client.get("/api/v1/dubbing", {
+    const data = await ctx.client.get<Record<string, unknown>>("/api/v1/dubbing", {
       query: { limit: input.limit, before: input.before },
     });
-    return jsonResult(data);
+    const projects = Array.isArray(data?.projects) ? data.projects.map(publicProject) : null;
+    return jsonResult(projects ? { ...data, projects } : data);
   },
 });
 

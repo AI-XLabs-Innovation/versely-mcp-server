@@ -151,6 +151,12 @@ export const CARD_POLL_TARGETS: ReadonlySet<string> = new Set([
   "versely_get_workflow_run",
   "versely_get_video_workflow_run",
   "versely_get_dub",
+  "versely_get_swap",
+  "versely_get_music_video",
+  "versely_get_photo_look",
+  "versely_get_caption_job",
+  "versely_get_ugc_ads",
+  "versely_list_ai_creator_episodes",
 ]);
 
 /** Tools the cards call from inside the host: the poll targets, and versely_browse (the picker's Show more). */
@@ -232,6 +238,7 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
   // _meta keys and only ever sent to the openai profile.
   const meta: Json = {
     ...(appsUi && tool.meta ? tool.meta : {}),
+    ...(variant?.meta ?? {}),
     ...(profile === "openai" && policy.invoking
       ? { "openai/toolInvocation/invoking": policy.invoking }
       : {}),

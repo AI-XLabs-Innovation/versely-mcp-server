@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "versely",
-  "version": "1.0.0",
-  "description": "Create videos, AI hooks, UGC-style videos, slideshows, voiceovers and music, then publish them to your social accounts.",
+  "version": "1.0.1",
+  "description": "Create videos, put yourself into trending clips with Swap, make AI hooks, talking ads, captions, slideshows, voiceovers and music, then publish them to your social accounts.",
   "author": {
     "name": "AI XLabs Innovation",
     "email": "contact@versely.studio",
@@ -31,28 +31,37 @@
     "social media content",
     "schedule posts",
     "brand kit",
-    "short form video"
+    "short form video",
+    "face swap video",
+    "video remix",
+    "ai avatar",
+    "video captions",
+    "music video",
+    "ugc ads"
   ],
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/get-started/SKILL.md",
       "interface": {
         "displayName": "Versely",
-        "shortDescription": "Make videos, hooks & slides",
-        "longDescription": "Create short-form content in ChatGPT and post it where your audience is.\n\nGenerate videos from a prompt or a photo, images and product shots, voiceovers, music and sound effects. Make AI hooks: a reaction clip with your line on screen, then a cut to your product. Make UGC-style videos with an AI presenter reading your script, TikTok and Instagram photo carousels with text on every slide, lip-synced clips, dubbed videos and multi-scene movies.\n\nStart from what already works. Browse outlier posts that did far better than the size of the account that posted them, by niche and format, see the trending sounds behind them, and recreate a format for your brand. Save a brand from its website so your hooks and slideshows use its colors and voice.\n\nWhen a piece is ready, preview it, then schedule or publish it to the social accounts you connected in Versely, and check how each post performed.\n\nGeneration uses Versely credits from your account. Results vary by model, and you can check your balance and recent creations at any time. Nothing is published unless you ask for it, and only to accounts you connected yourself. For help, visit versely.studio/support.",
+        "shortDescription": "Make videos, swaps & hooks",
+        "longDescription": "Create short-form content in ChatGPT and post it where your audience is.\n\nRemix what is trending. Pick a clip from the trend library, paste a post link or attach your own video, then add a photo of yourself, a friend who agreed, one of your avatars, an outfit or a product. Swap remakes the clip with them in it and keeps its motion, cuts and sound. Or copy the moves: your character performs the motion of the clip. You see the credits it will use before anything starts. Only use clips and photos you own or have permission to use.\n\nGenerate videos from a prompt or a photo, images and product shots, voiceovers, music and sound effects. Make AI hooks: a reaction clip with your line on screen, then a cut to your product. Make talking ads with an AI presenter or your own avatar reading your script, music videos for your songs, short dramas with a recurring cast, TikTok and Instagram photo carousels with text on every slide, lip-synced clips, dubbed videos and multi-scene movies. Add animated captions in dozens of looks, and give a photo a new look.\n\nStart from what already works. Browse outlier posts that did far better than the size of the account that posted them, by niche and format, see the trending sounds behind them, and recreate a format for your brand. Turn a viral reel or an idea into a script you film in your own voice. Save a brand from its website so your hooks and slideshows use its colors and voice.\n\nSet up an AI creator: an avatar with its own room and voice that makes a new video every day and posts it to the account you choose, after you approve a test take.\n\nWhen a piece is ready, preview it, then schedule or publish it to the social accounts you connected in Versely, and check how each post performed.\n\nGeneration uses Versely credits from your account. Results vary by model, and you can check your balance and recent creations at any time. Nothing is published unless you ask for it, and only to accounts you connected yourself. For help, visit versely.studio/support.",
         "developerName": "AI XLabs Innovation",
         "category": "Creativity",
         "capabilities": [
+          "Swap yourself, an avatar or a product into a video",
+          "Copy the moves of a trending clip",
           "Generate videos from text or images",
-          "Generate and edit images",
+          "Generate and edit images, photo looks",
           "AI hooks with a product reveal",
-          "UGC-style presenter videos",
+          "Talking ads with an AI presenter or your avatar",
+          "Animated captions in many looks",
           "Photo carousels and slideshows",
-          "Voiceovers and text to speech",
-          "Music and sound effects",
+          "Voiceovers, music and sound effects",
+          "Music videos, short dramas and movies",
           "Lip sync and dubbing",
-          "Multi-scene movies",
-          "Viral outliers and trending sounds",
+          "Viral outliers, trending sounds and scripts",
+          "AI creators that post every day",
           "Brand kits from a website",
           "Schedule and publish to social accounts",
           "Post analytics"
@@ -62,8 +71,8 @@
         "privacyPolicyURL": "https://www.versely.studio/privacy",
         "termsOfServiceURL": "https://www.versely.studio/terms",
         "defaultPrompt": [
+          "Show me trending clips to remix, then put me in one with the photo I attach.",
           "Make a 5-second vertical video of a paper boat drifting down a rainy street.",
-          "Show me this week's viral hooks for fitness apps and make one for my product.",
           "Turn five morning-routine tips into a TikTok photo carousel with text on each slide."
         ],
         "brandColor": "#7C3AED",
@@ -81,10 +90,10 @@
               "expected_behavior": "A media card appears and swaps in a playable vertical video when the job finishes. Credits are used. A job that is still running is not a finished video."
             },
             {
-              "description": "Image generation. Uses the demo account's credits.",
-              "prompt": "Generate a square product photo of a matte black water bottle on a marble counter.",
-              "tools_triggered": "versely_generate_image; the media card polls versely_get_task_status",
-              "expected_behavior": "A media card shows the finished square image, which is also saved to the account's library. Credits are used."
+              "description": "Remix with Versely's own material: one of Versely's ready-made moves and a ready-made avatar. Uses the demo account's credits (about 50). No third-party clip or real person is involved.",
+              "prompt": "Show me Versely's ready-made moves, then make a ready-made avatar copy the first one at 480p. Tell me the credits before you start.",
+              "tools_triggered": "versely_list_remix_trends (tab versely) or versely_browse, versely_list_ready_made_avatars, versely_prepare_remix_clip, versely_quote_swap, then after the user's yes versely_swap_video (type moves); the media card polls versely_get_swap",
+              "expected_behavior": "A list of ready-made moves, then the exact credits and a question asking the user to confirm. Nothing is charged before the user says yes. After yes, a media card appears and swaps in the finished vertical video of the avatar performing the move. A job that is still running is not a finished video."
             },
             {
               "description": "Photo carousel with text on every slide. Uses the demo account's credits.",
@@ -93,10 +102,10 @@
               "expected_behavior": "A carousel of about five slides with one tip written on each, viewable in the chat and saved to the account's slideshows."
             },
             {
-              "description": "Viral formats, read-only. No credits used.",
-              "prompt": "Show me viral slideshows in the fitness niche from small accounts.",
-              "tools_triggered": "versely_find_inspiration (versely_list_inspiration_niches if the niche name needs matching)",
-              "expected_behavior": "A list of fitness slideshows that did far better than the posting account's size, with their views and the account's follower count. Nothing is generated or charged."
+              "description": "Captions studio looks, read-only. No credits used.",
+              "prompt": "What caption looks can Versely add to my video?",
+              "tools_triggered": "versely_list_caption_looks",
+              "expected_behavior": "A list of caption looks grouped by kind, saying which are free and which use credits per minute of video. Nothing is generated or charged."
             },
             {
               "description": "Account and library, read-only. No credits used.",
@@ -124,7 +133,7 @@
         "commerce_description": "Versely does not sell anything in ChatGPT. Plans and credits are managed on versely.studio. When an action needs more credits than the account has, the plugin says so in plain text, without links or purchase prompts."
       },
       "publication": {
-        "release_notes": "First release in ChatGPT: create videos, images, AI hooks, UGC-style videos, photo carousels, voiceovers, music, lip sync, dubbing and multi-scene movies; find viral formats and trending sounds and recreate them; save brands from a website; schedule and publish to connected social accounts; check how posts performed."
+        "release_notes": "First release in ChatGPT: put yourself, an avatar or a product into a video with Swap, or copy the moves of a trending clip; create videos, images, AI hooks, talking ads, animated captions, photo carousels, voiceovers, music, music videos, short dramas, lip sync, dubbing and multi-scene movies; find viral formats and trending sounds and recreate them; write scripts from viral reels; set up an AI creator that posts every day; save brands from a website; schedule and publish to connected social accounts; check how posts performed."
       }
     }
   }

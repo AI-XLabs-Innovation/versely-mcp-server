@@ -93,7 +93,7 @@ function cardFromStatusPayload(
  * `pending` / `completed` / `failed` so the iframe poll loop can decide
  * whether to stop or keep going.
  */
-function classifyStatus(data: unknown): "pending" | "completed" | "failed" {
+export function classifyStatus(data: unknown): "pending" | "completed" | "failed" {
   if (!data || typeof data !== "object") return "pending";
   const obj = data as Record<string, unknown>;
   const status =

@@ -63,6 +63,11 @@ export interface ProfileVariant {
    * "model", or "scenes[].model" for a property of an array's items.
    */
   params?: Readonly<Record<string, string>>;
+  /**
+   * Extra `_meta` keys this profile's tool carries, on top of the base tool's.
+   * Used for ChatGPT-only declarations such as `openai/fileParams`.
+   */
+  meta?: Readonly<Record<string, unknown>>;
 }
 
 export interface Tool<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

@@ -14,6 +14,7 @@
 //   GET    /drama/shows                          list
 //   GET    /drama/shows/:id                      get
 //   PATCH  /drama/shows/:id                      edit (free; refused while filming)
+//   DELETE /drama/shows/:id                      delete (free; refused while filming)
 //   POST   /drama/shows/:id/episodes/:n/script   write / rewrite (free)
 //   GET    /drama/shows/:id/episodes/:n/quote    price
 //   POST   /drama/shows/:id/episodes/:n/film     film (PAID; confirm_credits must equal the quote, 409 otherwise)
@@ -417,9 +418,10 @@ const versely_update_drama_show = defineTool({
   description:
     "Edit a short drama: title, logline, dialogue language, episode length (15 or 30 s), quality (Standard or High " +
     "quality), resolution (High quality only), or a cast member's name, look, voice or personality " +
-    "(regenerate_portrait: true draws a new portrait). FREE. Refused while an episode is filming. A new length, " +
-    "quality or resolution re-prices every " +
-    "scripted episode and keeps its script: show the new price (in the result, or from versely_get_drama_quote) " +
+    "(regenerate_portrait: true draws a new portrait). FREE. Refused while an episode is filming. A new length or " +
+    "dialogue language sends every unfilmed episode back to 'planned': its script is dropped, so write it again with " +
+    "versely_write_drama_episode (free) and show the new lines and price before filming. A new quality or resolution " +
+    "keeps the scripts and re-prices them: show the new price (in the result, or from versely_get_drama_quote) " +
     "before filming. Edits apply to the episodes filmed from now on. " +
     TIERS +
     " " +
@@ -645,6 +647,20 @@ const versely_list_drama_shows = defineTool({
   handler: async (_input, ctx) => jsonResult(await ctx.client.get("/api/v1/drama/shows")),
 });
 
+const versely_delete_drama_show = defineTool({
+  name: "versely_delete_drama_show",
+  description:
+    "Delete one of the user's short dramas. FREE. Refused while an episode is filming. Episodes already filmed stay in " +
+    "the user's library. It cannot be undone: ask the user first.",
+  inputSchema: z.object({ show_id: ShowId }),
+  handler: async (input, ctx) => {
+    await ctx.client.delete(`/api/v1/drama/shows/${encodeURIComponent(input.show_id)}`);
+    return {
+      content: [{ type: "text", text: `Deleted the show ${input.show_id}. Episodes already filmed stay in the user's library.` }],
+    };
+  },
+});
+
 export const dramaTools: Tool[] = [
   versely_plan_drama_show,
   versely_update_drama_show,
@@ -653,4 +669,5 @@ export const dramaTools: Tool[] = [
   versely_film_drama_episode,
   versely_get_drama_show,
   versely_list_drama_shows,
+  versely_delete_drama_show,
 ];

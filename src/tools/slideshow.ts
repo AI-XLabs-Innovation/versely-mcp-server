@@ -3,6 +3,7 @@ import { defineTool, type Tool, type ToolContext, type ToolResult } from "./_typ
 import { jsonResult, mediaResult } from "./_helpers.js";
 import { SYNC_TIMEOUT_MS } from "../client.js";
 import { metaForMediaCard } from "../ui/templates.js";
+import { brandContextBlock, getBrandKit } from "./brands.js";
 
 /**
  * The slideshow endpoints draw with their own model list (slideshowModelNames
@@ -70,7 +71,8 @@ const versely_create_automated_slideshow = defineTool({
     "Full automation: AI plans the slideshow (a fresh hook and slide captions for the topic), draws the slides and " +
     "puts the captions on them. The slides render in the background and the inline card fills in as they land " +
     "(or check with versely_get_slideshow). Pick a caption_style from versely_list_slideshow_options for a styled " +
-    "look; otherwise classic white captions are used.",
+    "look; otherwise classic white captions are used. character_id puts one of the user's avatars on every slide; " +
+    "brand_id makes it for one of their brands.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -98,6 +100,19 @@ const versely_create_automated_slideshow = defineTool({
         .string()
         .optional()
         .describe("A caption style id from versely_list_slideshow_options (e.g. 'pink-pop'); replaces text_style."),
+      character_id: z
+        .string()
+        .uuid()
+        .optional()
+        .describe(
+          "Make every slide with one of the user's avatars (id from versely_list_hook_characters). Every slide is drawn " +
+            "from the avatar's portrait with one fixed picture model, so `model` is ignored; the price per slide is " +
+            "avatar_slide_credits in versely_list_slideshow_options. Collage caption styles can't be used with an avatar.",
+        ),
+      brand_id: z
+        .string()
+        .optional()
+        .describe("Make it for one of the user's brands (brand_id from versely_list_brands / versely_analyze_brand): the planner writes for that brand."),
       topic: z.string().optional().describe("Deprecated alias for prompt — prefer prompt."),
       n_slides: z
         .number()
@@ -109,8 +124,10 @@ const versely_create_automated_slideshow = defineTool({
     })
     .passthrough(),
   handler: async (input, ctx) => {
-    const { topic, n_slides, ...rest } = input;
+    const { topic, n_slides, brand_id, ...rest } = input;
     const body: Record<string, unknown> = { ...rest };
+    // The backend reads the brand's facts as text (brand_context), not an id.
+    if (brand_id) body.brand_context = brandContextBlock(await getBrandKit(ctx, brand_id));
     // Backend reads prompt / num_images and 400s on "prompt is required"; the old
     // topic / n_slides names were read nowhere, so this tool never worked.
     if (body.prompt === undefined && topic !== undefined) body.prompt = topic;
@@ -413,7 +430,8 @@ const versely_add_text_overlay = defineTool({
 const versely_slideshow_to_video = defineTool({
   name: "versely_slideshow_to_video",
   description:
-    "Compile a slideshow's images (and optional audio) into an MP4 video with transitions (server-side FFmpeg).",
+    "Compile a slideshow's slides (with their captions and text overlays) and optional audio into an MP4 video with " +
+    "transitions.",
   meta: metaForMediaCard(),
   inputSchema: z
     .object({
@@ -439,11 +457,19 @@ const versely_slideshow_to_video = defineTool({
         .describe(
           "Named preset (default 'reel'). NOT a ratio string — '9:16' etc. will not match.",
         ),
+      use_edited_images: z
+        .boolean()
+        .optional()
+        .describe("Use the captioned / text-overlay copies of the slides (default true). false uses the bare pictures."),
     })
     .passthrough(),
   handler: async (input, ctx) => {
     const { slideshow_id, duration_per_slide_seconds, ...rest } = input;
     const body: Record<string, unknown> = { ...rest };
+    // The backend defaults to the ORIGINAL slides; the captions (baked by
+    // create_automated_slideshow, or burned by add_text_overlay) live in the
+    // edited copies, so without this the video came out with no captions.
+    body.use_edited_images = input.use_edited_images ?? true;
     // Backend reads duration_per_image; duration_per_slide_seconds was read nowhere,
     // so every slide silently used the 3s default.
     if (body.duration_per_image === undefined && duration_per_slide_seconds !== undefined) {

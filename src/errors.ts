@@ -178,7 +178,9 @@ function isCreditRefusal(body: unknown): boolean {
     // "Your free planning preview has been used. Add credits to keep going."
     if (obj.code === "free_plan_used") return true;
   }
-  return texts.some((t) => /insufficient credits|not enough credits/i.test(t));
+  // "Failed to deduct credits": POST /social/posts answers a short balance with
+  // a 403 in those words, which otherwise read as "no access to that".
+  return texts.some((t) => /insufficient credits|not enough credits|failed to deduct credits/i.test(t));
 }
 
 /** How many credits the refused request needed, when the backend said. */

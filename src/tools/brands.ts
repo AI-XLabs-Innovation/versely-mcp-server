@@ -24,7 +24,7 @@ async function listBrandKits(ctx: ToolContext): Promise<BrandKit[]> {
   return Array.isArray(res?.brand_kits) ? res.brand_kits : [];
 }
 
-async function getBrandKit(ctx: ToolContext, brandId: string): Promise<BrandKit> {
+export async function getBrandKit(ctx: ToolContext, brandId: string): Promise<BrandKit> {
   const res = await ctx.client.get<{ brand_kit?: BrandKit | null; brand_kits?: BrandKit[] }>(
     "/api/v1/agentic/brand-kit",
     { query: { brand_id: brandId } },

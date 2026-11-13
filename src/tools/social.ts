@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineTool, type Tool, type ToolContext } from "./_types.js";
-import { jsonResult } from "./_helpers.js";
+import { errorResult, jsonResult } from "./_helpers.js";
+import { VerselyApiError } from "../errors.js";
 
 /**
  * Automations and workflow auto-posting match accounts by the provider's id
@@ -51,6 +52,15 @@ const CONNECTABLE = [
 /** Every platform a connected account or post can carry. */
 const PlatformSchema = z.enum([...CONNECTABLE, "tiktok_business"]);
 
+/**
+ * The platforms a connect LINK exists for. Bluesky has no sign-in page: it is
+ * connected with a handle and an app password (POST /social/connect/bluesky),
+ * and GET /social/auth-url for it errors. Asking for a password in chat is not
+ * something this server does, so Bluesky stays on the Auto Post page.
+ */
+const LINK_PLATFORMS = CONNECTABLE.filter((p): p is Exclude<(typeof CONNECTABLE)[number], "bluesky"> => p !== "bluesky");
+const LinkPlatformSchema = z.enum(LINK_PLATFORMS as [string, ...string[]]);
+
 const PLATFORM_LABELS: Record<string, string> = {
   instagram: "Instagram",
   tiktok: "TikTok",
@@ -80,16 +90,31 @@ const versely_get_social_auth_url = defineTool({
   name: "versely_get_social_auth_url",
   description:
     "Get a link the user opens to connect one of their social accounts (Instagram, TikTok, YouTube, X, " +
-    "Facebook, LinkedIn, Pinterest, Threads, Bluesky) to Versely, so Versely can post there. Show the link " +
+    "Facebook, LinkedIn, Pinterest, Threads) to Versely, so Versely can post there. Show the link " +
     "to the user as a clickable link; it opens the platform's own sign-in page. Instagram needs a professional " +
-    "(Business or Creator) account. After they say they finished connecting, call " +
+    "(Business or Creator) account. Bluesky has no link: it is connected with a handle and an app password on " +
+    "Versely's Auto Post page. After they say they finished connecting, call " +
     "versely_refresh_social_accounts, then versely_list_social_accounts to get the new account's id.",
   inputSchema: z.object({
-    platform: z.enum(CONNECTABLE).describe("Which platform to connect."),
+    platform: LinkPlatformSchema.describe("Which platform to connect."),
   }),
   handler: async (input, ctx) => {
     const platform = input.platform === "twitter" ? "x" : input.platform;
-    const data = await ctx.client.get<{ url?: string }>("/api/v1/social/auth-url", { query: { platform } });
+    let data: { url?: string };
+    try {
+      data = await ctx.client.get<{ url?: string }>("/api/v1/social/auth-url", { query: { platform } });
+    } catch (err) {
+      // A full account limit answers 409 with a sentence that names a bigger plan; say only what the user can do.
+      const body = (err instanceof VerselyApiError ? err.body : null) as { code?: unknown; plan?: { max_accounts?: unknown } } | null;
+      if (err instanceof VerselyApiError && err.status === 409 && body?.code === "account_limit") {
+        const max = typeof body.plan?.max_accounts === "number" ? `the ${body.plan.max_accounts} connected accounts` : "all the connected accounts";
+        return errorResult(
+          `No link: this Versely account already has ${max} it can have. Disconnect one with ` +
+            "versely_disconnect_social_account to connect another.",
+        );
+      }
+      throw err;
+    }
     const url = typeof data?.url === "string" ? data.url : "";
     if (!url) return jsonResult(data);
     const label = PLATFORM_LABELS[platform] ?? platform;
@@ -194,6 +219,21 @@ function resolveAccountIds(input: {
   return fromTargets;
 }
 
+/** lib/socialTagging.ts: people, collaborators and keyword tags, checked before anything is charged. */
+const InstagramHandle = z.string().regex(/^@?[A-Za-z0-9._]{1,30}$/, "An Instagram username.");
+const Tagging = z
+  .object({
+    instagram_people: z.array(InstagramHandle).max(20).optional().describe("Instagram usernames to tag in the post (up to 20)."),
+    instagram_collaborators: z
+      .array(InstagramHandle)
+      .max(3)
+      .optional()
+      .describe("Instagram usernames to invite as collaborators (up to 3)."),
+    youtube_tags: z.array(z.string().max(100)).optional().describe("YouTube keyword tags, 500 characters in all."),
+  })
+  .optional()
+  .describe("Tags for the post: Instagram people and collaborators, YouTube keyword tags.");
+
 const versely_preview_post = defineTool({
   name: "versely_preview_post",
   description:
@@ -209,6 +249,7 @@ const versely_preview_post = defineTool({
         .optional()
         .describe("Connected account ids to preview for. Required — from versely_list_social_accounts."),
       tiktok_draft: z.boolean().optional().describe("Preview TikTok as a draft sent to the TikTok app."),
+      tagging: Tagging,
       targets: z
         .array(LegacyPostTarget)
         .min(1)
@@ -229,7 +270,8 @@ const versely_publish_post = defineTool({
   description:
     "Publish a post (caption plus images or a video) to one or more of the user's connected social " +
     "accounts, now or at a scheduled time. Confirm the caption, media and accounts with the user first. " +
-    "Charges Versely credits per account posted to (currently 1 each; the result says how many). " +
+    "Costs at most 1 Versely credit per account posted to, often nothing; versely_get_posting_plan gives the " +
+    "exact cost per account. " +
     `${MEDIA_RULES} A scheduled post can be moved with versely_update_post, or cancelled for a refund ` +
     "with versely_delete_post before it goes out. Follow up with versely_get_post for the live links.",
   inputSchema: z
@@ -256,6 +298,7 @@ const versely_publish_post = defineTool({
         .boolean()
         .optional()
         .describe("Send TikTok posts to the TikTok app's drafts for the user to finish there, instead of posting live."),
+      tagging: Tagging,
       targets: z
         .array(LegacyPostTarget)
         .min(1)
@@ -409,6 +452,33 @@ const versely_delete_post = defineTool({
   },
 });
 
+const versely_get_posting_plan = defineTool({
+  name: "versely_get_posting_plan",
+  description:
+    "What posting costs the user and how many social accounts they can connect: the credits per account for each " +
+    "post (0 when posting costs nothing for them), the most posts a day before posts cost credits again, the number " +
+    "of accounts connected and the most they can have, and whether another can be connected. FREE.",
+  inputSchema: z.object({}),
+  handler: async (_input, ctx) => {
+    const res = await ctx.client.get<{ plan?: Record<string, unknown> }>("/api/v1/social/plan");
+    const p = res?.plan;
+    if (!p || typeof p !== "object") return jsonResult(res);
+    const credits = typeof p.credits_per_account === "number" ? p.credits_per_account : null;
+    return jsonResult({
+      credits_per_post_per_account: credits,
+      posting_costs_nothing: p.posts_free === true,
+      daily_post_limit: p.daily_post_limit ?? null,
+      connected_accounts: p.connected ?? null,
+      max_accounts: p.max_accounts ?? null,
+      can_connect_another: p.can_connect !== false,
+      note:
+        credits === 0
+          ? `Posts cost nothing${typeof p.daily_post_limit === "number" ? ` up to ${p.daily_post_limit} a day; past that each costs 1 credit per account` : ""}.`
+          : `Each post costs ${credits ?? 1} credit per account posted to.`,
+    });
+  },
+});
+
 export const socialTools: Tool[] = [
   versely_get_social_auth_url,
   versely_list_social_accounts,
@@ -420,4 +490,5 @@ export const socialTools: Tool[] = [
   versely_get_post,
   versely_update_post,
   versely_delete_post,
+  versely_get_posting_plan,
 ];

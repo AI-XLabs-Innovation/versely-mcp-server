@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — Every feature shipped since October, 46 new tools (2026-11-14)
+
+The server had not gained a feature since early October, so Swap, Remix, the captions studio, talking ads and the rest could not be reached from an assistant, and the ChatGPT listing could not mention them. Full profile 177 → 223 tools, `openai` 163 → 209.
+
+- **Uploads** (`versely_upload_media`): a photo, video or audio file the user gives is stored in their own Versely library and its URL returned. In ChatGPT the attachment arrives as a file input (`_meta["openai/fileParams"]`); other hosts pass an https link. Bytes are streamed to a temp file under per-kind limits (30 / 200 / 60 MB) and PUT through the backend's presigned upload. The fetch is guarded (`src/tools/_fetchGuard.ts`): https only, no credentials or odd ports, and the address the socket connects to must be public, on every redirect hop.
+- **Remix** (`versely_list_remix_trends`, `versely_prepare_remix_clip`, `versely_quote_swap`, `versely_swap_video`, `versely_get_swap`, and a `remix_trends` collection in `versely_browse`): Swap replaces people, outfits, products, places or the style in a 4 to 15 second clip with the user's photos or avatars; "moves" makes one character perform the clip's motion. The paid step takes `confirm_credits` (re-quoted first, refused when the price moved) and `rights_confirmed`. No engine is named anywhere.
+- **Talking ads** (`versely_list_ugc_actors`, `versely_list_ugc_voices`, `versely_write_ugc_script`, `versely_quote_ugc_ads`, `versely_create_ugc_ads`, `versely_get_ugc_ads`, `versely_list_ugc_ads`) and **ready-made avatars** (`versely_list_ready_made_avatars`, `versely_add_ready_made_avatar`, `versely_list_avatar_creations`).
+- **Captions studio** (`versely_list_caption_looks`, `versely_caption_video`, `versely_get_caption_job`): the free animated looks and the premium ones (price returned before anything is charged).
+- **Scripts** (`versely_write_script` and its get / list / update / delete, plus the voice profile tools).
+- **Music videos** (`versely_quote_music_video`, `versely_create_music_video`, `versely_get_music_video`) and **photo looks** (`versely_list_photo_looks`, `versely_apply_photo_look`, `versely_get_photo_look`).
+- **AI creators** (`versely_list_ai_creator_options`, `versely_make_ai_creator_rooms`, `versely_get_ai_creator_rooms`, `versely_create_ai_creator`, `versely_update_ai_creator`, `versely_test_ai_creator_episode`, `versely_list_ai_creator_episodes`, `versely_approve_ai_creator`). Drawing a set of rooms can outlast a tool call, so the tool stops waiting after 50 s and the set is read back with `versely_get_ai_creator_rooms` (backend `GET /automations/ai-creator/rooms`, added with this release).
+- A profile variant can now carry its own `_meta` (`ProfileVariant.meta`), used for the ChatGPT-only file input.
+- `versely_analyze_post` said it costs 1 credit; the backend has charged 2 since 2026-11-08.
+- **Existing tools brought back in line with the backend** (an audit against the current contract):
+  - `versely_slideshow_to_video` now sends `use_edited_images: true`, so a captioned slideshow keeps its captions as a video.
+  - Slideshow automations no longer run on an interval: posts are made when they are queued. `versely_quote_automation_posts`, `versely_create_automation_posts` (takes `confirm_credits`) and `versely_stop_automation` are new; `versely_create_slideshow_automation` and `versely_update_automation` take `post_time` + `timezone` instead of `start` / `every_minutes`; `versely_start_automation` is described as resume.
+  - `versely_get_social_auth_url` no longer offers Bluesky (it has no connect link), and a full account limit is answered without naming a bigger plan. `versely_get_posting_plan` is new; `versely_publish_post` states the real cost and takes `tagging`. "Failed to deduct credits" reads as a credit refusal.
+  - `versely_update_drama_show` says a new length or language drops unfilmed scripts; `versely_delete_drama_show` is new.
+  - `versely_reuse_hooks` takes `reveal` (a cut to a product shot) and caps lines at 90 characters, as the backend does; `versely_save_hook` the same.
+  - `versely_create_automated_slideshow` takes `character_id` (avatar slideshows) and `brand_id`.
+  - `versely_list_dubs` / `versely_get_dub` no longer pass the engine's name through.
+- **Plugin package 1.0.1**: the listing leads with Swap, the capabilities, prompts and release notes name the new features, the Remix test case uses only Versely's own ready-made moves and avatars, and the onboarding skill offers a remix.
+- No free ChatGPT account (never paid) can reach these routes: the backend's free-plugin allowlist is unchanged, so they answer with the existing "not available with free plugin credits" message.
+
 ### Added — The directory plugin has its own endpoint, `/mcp/openai` (2026-11-13)
 
 - ChatGPT and Codex share one plugin directory. ChatGPT's tokens carry `ck: "openai"`, so `/mcp` already served it the plugin's tools. Codex installs the same plugin but signs in from the user's machine (loopback redirect), so its token is an ordinary one and `/mcp` would have served it the full catalog, checkout and plan tools included. `/mcp/openai` serves the `openai` profile to every caller.

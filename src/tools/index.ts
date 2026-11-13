@@ -22,12 +22,30 @@ import { browseTools } from "./browse.js";
 import { templateTools } from "./templates.js";
 import { inspirationTools } from "./inspiration.js";
 import { hooksStudioTools } from "./hooksStudio.js";
+import { mediaTools } from "./media.js";
+import { remixTools } from "./remix.js";
+import { aiCreatorTools } from "./aiCreator.js";
+import { avatarStudioTools } from "./avatarStudio.js";
+import { ugcAdTools } from "./ugcAds.js";
+import { scriptTools } from "./scripts.js";
+import { styledCaptionTools } from "./styledCaptions.js";
+import { aiLooksTools } from "./aiLooks.js";
+import { musicVideoTools } from "./musicVideo.js";
 
 /** Every tool users can be offered (subject to their profile — see _policy.ts). */
 export const standardTools: Tool[] = [
   ...userTools,
   ...billingTools,
+  ...mediaTools,
   ...generateTools,
+  ...remixTools,
+  ...aiCreatorTools,
+  ...avatarStudioTools,
+  ...ugcAdTools,
+  ...scriptTools,
+  ...styledCaptionTools,
+  ...aiLooksTools,
+  ...musicVideoTools,
   ...audioTools,
   ...avatarTools,
   ...slideshowTools,

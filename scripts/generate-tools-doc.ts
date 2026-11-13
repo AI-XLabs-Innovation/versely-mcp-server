@@ -28,13 +28,31 @@ import { browseTools } from "../src/tools/browse.js";
 import { templateTools } from "../src/tools/templates.js";
 import { inspirationTools } from "../src/tools/inspiration.js";
 import { hooksStudioTools } from "../src/tools/hooksStudio.js";
+import { mediaTools } from "../src/tools/media.js";
+import { remixTools } from "../src/tools/remix.js";
+import { musicVideoTools } from "../src/tools/musicVideo.js";
+import { aiLooksTools } from "../src/tools/aiLooks.js";
+import { styledCaptionTools } from "../src/tools/styledCaptions.js";
+import { scriptTools } from "../src/tools/scripts.js";
+import { ugcAdTools } from "../src/tools/ugcAds.js";
+import { avatarStudioTools } from "../src/tools/avatarStudio.js";
+import { aiCreatorTools } from "../src/tools/aiCreator.js";
 
 // Every registered tool, in tools/list order. (The env-gated debug tool is
 // left out: it isn't registered unless MCP_ENABLE_DEBUG_TOOLS=1.)
 const categories: Array<[string, Tool[]]> = [
   ["User & Account", userTools],
   ["Billing & subscription", billingTools],
+  ["Uploads", mediaTools],
   ["Generation (image / video / audio / music)", generateTools],
+  ["Remix: Swap and Copy the moves", remixTools],
+  ["AI creators", aiCreatorTools],
+  ["Ready-made avatars", avatarStudioTools],
+  ["Talking ads (UGC ads)", ugcAdTools],
+  ["Scripts", scriptTools],
+  ["Captions studio", styledCaptionTools],
+  ["Photo looks", aiLooksTools],
+  ["Music videos", musicVideoTools],
   ["Music + sound effects", audioTools],
   ["Avatars (for avatar lip-sync)", avatarTools],
   ["Slideshow", slideshowTools],

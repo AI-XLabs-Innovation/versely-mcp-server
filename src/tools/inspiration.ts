@@ -5,7 +5,7 @@
 // recreate it (a slideshow post as a captioned slideshow, a video post as quick
 // hook videos), break down why it worked (trend analysis), or import its video.
 //
-// Backend: /inspiration/* (public, free), /trend-analysis/* (1 credit),
+// Backend: /inspiration/* (public, free), /trend-analysis/* (2 credits),
 // /trending-feed/* (search + post info free, import 1 credit), /hooks/quick*.
 // Web: versely-web /inspiration (lib/inspiration.ts builds the same recreate
 // prompts used here).
@@ -240,7 +240,9 @@ const versely_get_hooks = defineTool({
 
 const versely_list_hook_models = defineTool({
   name: "versely_list_hook_models",
-  description: "The video models hook videos can use, with their allowed durations and prices, and the settings (vibes).",
+  description:
+    "The video models hook videos can use, with their allowed durations and the credits per hook (the first picture plus " +
+    "the video; burning the line on is free). The settings a hook can be filmed in are the `vibe` values of versely_create_hooks.",
   inputSchema: z.object({}),
   handler: async (_input, ctx) => jsonResult(await ctx.client.get("/api/v1/hooks/quick/models")),
 });
@@ -316,7 +318,7 @@ function analysisResult(a: Record<string, any>, id: string): ToolResult {
       analysis: a.analysis,
     });
   }
-  if (status === "failed") return jsonResult({ analysis_id: id, status, error: a.error ?? "The analysis failed; the credit is refunded." });
+  if (status === "failed") return jsonResult({ analysis_id: id, status, error: a.error ?? "The analysis failed; the credits are refunded." });
   return jsonResult({
     analysis_id: id,
     status: status || "working",
@@ -328,8 +330,8 @@ const versely_analyze_post = defineTool({
   name: "versely_analyze_post",
   description:
     "Break down why a social video or post worked - its hook, the scene-by-scene timeline, audio, editing, visual style " +
-    "and what keeps people watching - from its link (TikTok, Instagram, YouTube, X, Facebook, LinkedIn). Costs 1 Versely " +
-    "credit. Waits up to about 45 seconds for the result; if it isn't done, check with versely_get_post_analysis.",
+    "and what keeps people watching - from its link (TikTok, Instagram, YouTube, X, Facebook, LinkedIn). Costs 2 Versely " +
+    "credits. Waits up to about 45 seconds for the result; if it isn't done, check with versely_get_post_analysis.",
   inputSchema: z.object({ url: z.string().url().describe("The post's link.") }),
   handler: async (input, ctx) => {
     const started = await ctx.client.post<{ id?: string }>("/api/v1/trend-analysis/analyze", { url: input.url });

@@ -114,7 +114,10 @@ const versely_list_hook_library = defineTool({
 const versely_save_hook = defineTool({
   name: "versely_save_hook",
   description: "Save a hook clip from the library to the user's saved hooks (optionally with their own line), to reuse later.",
-  inputSchema: z.object({ hook_id: z.string(), hook_line: z.string().max(200).optional() }),
+  inputSchema: z.object({
+    hook_id: z.string(),
+    hook_line: z.string().max(90).optional().describe("The user's own line for it, at most 90 characters."),
+  }),
   handler: async (input, ctx) =>
     jsonResult(await ctx.client.post("/api/v1/hooks/swipe", { hook_id: input.hook_id, action: "save", ...(input.hook_line ? { hook_line: input.hook_line } : {}) })),
 });
@@ -159,18 +162,36 @@ const versely_reuse_hooks = defineTool({
   name: "versely_reuse_hooks",
   description:
     "Turn picked library hook clips (versely_browse 'hook_library') into the user's own hooks: their brand's line is " +
-    "burned on each clip, with optional music. Fast and cheap - no new video is generated. Spends Versely credits " +
+    "burned on each clip, with optional music, and optionally a cut to the user's product or app after the reaction " +
+    "(reveal). Fast and cheap - no new video is generated. Spends Versely credits " +
     "(versely_quote_hooks); the inline card fills in. Up to 20 clips.",
   meta: metaForMediaCard(),
   inputSchema: z.object({
     hook_ids: z.array(z.string()).min(1).max(20).describe("Library clip ids."),
-    lines: z.record(z.string().max(200)).optional().describe("Your line per clip: { hook_id: line }. Missing ones are written for the brand."),
+    lines: z
+      .record(z.string().max(90))
+      .optional()
+      .describe("Your line per clip, at most 90 characters (it is burned on the video): { hook_id: line }. Missing ones are written for the brand."),
     brand_id: z.string().optional().describe("Write the missing lines for this brand (versely_list_brands)."),
     brief: z.string().max(500).optional().describe("What it's for, when there's no saved brand."),
     title: z.string().max(120).optional(),
     music_bed_id: z.string().optional().describe("From versely_list_music_beds / versely_browse music_beds."),
     trending_sound_id: z.string().optional().describe("A trending sound (versely_list_trending_sounds); its royalty-free bed is used."),
     caption: z.boolean().optional().describe("Burn the lines on (default true)."),
+    reveal: z
+      .object({
+        url: z
+          .string()
+          .url()
+          .describe("https link to a product photo or a short product / app video (a Versely URL, or one stored with versely_upload_media)."),
+        kind: z.enum(["image", "video"]).optional().describe("Read from the file extension when omitted."),
+        seconds: z.number().min(1.5).max(6).optional().describe("How long the reveal holds, 1.5-6 s (default 3)."),
+      })
+      .optional()
+      .describe(
+        "What every hook cuts to after the reaction: a product shot or an app recording. Its own sound is dropped and the " +
+          "music runs across both. No extra charge.",
+      ),
   }),
   handler: async (input, ctx) => {
     const brand_context = input.brief?.replace(/\s+/g, " ").trim().slice(0, 500) || undefined;
@@ -186,6 +207,7 @@ const versely_reuse_hooks = defineTool({
         ...(input.music_bed_id ? { music_bed_id: input.music_bed_id } : {}),
         ...(input.trending_sound_id ? { trending_sound_id: input.trending_sound_id } : {}),
         ...(input.caption !== undefined ? { caption: input.caption } : {}),
+        ...(input.reveal ? { reveal: input.reveal } : {}),
         source: "mcp",
       },
       "versely_reuse_hooks",

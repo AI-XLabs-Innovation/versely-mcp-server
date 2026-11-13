@@ -14,6 +14,7 @@ import { metaForPicker } from "../ui/templates.js";
 import { PICKER_META_KEY } from "../ui/picker.js";
 import { loadVeedAvatars } from "./avatars.js";
 import { hookAsk, sceneSlug } from "./hooksStudio.js";
+import { REMIX_TABS, trendOf } from "./remix.js";
 
 interface PickItem {
   id: string;
@@ -86,6 +87,45 @@ const compact = (n: unknown): string => {
 };
 
 const COLLECTIONS: Record<string, CollectionDef> = {
+  remix_trends: {
+    title: "Trending to remix",
+    noun: "clip",
+    // The library is paged by the backend (30 a page): two pages fill the picker.
+    load: async (ctx, { category }) => {
+      type Page = { available?: boolean; items?: Array<Record<string, any>>; next_cursor?: string | null };
+      const tab = (REMIX_TABS as readonly string[]).includes(String(category ?? "").trim().toLowerCase()) ? String(category).trim().toLowerCase() : "trending";
+      const first = await ctx.client.get<Page>("/api/v1/remix/library", { query: { tab, limit: 30 } });
+      let rows = first?.items ?? [];
+      if (first?.next_cursor) {
+        try {
+          const second = await ctx.client.get<Page>("/api/v1/remix/library", { query: { tab, limit: 30, cursor: first.next_cursor } });
+          rows = rows.concat(second?.items ?? []);
+        } catch {
+          /* one page is enough to pick from */
+        }
+      }
+      const items = rows.map((raw) => {
+        const it = trendOf(raw);
+        const title = String(it.title);
+        const own = typeof it.move_id === "string";
+        return {
+          id: String(own ? it.move_id : it.trend_id),
+          title: title.slice(0, 90),
+          subtitle: [str(it.creator), it.views != null ? `${compact(Number(it.views))} views` : "", it.seconds ? `${it.seconds}s` : "", it.people === 2 ? "2 people" : ""]
+            .filter(Boolean).join(" · ") || undefined,
+          image: str(it.cover_url),
+          badge: it.suggested === "moves" ? "Moves" : "Swap",
+          pick: own
+            ? `Use the Versely move ${quote(title.slice(0, 80))} (move_id: ${String(it.move_id)}) and put my character in it.`
+            : `Remix this trending clip ${quote(title.slice(0, 80))} with me in it (trend_id: ${String(it.trend_id)}).`,
+        };
+      });
+      return {
+        items,
+        note: `Tabs (pass as category): ${REMIX_TABS.join(", ")}. A pick becomes a clip with versely_prepare_remix_clip.`,
+      };
+    },
+  },
   inspiration: {
     title: "Viral outliers",
     noun: "post",
@@ -353,6 +393,8 @@ const versely_browse = defineTool({
   name: "versely_browse",
   description:
     "Show the user a visual picker to choose from - with previews - instead of listing options in text: " +
+    "remix_trends (trending clips to put yourself in; category = a tab: trending, dance, transitions, couples, " +
+    "money, cars, fashion, sports, pets, ai-remixes, or versely for Versely's own moves), " +
     "inspiration (viral outlier posts; category = niche), trending_sounds (with playable royalty-free versions), " +
     "hook_library (ready-made hook clips; category = a scene, q = what they're for - the clips are picked and their " +
     "lines written for it), hook_characters, music_beds, " +
@@ -369,7 +411,7 @@ const versely_browse = defineTool({
       .string()
       .optional()
       .describe(
-        "inspiration: a niche slug (versely_list_inspiration_niches); hook_library: a scene, e.g. kitchen, outdoor, " +
+        "remix_trends: a tab (default trending); inspiration: a niche slug (versely_list_inspiration_niches); hook_library: a scene, e.g. kitchen, outdoor, " +
           "cozy-night, urban, social, cafe, travel, car, desk, fitness; templates: a category.",
       ),
     limit: z.number().int().min(1).max(60).optional().describe("How many to show (default 24)."),

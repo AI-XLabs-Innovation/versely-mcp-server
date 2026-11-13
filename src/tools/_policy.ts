@@ -709,6 +709,11 @@ const ROWS: Record<string, Row> = {
     title: "List short dramas", cls: "read", what: "the user's short dramas", openai: true,
     inv: ["Loading your shows", "Loaded your shows"],
   },
+  versely_delete_drama_show: {
+    title: "Delete short drama", cls: "delete", what: "short drama", openai: true,
+    inv: ["Deleting the show", "Show deleted"],
+    why: { destructive: "Permanently removes the show and its unfilmed scripts; episodes already filmed stay in the user's library." },
+  },
 
   // ── UGC editing ─────────────────────────────────────────────────────────
   versely_add_video_overlay: {
@@ -812,6 +817,10 @@ const ROWS: Record<string, Row> = {
       openWorld:
         "Cancels the scheduled post at the social-posting provider. Posts already published stay live on the platforms.",
     },
+  },
+  versely_get_posting_plan: {
+    title: "Get posting cost", cls: "read", what: "what posting costs the user and how many accounts they can connect", openai: true,
+    inv: ["Checking posting costs", "Checked posting costs"],
   },
 
   // ── Job status ──────────────────────────────────────────────────────────
@@ -1005,7 +1014,7 @@ const ROWS: Record<string, Row> = {
     title: "Estimate automation cost", cls: "read", openai: true,
     what: "the credit cost of one run of a slideshow automation",
     inv: ["Estimating the cost", "Estimated the cost"],
-    why: { readOnly: "Only computes what one run would cost; nothing is created, changed or charged." },
+    why: { readOnly: "Only computes what one post would cost; nothing is created, changed or charged." },
   },
   versely_create_slideshow_automation: {
     title: "Create slideshow automation", cls: "create", what: "slideshow automation", spends: false, openai: true,
@@ -1013,10 +1022,10 @@ const ROWS: Record<string, Row> = {
     hints: { destructiveHint: true, openWorldHint: true },
     why: {
       readOnly:
-        "Creates a recurring slideshow automation in the user's Versely account. Creating it spends nothing; each run it makes spends the user's Versely credits.",
+        "Saves a slideshow automation in the user's Versely account. Saving it spends and posts nothing; posts are made only when versely_create_automation_posts queues them, each spending the user's Versely credits.",
       destructive:
-        "When it is set to post and started, its runs publish without another confirmation, and Versely can't take a post back once it is live.",
-      openWorld: "When it is set to post, each run publishes its slideshow to the user's connected social accounts.",
+        "When posts are queued for it and it is set to post, they publish without another confirmation, and Versely can't take a post back once it is live.",
+      openWorld: "Stores the connected social accounts its queued posts will be published to.",
     },
   },
   versely_list_automations: {
@@ -1040,10 +1049,10 @@ const ROWS: Record<string, Row> = {
     inv: ["Starting the automation", "Automation started"],
     hints: { destructiveHint: true, openWorldHint: true, idempotentHint: true },
     why: {
-      readOnly: "Starts one of the user's automations; its runs spend the user's Versely credits.",
+      readOnly: "Resumes one of the user's automations: its queued posts are made again, each spending the user's Versely credits.",
       destructive:
-        "When it is set to post, its runs publish without another confirmation, and Versely can't take a post back once it is live.",
-      openWorld: "When it is set to post, each run publishes to the user's connected social accounts.",
+        "When it is set to post, the resumed posts publish without another confirmation, and Versely can't take a post back once it is live.",
+      openWorld: "When it is set to post, each resumed post publishes to the user's connected social accounts.",
     },
   },
   versely_pause_automation: {
@@ -1051,18 +1060,42 @@ const ROWS: Record<string, Row> = {
     inv: ["Pausing the automation", "Automation paused"],
     hints: { destructiveHint: false, idempotentHint: true },
     why: {
-      readOnly: "Pauses one of the user's automations so it stops running.",
-      destructive: "Only stops future runs; nothing is deleted, and it can be started again.",
+      readOnly: "Pauses one of the user's automations; its queued posts wait.",
+      destructive: "Only holds the queued posts; nothing is deleted, and it can be resumed.",
     },
   },
   versely_run_automation_now: {
     title: "Run automation now", cls: "publish", what: "automation run", openai: true,
     inv: ["Running the automation", "Automation run started"],
     why: {
-      readOnly: "Runs one of the user's automations now, which makes a new slideshow and spends the user's Versely credits.",
+      readOnly: "Queues one extra post of the user's automation, made now, which spends the user's Versely credits.",
       destructive:
         "When the automation is set to post, the slideshow goes out publicly, and Versely can't take a post back once it is live.",
       openWorld: "When the automation is set to post, the new slideshow is published to the user's connected social accounts.",
+    },
+  },
+  versely_quote_automation_posts: {
+    title: "Quote automation posts", cls: "read", what: "the credits and days of N posts of one of the user's automations", openai: true,
+    inv: ["Pricing the posts", "Priced the posts"],
+    why: { readOnly: "A dry run: works out the price and the posting days; nothing is queued, changed or charged." },
+  },
+  versely_create_automation_posts: {
+    title: "Queue automation posts", cls: "publish", what: "queued automation posts", openai: true,
+    inv: ["Queueing the posts", "Posts queued"],
+    why: {
+      readOnly:
+        "Queues posts of the user's automation: each is made in their Versely library and spends the credits the user approved for them.",
+      destructive:
+        "When the automation is set to post, each post publishes on its day without another confirmation, and Versely can't take a post back once it is live.",
+      openWorld: "When the automation is set to post, the posts are published to the user's connected social accounts.",
+    },
+  },
+  versely_stop_automation: {
+    title: "Stop automation", cls: "delete", what: "queued automation posts", openai: true,
+    inv: ["Stopping the automation", "Automation stopped"],
+    why: {
+      readOnly: "Drops the posts queued but not made yet for one of the user's automations, and pauses it.",
+      destructive: "The queued posts are removed (they were never charged); posts already made keep their booked times.",
     },
   },
   versely_delete_automation: {
@@ -1098,6 +1131,276 @@ const ROWS: Record<string, Row> = {
     why: {
       readOnly: "Deletes one of the user's dubbing projects; one still generating is cancelled and its credits refunded.",
       destructive: "Permanently removes the dubbing project from the user's list.",
+    },
+  },
+
+  // ── Uploads ─────────────────────────────────────────────────────────────
+  versely_upload_media: {
+    title: "Store a file in Versely", cls: "create", what: "copy of the user's photo, video or audio file", openai: true, spends: false,
+    inv: ["Storing your file in Versely", "File stored"],
+    why: {
+      readOnly: "Stores a copy of a photo, video or audio file the user provided in their private Versely library; it does not spend credits.",
+      destructive: "Only adds a new file; nothing existing is changed or deleted.",
+      openWorld: "The file is the user's own attachment and is kept privately in their Versely library; nothing is posted or shared.",
+    },
+  },
+
+  // ── Remix: Swap and Copy the moves ──────────────────────────────────────
+  versely_list_remix_trends: {
+    title: "List remix trends", cls: "read", what: "Versely's Remix trend library", openai: true,
+    inv: ["Loading trends to remix", "Loaded trends to remix"],
+  },
+  versely_prepare_remix_clip: {
+    title: "Prepare clip to remix", cls: "create", what: "short clip to remix", openai: true, spends: false,
+    inv: ["Getting the clip ready", "Clip ready"],
+    why: {
+      readOnly: "Cuts a private 4 to 15 second clip for the user's own remix, kept for 6 days; it does not spend credits.",
+      destructive: "Only adds a temporary clip; nothing existing is changed or deleted.",
+      openWorld: "The clip is stored privately for this user's own remix; nothing is posted or shared.",
+    },
+  },
+  versely_quote_swap: {
+    title: "Quote a remix", cls: "read", what: "the price of remixing the user's prepared clip, and their credit balance", openai: true,
+    inv: ["Pricing your remix", "Priced your remix"],
+  },
+  versely_swap_video: {
+    title: "Swap into a video", cls: "create", what: "remixed video", openai: true,
+    inv: ["Starting your remix", "Remix started"],
+  },
+  versely_get_swap: {
+    title: "Check remix", cls: "read", what: "the status of the user's remix jobs", openai: true,
+    inv: ["Checking your remix", "Checked your remix"],
+  },
+
+  // ── musicVideo ──
+  versely_quote_music_video: {
+    title: "Quote music video", cls: "read", what: "the price of a music video of one of the user's songs", openai: true,
+    inv: ["Pricing the music video", "Priced the music video"],
+  },
+  versely_create_music_video: {
+    title: "Create music video", cls: "create", what: "music video", openai: true,
+    inv: ["Starting your music video", "Music video started"],
+    why: {
+      readOnly:
+        "Makes a music video from one of the user's songs into their private Versely library and spends the credits the user approved for it (refunded if it fails).",
+    },
+  },
+  versely_get_music_video: {
+    title: "Get music video", cls: "read", what: "the status of the user's music video", openai: true,
+    inv: ["Checking your music video", "Checked your music video"],
+  },
+
+  // ── aiLooks ──
+  versely_list_photo_looks: {
+    title: "List photo looks", cls: "read", what: "Versely's photo looks and their prices", openai: true,
+    inv: ["Loading photo looks", "Loaded photo looks"],
+  },
+  versely_apply_photo_look: {
+    title: "Apply photo look", cls: "create", what: "restyled photo", openai: true,
+    inv: ["Applying the photo look", "Photo look started"],
+    why: {
+      readOnly:
+        "Re-shoots one of the user's photos in the chosen look as a new image in their private Versely library and spends the credits the user approved for it (refunded if it fails).",
+    },
+  },
+  versely_get_photo_look: {
+    title: "Get photo look", cls: "read", what: "the status of the user's photo look", openai: true,
+    inv: ["Checking your photo look", "Checked your photo look"],
+  },
+
+  // ── styledCaptions ──
+  // ── Captions studio (both profiles; 2026-11-14) ─────────────────────────
+  // Free looks cost nothing. A premium look is charged per started minute of
+  // video; versely_caption_video only quotes it until the call carries that
+  // exact price (confirm_credits).
+  versely_list_caption_looks: {
+    title: "List caption looks", cls: "read", what: "the caption looks the user can pick and what each costs", openai: true,
+    inv: ["Loading caption looks", "Loaded caption looks"],
+  },
+  versely_caption_video: {
+    title: "Caption a video", cls: "create", what: "captioned copy of a video", openai: true,
+    inv: ["Starting your captions", "Captions started"],
+    why: {
+      readOnly:
+        "Starts a captioned copy of the user's video in their private Versely library. Free looks cost nothing; a premium look spends only the credits the user approved for it (refunded if it fails), and without that approval the call only returns the price.",
+    },
+  },
+  versely_get_caption_job: {
+    title: "Check captions", cls: "read", what: "one of the user's captions jobs", openai: true,
+    inv: ["Checking your captions", "Checked your captions"],
+  },
+
+  // ── scripts ──
+  // ── Scripts: remix a viral script (both profiles; 2026-11-14) ───────────
+  // Writing a script is the only paid call: a fixed price from /scripts/pricing,
+  // started only with that exact price (confirm_credits). Voice profiles are free.
+  versely_write_script: {
+    title: "Write a script", cls: "create", what: "video script", openai: true,
+    inv: ["Writing your script", "Script written"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly:
+        "Writes a new script into the user's private Versely scripts and spends the fixed credits the user approved (refunded if no script comes out); without that approval the call only returns the price.",
+      openWorld: "Reads the public social post the user links to, when the script remixes one; nothing is posted.",
+    },
+  },
+  versely_get_script: {
+    title: "Get script", cls: "read", what: "one of the user's scripts", openai: true,
+    inv: ["Loading your script", "Loaded your script"],
+  },
+  versely_list_scripts: {
+    title: "List scripts", cls: "read", what: "the user's scripts", openai: true,
+    inv: ["Loading your scripts", "Loaded your scripts"],
+  },
+  versely_update_script: {
+    title: "Edit script", cls: "edit", what: "script", openai: true,
+    inv: ["Updating your script", "Script updated"],
+  },
+  versely_delete_script: {
+    title: "Delete script", cls: "delete", what: "script", openai: true,
+    inv: ["Deleting the script", "Script deleted"],
+  },
+  versely_get_voice_profile: {
+    title: "Get voice profile", cls: "read", what: "the user's voice profile", openai: true,
+    inv: ["Loading your voice profile", "Loaded your voice profile"],
+  },
+  versely_build_voice_profile: {
+    title: "Build voice profile", cls: "create", what: "voice profile", openai: true, spends: false,
+    inv: ["Learning your voice", "Voice profile built"],
+    hints: { destructiveHint: true, openWorldHint: true },
+    why: {
+      readOnly:
+        "Learns how the user talks from the public videos of their own Instagram or TikTok account and saves it as their voice profile; it does not spend credits.",
+      destructive: "A finished rebuild replaces the user's previous voice profile.",
+      openWorld: "Reads the public posts of the social account the user names; nothing is posted.",
+    },
+  },
+  versely_delete_voice_profile: {
+    title: "Delete voice profile", cls: "delete", what: "voice profile", openai: true,
+    inv: ["Deleting your voice profile", "Voice profile deleted"],
+  },
+
+  // ── ugcAds ──
+  // ── UGC ads (presenter reads the user's script) ─────────────────────────
+  versely_list_ugc_actors: {
+    title: "List UGC ad presenters", cls: "read", what: "the presenters for the user's UGC ads, including their own avatars", openai: true,
+    inv: ["Loading presenters", "Loaded presenters"],
+  },
+  versely_list_ugc_voices: {
+    title: "List UGC ad voices", cls: "read", what: "the voices for the user's UGC ads, including their cloned voices", openai: true,
+    inv: ["Loading voices", "Loaded voices"],
+  },
+  versely_write_ugc_script: {
+    title: "Write UGC ad scripts", cls: "read", what: "the user's product details to write ad script options", openai: true,
+    inv: ["Writing ad scripts", "Ad scripts written"],
+    hints: { openWorldHint: true },
+    why: {
+      readOnly: "Writes three ad script options from the user's brief, product link or brand and returns them; nothing is saved, changed or charged.",
+      openWorld: "Given a product link, Versely reads that public web page to learn about the product; nothing is posted or shared.",
+    },
+  },
+  versely_quote_ugc_ads: {
+    title: "Price UGC ads", cls: "read", what: "the price of a batch of UGC ads for the user's script", openai: true,
+    inv: ["Pricing your ads", "Priced your ads"],
+  },
+  versely_create_ugc_ads: {
+    title: "Create UGC ads", cls: "create", what: "UGC ad videos", openai: true,
+    inv: ["Starting your UGC ads", "UGC ads started"],
+    why: {
+      readOnly:
+        "Starts 1-4 UGC ad videos in the user's private Versely library and spends the credits the user approved for them (an ad that fails is refunded its share).",
+    },
+  },
+  versely_get_ugc_ads: {
+    title: "Get UGC ads", cls: "read", what: "one batch of the user's UGC ads and its videos", openai: true,
+    inv: ["Checking your ads", "Checked your ads"],
+  },
+  versely_list_ugc_ads: {
+    title: "List UGC ads", cls: "read", what: "the user's recent UGC ads", openai: true,
+    inv: ["Loading your ads", "Loaded your ads"],
+  },
+
+  // ── avatarStudio ──
+  // ── Avatar Studio (avatars are hook characters) ─────────────────────────
+  versely_list_ready_made_avatars: {
+    title: "List ready-made avatars", cls: "read", what: "Versely's ready-made avatar cast", openai: true,
+    inv: ["Loading ready-made avatars", "Loaded ready-made avatars"],
+  },
+  versely_add_ready_made_avatar: {
+    title: "Add ready-made avatar", cls: "create", what: "avatar from Versely's ready-made cast", spends: false, openai: true,
+    inv: ["Adding the avatar", "Avatar added"],
+    hints: { idempotentHint: true },
+    why: {
+      readOnly:
+        "Adds a ready-made person to the user's own avatars in their private Versely library; it does not spend credits. Adding the same person again returns the avatar the user already has.",
+    },
+  },
+  versely_list_avatar_creations: {
+    title: "List avatar creations", cls: "read", what: "the slideshows, hook packs and UGC ads the user made with one of their avatars", openai: true,
+    inv: ["Loading creations", "Loaded creations"],
+  },
+
+  // ── aiCreator ──
+  // ── AI creators (both profiles; 2026-11-14) ─────────────────────────────
+  // One avatar, room and voice that post a new video every day. Options,
+  // create, edit and the episode list are free; rooms and a test take carry
+  // the price the user approved (confirm_credits); approval starts the daily
+  // paid episodes and their posts.
+  versely_list_ai_creator_options: {
+    title: "AI creator options", cls: "read", what: "the user's AI creator choices: avatars, voices, formats and prices", openai: true,
+    inv: ["Loading AI creator options", "Loaded AI creator options"],
+  },
+  versely_get_ai_creator_rooms: {
+    title: "Get AI creator rooms", cls: "read", what: "the newest set of room pictures the user made for an AI creator", openai: true,
+    inv: ["Loading your rooms", "Loaded your rooms"],
+  },
+  versely_make_ai_creator_rooms: {
+    title: "Make AI creator rooms", cls: "create", what: "AI creator room pictures", openai: true,
+    inv: ["Drawing the rooms", "Rooms drawn"],
+    why: {
+      readOnly:
+        "Draws four pictures of the avatar in a room into the user's private Versely storage and spends the credits the user approved for them (pictures that fail are refunded).",
+    },
+  },
+  versely_create_ai_creator: {
+    title: "Create AI creator", cls: "create", what: "AI creator", openai: true, spends: false,
+    inv: ["Setting up your AI creator", "AI creator set up"],
+    why: {
+      readOnly:
+        "Creates an AI creator in the user's Versely account. Creating it spends nothing and posts nothing; it waits until the user approves a test take.",
+    },
+  },
+  versely_update_ai_creator: {
+    title: "Edit AI creator", cls: "edit", what: "AI creator", openai: true,
+    inv: ["Updating your AI creator", "AI creator updated"],
+    hints: { openWorldHint: true },
+    why: {
+      destructive: "Overwrites the settings it is given; episodes already made are kept.",
+      openWorld: "Can change which connected social account, and at what daily time, its future episodes post to.",
+    },
+  },
+  versely_test_ai_creator_episode: {
+    title: "Make AI creator test take", cls: "create", what: "AI creator test episode video", openai: true,
+    inv: ["Making the test take", "Test take started"],
+    why: {
+      readOnly:
+        "Makes one test episode into the user's private Versely library (it is never posted) and spends the credits the user approved for it (refunded if it fails).",
+    },
+  },
+  versely_list_ai_creator_episodes: {
+    title: "Get AI creator episodes", cls: "read", what: "one of the user's AI creators and its episodes", openai: true,
+    inv: ["Loading the episodes", "Loaded the episodes"],
+  },
+  versely_approve_ai_creator: {
+    title: "Approve AI creator", cls: "publish", what: "AI creator daily posting", openai: true,
+    inv: ["Approving your AI creator", "AI creator is live"],
+    hints: { destructiveHint: true },
+    why: {
+      readOnly:
+        "Makes the user's AI creator live: from then on it makes one episode a day, each spending the user's Versely credits.",
+      destructive:
+        "Its daily episodes publish without another confirmation, and Versely can't take a post back once it is live.",
+      openWorld: "Each daily episode is posted to the user's connected social account.",
     },
   },
 
