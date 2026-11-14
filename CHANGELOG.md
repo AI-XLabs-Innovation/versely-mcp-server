@@ -15,6 +15,7 @@ OpenAI's plugin portal could not scan the 209-tool `openai` profile: it read the
 - **Open-world flag**: a tool whose advertised inputs take a link (`image_url`, `video_url`, `link`, `media_urls` ...) is now `openWorldHint: true` in every profile; the scan flagged seven such tools marked false.
 - `/healthz` reports `tools_chatgpt`. The smoke test pins the catalog's names, holds it to 58,000 characters, and checks that it names no tool outside itself.
 - `GET /.well-known/openai-apps-challenge` serves the domain verification token.
+- **First real run from ChatGPT (2026-11-14)**: video, Remix (42 credits, finished in about 4 minutes), caption looks and the balance check worked. The carousel prompt did not reach Versely: ChatGPT drew the slides with its own image generator. The carousel tool's description and the server instructions now claim carousel and slideshow requests, and package **1.0.2** names Versely in the video and carousel test prompts.
 
 
 ### Added — Every feature shipped since October, 46 new tools (2026-11-14)

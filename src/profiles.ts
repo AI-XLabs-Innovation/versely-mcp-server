@@ -72,7 +72,7 @@ export function parseProfileList(
 // Kept at or under 512 characters (the smoke test enforces it). Every tool name
 // here must exist in the openai profile.
 export const OPENAI_INSTRUCTIONS_LEAD =
-  "Versely makes videos, remixes (the user swapped into a clip), talking ads, captions, voiceovers, images, music, slideshows and dubs. " +
+  "Versely makes videos, remixes (the user swapped into a clip), talking ads, captions, voiceovers, images, music, photo carousels and dubs. " +
   "Creations run in the background and spend the user's Versely credits: call a creation tool once, never resubmit. " +
   "The card updates itself; results: versely_get_task_status (movies: versely_get_movie_status, dubs: versely_get_dub). " +
   "Pick models from versely_find_models (all models, ranked). On the free trial use only models marked free_trial. " +
@@ -166,6 +166,8 @@ export const OPENAI_DIRECTORY_INSTRUCTIONS_DETAIL =
   "versely_list_caption_looks. Music video for a song: versely_quote_music_video, then versely_create_music_video. " +
   "A new look for a photo: versely_list_photo_looks, then versely_apply_photo_look. A script to film: " +
   "versely_write_script. Ideas: versely_browse (collection 'inspiration'), then versely_recreate_inspiration. " +
+  "A photo carousel or slideshow (TikTok, Instagram): versely_create_automated_slideshow, so it is made with its " +
+  "captions and saved to the user's library; do not draw the slides one image at a time. " +
   "Brands: versely_analyze_brand, then versely_create_brand_slideshow. " +
   "Short dramas (a series, micro drama, sitcom or \"a show\"): versely_plan_drama_show after at most 2 short " +
   "question rounds, including the quality: Standard (1080p, about 300 credits for 30 s) or High quality (about 320 " +

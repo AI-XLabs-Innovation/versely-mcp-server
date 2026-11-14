@@ -316,7 +316,7 @@ export const OPENAI_DIRECTORY: Readonly<Record<string, DirectoryEntry>> = {
 
   // ── Slideshows and carousels ───────────────────────────────────────────────
   versely_create_automated_slideshow: {
-    d: "Make a captioned slideshow or carousel on a topic: a hook and slide captions are written, the slides drawn and the text put on them. Spends credits per slide; the card fills in. Show caption styles with versely_browse (collection 'slideshow_styles').",
+    d: "Make a TikTok or Instagram photo carousel (a captioned slideshow) on a topic: a hook and slide captions are written, the slides drawn and the text put on them, and it is saved to the user's Versely library. Use this for any carousel or slideshow request instead of generating the images one at a time. Spends credits per slide; the card fills in. Show caption styles with versely_browse (collection 'slideshow_styles').",
     p: {
       prompt: "The topic.",
       num_images: "Slides (default 5).",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "versely",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Create videos, put yourself into trending clips with Swap, make AI hooks, talking ads, captions, slideshows, voiceovers and music, then publish them to your social accounts.",
   "author": {
     "name": "AI XLabs Innovation",
@@ -85,7 +85,7 @@
           "positive": [
             {
               "description": "Text to video. Uses the demo account's credits.",
-              "prompt": "Make a 5-second vertical video of a paper boat drifting down a rainy street.",
+              "prompt": "Use Versely to make a 5-second vertical video of a paper boat drifting down a rainy street.",
               "tools_triggered": "versely_generate_video (versely_find_models first if a model has to be chosen); the media card polls versely_get_task_status",
               "expected_behavior": "A media card appears and swaps in a playable vertical video when the job finishes. Credits are used. A job that is still running is not a finished video."
             },
@@ -97,7 +97,7 @@
             },
             {
               "description": "Photo carousel with text on every slide. Uses the demo account's credits.",
-              "prompt": "Turn five morning-routine tips into a TikTok photo carousel with text on each slide.",
+              "prompt": "Use Versely to turn five morning-routine tips into a TikTok photo carousel with text on each slide.",
               "tools_triggered": "versely_create_automated_slideshow; versely_get_slideshow when it needs checking",
               "expected_behavior": "A carousel of about five slides with one tip written on each, viewable in the chat and saved to the account's slideshows."
             },
