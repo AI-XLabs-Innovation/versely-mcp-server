@@ -1603,6 +1603,8 @@ async function main(): Promise<void> {
       // The upload tool fetches from the fake backend on 127.0.0.1; its
       // address guard is checked in-process instead (see "Uploads").
       MCP_UPLOAD_FETCH_GUARD: "off-for-smoke-test",
+      // The temporary scan probe trims the plugin list in production; test the whole catalog.
+      MCP_OPENAI_SCAN_PROBE: "off",
       // One room set in the fake backend never answers: the tool gives up waiting quickly here.
       VERSELY_ROOMS_WAIT_MS: "1500",
     },

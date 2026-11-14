@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { SCAN_PROBE_TOOL_COUNT, scanProbeOn } from "../openaiScanProbe.js";
 import express, {
   type Request,
   type Response,
@@ -362,6 +363,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       uptime_s: Math.floor((Date.now() - PROCESS_START_MS) / 1000),
       tools: getRegisteredToolCount(config, "full"),
       tools_openai: getRegisteredToolCount(config, "openai"),
+      ...(scanProbeOn() ? { tools_openai_listed: SCAN_PROBE_TOOL_COUNT } : {}),
     });
   });
 

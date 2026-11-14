@@ -1,4 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { scanProbeListed, scanProbeOn } from "./openaiScanProbe.js";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -366,7 +367,10 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
   // so the host can fetch the linked `ui://` resource and render it inline.
   // Hosts without MCP Apps support ignore it.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: catalog.listed as ListedTool[],
+    tools:
+      profile === "openai" && scanProbeOn()
+        ? scanProbeListed(catalog.listed as ListedTool[])
+        : (catalog.listed as ListedTool[]),
   }));
 
   async function callTool(entry: ProfileTool, rawArgs: unknown, requestMeta: unknown): Promise<ToolResult> {
