@@ -233,7 +233,8 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   );
 
   const challenge = await fetch(`${BASE_URL}/.well-known/openai-apps-challenge`);
-  assert("openai-apps-challenge 404 while the token is empty", challenge.status === 404);
+  const challengeBody = await challenge.text();
+  assert("openai-apps-challenge serves the token and nothing else", challenge.status === 200 && /^[A-Za-z0-9_-]{43}$/.test(challengeBody));
   assert("openai-apps-challenge is plain text, no-store", (challenge.headers.get("content-type") ?? "").startsWith("text/plain") && challenge.headers.get("cache-control") === "no-store");
 
   const dbgNone = await fetch(`${BASE_URL}/debug/recent-calls`);

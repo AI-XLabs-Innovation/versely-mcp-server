@@ -7,4 +7,4 @@
  * Paste the value from the OpenAI Platform's plugin draft here and deploy.
  * While it is empty the route answers 404.
  */
-export const OPENAI_APPS_CHALLENGE_TOKEN = "";
+export const OPENAI_APPS_CHALLENGE_TOKEN = "0xlobLILgtdnAQoaydT8sWCqtwZ12OXk-alEVQEFwvY";
