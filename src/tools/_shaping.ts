@@ -132,6 +132,26 @@ export function applyParamDescriptions(
   }
 }
 
+/**
+ * True when the advertised schema takes a link at any depth (image_url,
+ * video_url, link, media_urls ...). Versely fetches whatever address is passed,
+ * so OpenAI's review counts such a tool as open-world: its scan flags
+ * openWorldHint:false on them.
+ */
+export function acceptsLinks(node: unknown): boolean {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some(acceptsLinks);
+  const obj = node as Json;
+  const props = obj.properties as Record<string, unknown> | undefined;
+  if (props) {
+    for (const [key, value] of Object.entries(props)) {
+      if (/(^|_)(url|urls|link|links)$/i.test(key)) return true;
+      if (acceptsLinks(value)) return true;
+    }
+  }
+  return acceptsLinks(obj.items) || acceptsLinks(obj.anyOf) || acceptsLinks(obj.oneOf);
+}
+
 export function injectConfirmRepeat(schema: Json): void {
   const props = (schema.properties ?? (schema.properties = {})) as Json;
   props[CONFIRM_REPEAT_KEY] = { type: "boolean", description: CONFIRM_REPEAT_DESCRIPTION };

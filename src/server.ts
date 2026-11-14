@@ -24,6 +24,7 @@ import {
   applyCardSafetyNet,
   applyParamDescriptions,
   dropDeprecatedProperties,
+  acceptsLinks,
   hideProperties,
   injectConfirmRepeat,
   omitKeys,
@@ -264,6 +265,8 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
   }
 
   const schemes = securitySchemesFor(tool.name, policy.class);
+  // A tool that takes a link reaches whatever address the caller passes.
+  const annotations = acceptsLinks(schema) ? { ...policy.annotations, openWorldHint: true } : policy.annotations;
 
   return {
     name: tool.name,
@@ -278,7 +281,7 @@ function buildProfileTool(tool: Tool, profile: Profile, config: Config): Profile
       title: policy.title,
       description: variant?.description ?? tool.description,
       inputSchema: schema as ListedTool["inputSchema"],
-      annotations: { title: policy.title, ...policy.annotations },
+      annotations: { title: policy.title, ...annotations },
       securitySchemes: schemes,
       _meta: { ...meta, securitySchemes: schemes },
     },
