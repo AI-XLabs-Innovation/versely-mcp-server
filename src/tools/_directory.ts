@@ -83,7 +83,7 @@ export const OPENAI_DIRECTORY: Readonly<Record<string, DirectoryEntry>> = {
     hide: ["image_urls", "seed"],
   },
   versely_generate_audio: {
-    d: "Generate a voiceover (text to speech). Pick the voice yourself from versely_list_voices or versely_get_model_inputs instead of asking; omit it for the model's default. Spends credits by length.",
+    d: "Turn text into a voiceover (text to speech) with a voice model from versely_find_models (type 'audio'). `voice` takes an id from versely_list_voices or versely_get_model_inputs; without it the model's default voice reads the text. Spends credits by length.",
     p: {
       model: "Voiceover model `name` from versely_find_models (type 'audio').",
       text: null,
@@ -479,7 +479,7 @@ export const OPENAI_DIRECTORY: Readonly<Record<string, DirectoryEntry>> = {
 
   // ── Dubbing ────────────────────────────────────────────────────────────────
   versely_create_dub: {
-    d: "Dub a video or audio file into another language, keeping the speaker's voice. Up to 30 minutes; trim it to pay for only part. Spends credits; takes several minutes.",
+    d: "Translate the speech in a video or audio file into another language, voiced to sound like the original speakers. For the user's own recordings or ones they have permission to dub: it translates what was said and adds nothing new. Up to 30 minutes; start_time and end_time dub only part. Spends credits; takes several minutes.",
     p: {
       source_url: "A Versely-hosted file (a result, or stored with versely_upload_media); outside links such as YouTube are refused.",
       target_lang: "e.g. 'es', 'hi', 'pt-BR'.",

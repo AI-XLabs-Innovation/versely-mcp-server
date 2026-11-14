@@ -203,7 +203,9 @@ const versely_create_dub = defineTool({
   // engine-specific options are hidden, and no provider is named.
   openai: {
     description:
-      "Dub a Versely-hosted video or audio file into another language, keeping the speaker's voice. " +
+      "Translate the speech in a Versely-hosted video or audio file into another language, voiced to sound like " +
+      "the original speakers. For the user's own recordings or ones they have permission to dub: it translates what " +
+      "was said and adds nothing new. " +
       "Up to 30 minutes; trim with start_time / end_time to dub (and pay for) only part of it. " +
       "Spends the user's Versely credits. Returns a project_id; the inline card updates itself, or check it " +
       "with versely_get_dub. Dubbing often takes several minutes.",

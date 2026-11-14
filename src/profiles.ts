@@ -160,6 +160,7 @@ export const OPENAI_DIRECTORY_INSTRUCTIONS_DETAIL =
   "versely_prepare_remix_clip, then versely_quote_swap. Show the price and have the user confirm it, that they own " +
   "the clip or may use it, and that anyone whose photo goes in has agreed; only then versely_swap_video. Never a " +
   "public figure's face, and nothing sexual. " +
+  "Dubbing: before versely_create_dub, confirm the recording is the user's own or one they may dub. " +
   "Talking ads: versely_list_ugc_actors, versely_write_ugc_script, versely_quote_ugc_ads, then " +
   "versely_create_ugc_ads. Captions on a video with speech: versely_caption_video with a look from " +
   "versely_list_caption_looks. Music video for a song: versely_quote_music_video, then versely_create_music_video. " +

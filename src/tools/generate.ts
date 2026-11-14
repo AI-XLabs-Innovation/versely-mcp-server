@@ -902,8 +902,8 @@ const versely_generate_audio = defineTool({
     description:
       "Generate a voiceover (text to speech) with a voice model from versely_find_models (type 'audio'), or " +
       "'Gemini 3.8 Flash TTS' (most expressive; style_prompt sets the delivery) / 'Gemini 3.8 Flash Lite TTS'. " +
-      "Pick the voice yourself with versely_list_voices (or the voices in versely_get_model_inputs) instead of " +
-      "asking the user; omit it to use the model's default voice. Spends the user's Versely credits; the inline " +
+      "`voice` takes an id from versely_list_voices (or the voices in versely_get_model_inputs); without it the " +
+      "model's default voice reads the text. Spends the user's Versely credits; the inline " +
       "card updates itself when it finishes. Call it once per request. For music use versely_generate_music, for " +
       "sound effects versely_generate_sound_effect.",
     params: {
