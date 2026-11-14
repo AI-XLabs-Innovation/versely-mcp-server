@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { SCAN_PROBE_TOOL_COUNT, scanProbeOn } from "../openaiScanProbe.js";
 import express, {
   type Request,
   type Response,
@@ -12,7 +11,7 @@ import {
   type Config,
 } from "../config.js";
 import { VerselyClient, isValidApiKeyFormat } from "../client.js";
-import { buildServer, getRegisteredToolCount, recentJobChecks, validateServerSetup } from "../server.js";
+import { buildServer, getDirectoryToolCount, getRegisteredToolCount, recentJobChecks, validateServerSetup } from "../server.js";
 import { verifyAccessToken, looksLikeJwt } from "../oauth.js";
 import { resolveProfile, type Profile } from "../profiles.js";
 import { OPENAI_APPS_CHALLENGE_TOKEN } from "../openaiChallenge.js";
@@ -363,7 +362,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       uptime_s: Math.floor((Date.now() - PROCESS_START_MS) / 1000),
       tools: getRegisteredToolCount(config, "full"),
       tools_openai: getRegisteredToolCount(config, "openai"),
-      ...(scanProbeOn() ? { tools_openai_listed: SCAN_PROBE_TOOL_COUNT } : {}),
+      tools_chatgpt: getDirectoryToolCount(config),
     });
   });
 
@@ -424,6 +423,9 @@ export async function startHttpServer(config: Config): Promise<void> {
   app.post(MCP_PATHS, requireBearer, async (req: AuthedRequest, res) => {
     const apiKey = req.apiKey!;
     const profile = req.profile ?? "full";
+    // ChatGPT (its own tokens, and anything on the plugin endpoint) gets the
+    // reviewed directory catalog; ?profile=openai elsewhere is the whole profile.
+    const directory = profile === "openai" && (isOpenaiPath(req.path) || req.oauthClaims?.ck === "openai");
     const ownerKey = ownerKeyOf(req);
     const requestId = (res.locals as ResLocals).requestId;
 
@@ -463,7 +465,7 @@ export async function startHttpServer(config: Config): Promise<void> {
     // harmlessly; auth is per-request either way.
     const serveOneShot = async (): Promise<void> => {
       const client = new VerselyClient(config, apiKey, { profile });
-      const server = buildServer(config, client, { profile, ownerKey, openaiPath: isOpenaiPath(req.path) });
+      const server = buildServer(config, client, { profile, ownerKey, openaiPath: isOpenaiPath(req.path), directory });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
@@ -523,7 +525,7 @@ export async function startHttpServer(config: Config): Promise<void> {
       // --- No session yet + initialize: mint one. ---------------------------
       if (isInitializeBody(req.body)) {
         const client = new VerselyClient(config, apiKey, { profile });
-        const server = buildServer(config, client, { profile, ownerKey, openaiPath: isOpenaiPath(req.path) });
+        const server = buildServer(config, client, { profile, ownerKey, openaiPath: isOpenaiPath(req.path), directory });
         const owner = sessionOwner(req);
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -763,6 +765,7 @@ export async function startHttpServer(config: Config): Promise<void> {
         api: config.apiUrl,
         tools: toolCounts.full,
         tools_openai: toolCounts.openai,
+        tools_chatgpt: getDirectoryToolCount(config),
         version: SERVER_VERSION,
       });
       resolve();

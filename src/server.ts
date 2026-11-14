@@ -1,5 +1,4 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { scanProbeListed, scanProbeOn } from "./openaiScanProbe.js";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -18,6 +17,7 @@ import { securitySchemesFor, tokenChallenge, WWW_AUTHENTICATE_META, type Securit
 import { VerselyApiError } from "./errors.js";
 import type { Tool, ToolContext, ToolResult } from "./tools/_types.js";
 import { assertPolicyCoverage, getToolPolicy, type ToolPolicy } from "./tools/_policy.js";
+import { OPENAI_DIRECTORY_NAMES, buildDirectoryListing } from "./tools/_directory.js";
 import {
   CONFIRM_REPEAT_KEY,
   OPENAI_STRIPPED_INPUTS,
@@ -50,6 +50,11 @@ export interface ServerOptions {
   ownerKey: string;
   /** The connection came in on the plugin endpoint (/mcp/openai): auth challenges name its own metadata. */
   openaiPath?: boolean;
+  /**
+   * Serve the ChatGPT directory catalog (tools/_directory.ts) instead of the
+   * whole openai profile: the plugin endpoint and ChatGPT's own tokens.
+   */
+  directory?: boolean;
 }
 
 // --- Registry ------------------------------------------------------------------
@@ -307,6 +312,27 @@ export function getProfileCatalog(config: Config, profile: Profile): ProfileCata
   return catalog;
 }
 
+interface DirectoryCatalog {
+  names: ReadonlySet<string>;
+  listed: readonly ListedTool[];
+}
+
+const directoryMemo = new WeakMap<Config, DirectoryCatalog>();
+
+/** The ChatGPT directory: a compactly worded subset of the openai profile. */
+export function getDirectoryCatalog(config: Config): DirectoryCatalog {
+  const hit = directoryMemo.get(config);
+  if (hit) return hit;
+  const listed = buildDirectoryListing(getProfileCatalog(config, "openai").listed);
+  const built: DirectoryCatalog = { names: OPENAI_DIRECTORY_NAMES, listed };
+  directoryMemo.set(config, built);
+  return built;
+}
+
+export function getDirectoryToolCount(config: Config): number {
+  return getDirectoryCatalog(config).listed.length;
+}
+
 export function getRegisteredToolCount(config: Config, profile: Profile = "full"): number {
   return getProfileCatalog(config, profile).listed.length;
 }
@@ -317,6 +343,7 @@ export function getRegisteredToolCount(config: Config, profile: Profile = "full"
  * tools/list a user sends.
  */
 export function validateServerSetup(config: Config): Record<Profile, number> {
+  getDirectoryCatalog(config);
   return {
     full: getRegisteredToolCount(config, "full"),
     openai: getRegisteredToolCount(config, "openai"),
@@ -333,6 +360,7 @@ export function validateServerSetup(config: Config): Record<Profile, number> {
 export function buildServer(config: Config, client: VerselyClient, opts: ServerOptions): Server {
   const { profile, ownerKey } = opts;
   const catalog = getProfileCatalog(config, profile);
+  const directory = opts.directory && profile === "openai" ? getDirectoryCatalog(config) : null;
 
   // MCP Apps extension capability. claude.ai's initialize advertises
   // `capabilities.extensions["io.modelcontextprotocol/ui"]`; servers must
@@ -345,7 +373,7 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
   // tool _meta.ui, ui:// resources) so hosts treat all tools as ordinary
   // non-interactive tools. See Config.disableAppsUi for why this exists.
   const appsUi = !config.disableAppsUi;
-  const instructions = serverInstructions(profile);
+  const instructions = serverInstructions(profile, directory !== null);
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION, title: SERVER_TITLE },
     {
@@ -370,10 +398,7 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
   // so the host can fetch the linked `ui://` resource and render it inline.
   // Hosts without MCP Apps support ignore it.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools:
-      profile === "openai" && scanProbeOn()
-        ? scanProbeListed(catalog.listed as ListedTool[])
-        : (catalog.listed as ListedTool[]),
+    tools: (directory ? directory.listed : catalog.listed) as ListedTool[],
   }));
 
   async function callTool(entry: ProfileTool, rawArgs: unknown, requestMeta: unknown): Promise<ToolResult> {
@@ -448,7 +473,8 @@ export function buildServer(config: Config, client: VerselyClient, opts: ServerO
 
   server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
     const { name, arguments: args, _meta } = request.params;
-    const entry = catalog.tools.get(name);
+    // A directory connection reaches only the tools OpenAI reviewed.
+    const entry = directory && !directory.names.has(name) ? undefined : catalog.tools.get(name);
     if (!entry) {
       // Tools outside the caller's profile are indistinguishable from
       // tools that don't exist: a ChatGPT token can't reach a full-profile

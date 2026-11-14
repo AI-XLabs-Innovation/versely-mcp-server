@@ -26,7 +26,7 @@ Health check from another terminal:
 
 ```bash
 curl -s http://127.0.0.1:8080/healthz
-# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":223,"tools_openai":209}
+# {"status":"ok","server":"versely-mcp","version":"0.1.0","uptime_s":...,"tools":223,"tools_openai":209,"tools_chatgpt":80}
 ```
 
 For a real client to talk to it locally, expose it via your MCP client's URL config (see below) — or for production, deploy behind nginx + TLS following [`deploy/SETUP.md`](deploy/SETUP.md).
@@ -77,7 +77,8 @@ Each request is served one of two tool **profiles**:
 | Profile | Who | Tools |
 |---|---|---|
 | `full` | claude.ai, Claude Code, Cursor, API-key users | all 223 |
-| `openai` | the ChatGPT plugin | 209: every tool except buying and billing (plans, checkout and billing-portal links, subscription changes, skip trial), API-key scopes, the legacy model list, the prompt helper and the blocking wait. Purchases stay on versely.studio, as ChatGPT's commerce rules require. |
+| `openai` | plugin testing (`?profile=openai`) | 209: every tool except buying and billing (plans, checkout and billing-portal links, subscription changes, skip trial), API-key scopes, the legacy model list, the prompt helper and the blocking wait. Purchases stay on versely.studio, as ChatGPT's commerce rules require. |
+| ChatGPT directory | ChatGPT itself: `/mcp/openai` and ChatGPT's own tokens | 80 of the `openai` tools, compactly worded (`src/tools/_directory.ts`). OpenAI's tool scan fails above about 16k tokens of tool definitions, so this list is held to a size budget; only these can be listed or called from ChatGPT. |
 
 - A token the backend signed with `ck: "openai"` (issued to ChatGPT) **always** gets `openai` — the claim is inside the signature, so it can't be widened. Any other caller can restrict itself with `?profile=openai` or `X-Versely-Profile: openai` (handy for testing the plugin surface with an API key).
 - Calls to a tool outside the caller's profile fail as `Unknown tool`. A session is bound to the profile it was opened with (a mismatched request gets 403).

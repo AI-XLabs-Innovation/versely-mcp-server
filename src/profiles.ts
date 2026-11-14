@@ -133,7 +133,50 @@ export const OPENAI_INSTRUCTIONS_DETAIL =
   "credits, and call versely_film_drama_episode with confirm_credits only after the user says yes. Characters are " +
   "fictional adults; no real people or brands.";
 
-export function serverInstructions(profile: Profile): string | undefined {
+// What ChatGPT itself is served (the directory catalog, tools/_directory.ts).
+// The directory's tool descriptions are kept short, so the rules every paid or
+// background tool shares are stated once here. Names only directory tools
+// (the smoke test checks).
+export const OPENAI_DIRECTORY_INSTRUCTIONS_DETAIL =
+  "Details. Pass a model's `name` from versely_find_models as `model`, and any extra inputs from " +
+  "versely_get_model_inputs as top-level arguments of the same call. Media inputs are public https links; links " +
+  "from earlier Versely results work. A photo, video or audio file the user attaches is stored first with " +
+  "versely_upload_media (free), and the URL it returns is used from then on. " +
+  "Paid tools: a tool that takes confirm_credits is called only after the user saw that exact price and said yes. " +
+  "If the price has changed the call is refused with the new price and nothing is charged: show it and ask again. " +
+  "Jobs that fail are refunded. If a creation call times out the job may still have started: check " +
+  "versely_list_user_media before calling again. When a result says it matches an earlier request, that job was " +
+  "reused and not charged again; pass confirm_repeat: true only when the user clearly wants another copy. " +
+  "While a job runs its card updates by itself: do not poll in a loop. " +
+  "Free trial: an account that has never paid (on_free_trial in versely_find_models, free_account in " +
+  "versely_get_credits) spends free plugin credits and can generate images, videos and voiceovers only with models " +
+  "marked free_trial; if the user asks for another model, say it is not included and suggest the best free_trial " +
+  "one. Other features answer that they are unavailable, and nothing is charged. Do not offer or link to credit " +
+  "purchases. " +
+  "Pickers: when the user has to choose a trend, a slideshow style, an avatar, a voice or one of their brands, open " +
+  "versely_browse instead of listing options in text. " +
+  "Remix (\"put me in this video\", a face, outfit or product swap, \"make my avatar do this dance\"): show clips " +
+  "with versely_browse (collection 'remix_trends'), or take the user's post link or their own stored video; " +
+  "versely_prepare_remix_clip, then versely_quote_swap. Show the price and have the user confirm it, that they own " +
+  "the clip or may use it, and that anyone whose photo goes in has agreed; only then versely_swap_video. Never a " +
+  "public figure's face, and nothing sexual. " +
+  "Talking ads: versely_list_ugc_actors, versely_write_ugc_script, versely_quote_ugc_ads, then " +
+  "versely_create_ugc_ads. Captions on a video with speech: versely_caption_video with a look from " +
+  "versely_list_caption_looks. Music video for a song: versely_quote_music_video, then versely_create_music_video. " +
+  "A new look for a photo: versely_list_photo_looks, then versely_apply_photo_look. A script to film: " +
+  "versely_write_script. Ideas: versely_browse (collection 'inspiration'), then versely_recreate_inspiration. " +
+  "Brands: versely_analyze_brand, then versely_create_brand_slideshow. " +
+  "Short dramas (a series, micro drama, sitcom or \"a show\"): versely_plan_drama_show after at most 2 short " +
+  "question rounds, including the quality: Standard (1080p, about 300 credits for 30 s) or High quality (about 320 " +
+  "at 480p, 640 at 720p); film with versely_film_drama_episode only after the user saw the lines and the price. " +
+  "AI creator (a virtual creator that posts a video every day): versely_list_ai_creator_options, " +
+  "versely_make_ai_creator_rooms, versely_create_ai_creator, versely_test_ai_creator_episode, then " +
+  "versely_approve_ai_creator; before approval state the daily time, the account and the credits per day. " +
+  "Posting: connect an account with the link from versely_get_social_auth_url, then " +
+  "versely_refresh_social_accounts and versely_list_social_accounts; confirm the caption, media and accounts with " +
+  "the user before versely_publish_post.";
+
+export function serverInstructions(profile: Profile, directory = false): string | undefined {
   if (profile !== "openai") return undefined;
-  return `${OPENAI_INSTRUCTIONS_LEAD}\n\n${OPENAI_INSTRUCTIONS_DETAIL}`;
+  return `${OPENAI_INSTRUCTIONS_LEAD}\n\n${directory ? OPENAI_DIRECTORY_INSTRUCTIONS_DETAIL : OPENAI_INSTRUCTIONS_DETAIL}`;
 }

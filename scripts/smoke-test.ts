@@ -102,6 +102,97 @@ const OPENAI_TOOLS = [
   "versely_list_remix_trends", "versely_prepare_remix_clip", "versely_quote_swap", "versely_swap_video", "versely_get_swap",
 ];
 
+// What ChatGPT itself is served: the directory catalog (src/tools/_directory.ts),
+// a compactly worded subset of the openai profile. OpenAI's tool scan fails
+// once the definitions pass a size ceiling, so this list is pinned here and
+// held to a budget below. Adding a tool is a deliberate, reviewed change.
+const CHATGPT_TOOLS = [
+  "versely_get_credits",
+  "versely_list_user_media",
+  "versely_upload_media",
+  "versely_find_models",
+  "versely_get_model_inputs",
+  "versely_generate_image",
+  "versely_generate_video",
+  "versely_generate_audio",
+  "versely_list_voices",
+  "versely_generate_music",
+  "versely_generate_sound_effect",
+  "versely_generate_lipsync",
+  "versely_list_avatars",
+  "versely_get_task_status",
+  "versely_list_remix_trends",
+  "versely_prepare_remix_clip",
+  "versely_quote_swap",
+  "versely_swap_video",
+  "versely_get_swap",
+  "versely_list_ready_made_avatars",
+  "versely_add_ready_made_avatar",
+  "versely_list_hook_characters",
+  "versely_create_hooks",
+  "versely_get_hooks",
+  "versely_list_ugc_actors",
+  "versely_list_ugc_voices",
+  "versely_write_ugc_script",
+  "versely_quote_ugc_ads",
+  "versely_create_ugc_ads",
+  "versely_get_ugc_ads",
+  "versely_list_caption_looks",
+  "versely_caption_video",
+  "versely_get_caption_job",
+  "versely_create_automated_slideshow",
+  "versely_get_slideshow",
+  "versely_slideshow_to_video",
+  "versely_find_inspiration",
+  "versely_recreate_inspiration",
+  "versely_list_trending_sounds",
+  "versely_browse",
+  "versely_analyze_brand",
+  "versely_list_brands",
+  "versely_update_brand",
+  "versely_create_brand_slideshow",
+  "versely_list_social_accounts",
+  "versely_get_social_auth_url",
+  "versely_refresh_social_accounts",
+  "versely_preview_post",
+  "versely_publish_post",
+  "versely_list_posts",
+  "versely_get_social_analytics_overview",
+  "versely_get_post_analytics",
+  "versely_create_dub",
+  "versely_get_dub",
+  "versely_quote_music_video",
+  "versely_create_music_video",
+  "versely_get_music_video",
+  "versely_list_photo_looks",
+  "versely_apply_photo_look",
+  "versely_get_photo_look",
+  "versely_write_script",
+  "versely_get_script",
+  "versely_plan_drama_show",
+  "versely_write_drama_episode",
+  "versely_film_drama_episode",
+  "versely_get_drama_show",
+  "versely_list_drama_shows",
+  "versely_create_movie",
+  "versely_generate_movie_scenes",
+  "versely_get_movie_status",
+  "versely_list_ai_creator_options",
+  "versely_make_ai_creator_rooms",
+  "versely_get_ai_creator_rooms",
+  "versely_create_ai_creator",
+  "versely_test_ai_creator_episode",
+  "versely_list_ai_creator_episodes",
+  "versely_approve_ai_creator",
+  "versely_list_automations",
+  "versely_stop_automation",
+  "versely_start_automation",
+];
+// name + description + inputSchema of every directory tool, as JSON. 13.8k
+// tokens passed OpenAI's scan and 56k did not; their stated ceiling is 16k.
+// 58,000 characters is about 14.5k tokens.
+const CHATGPT_CATALOG_MAX_CHARS = 58_000;
+
 const failures: string[] = [];
 function assert(name: string, cond: boolean, detail?: string): void {
   if (cond) {
@@ -215,6 +306,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   assert("health reports server name", health.server === "versely-mcp");
   assert("health reports tools count", typeof health.tools === "number" && (health.tools as number) >= 50);
   assert("health reports the openai tool count", health.tools_openai === OPENAI_TOOLS.length, `got ${String(health.tools_openai)}`);
+  assert("health reports the ChatGPT directory tool count", health.tools_chatgpt === CHATGPT_TOOLS.length, `got ${String(health.tools_chatgpt)}`);
 
   const rootRes = await fetch(`${BASE_URL}/`);
   const root = (await rootRes.json()) as Record<string, unknown>;
@@ -1472,17 +1564,60 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
     noAuth.headers.get("www-authenticate") ?? "",
   );
   const plugin = await connect(PLUGIN_URL, TOKEN);
-  const pluginNames = ((await plugin.listTools()).tools as AnyTool[]).map((t) => t.name).sort();
+  const pluginTools = (await plugin.listTools()).tools as AnyTool[];
+  const pluginNames = pluginTools.map((t) => t.name).sort();
   assert(
-    `/mcp/openai serves exactly the ${OPENAI_TOOLS.length} plugin tools to any caller`,
-    JSON.stringify(pluginNames) === JSON.stringify([...OPENAI_TOOLS].sort()),
-    `got ${pluginNames.length}`,
+    `/mcp/openai serves exactly the ${CHATGPT_TOOLS.length} directory tools to any caller`,
+    JSON.stringify(pluginNames) === JSON.stringify([...CHATGPT_TOOLS].sort()),
+    `extra: ${pluginNames.filter((n) => !CHATGPT_TOOLS.includes(n)).join(", ")} missing: ${CHATGPT_TOOLS.filter((n) => !pluginNames.includes(n)).join(", ")}`,
   );
-  assert("/mcp/openai carries the plugin's server instructions", (plugin.getInstructions() ?? "").length > 0);
+  assert("every directory tool is in the openai profile", CHATGPT_TOOLS.every((n) => OPENAI_TOOLS.includes(n)));
+  const pluginInstructions = plugin.getInstructions() ?? "";
+  assert("/mcp/openai carries the plugin's server instructions", pluginInstructions.length > 0);
+  const directoryLead = pluginInstructions.split("\n\n")[0] ?? "";
+  assert("the directory's instructions lead is <= 512 chars", directoryLead.length > 0 && directoryLead.length <= 512, `${directoryLead.length} chars`);
+  const catalogChars = pluginTools.reduce((n, t) => n + JSON.stringify({ name: t.name, description: t.description, inputSchema: t.inputSchema }).length, 0);
+  assert(
+    `the directory catalog fits OpenAI's scan (<= ${CHATGPT_CATALOG_MAX_CHARS} chars)`,
+    catalogChars <= CHATGPT_CATALOG_MAX_CHARS,
+    `${catalogChars} chars`,
+  );
+  const strayNames = new Set<string>();
+  for (const text of [pluginInstructions, ...pluginTools.map((t) => JSON.stringify(t))]) {
+    for (const m of text.matchAll(/versely_[a-z_]+/g)) if (!CHATGPT_TOOLS.includes(m[0])) strayNames.add(m[0]);
+  }
+  assert("the directory names no tool outside itself", strayNames.size === 0, [...strayNames].join(", "));
+  assert("every directory tool has a title and the 3 hints", pluginTools.every(hintsOk));
+  assert(
+    "directory schemas carry no $schema and keep required inputs",
+    pluginTools.every((t) => !("$schema" in t.inputSchema)) &&
+      ["clip_id", "swaps", "confirm_credits", "rights_confirmed"].every((k) => (byName(pluginTools, "versely_swap_video")?.inputSchema.required ?? []).includes(k)),
+  );
+  const pluginFile = byName(pluginTools, "versely_upload_media");
+  const pluginFileProps = (pluginFile?.inputSchema.properties ?? {}) as Record<string, { properties?: Record<string, unknown>; required?: string[]; additionalProperties?: unknown }>;
+  assert(
+    "the directory's upload tool keeps ChatGPT's file input shape",
+    JSON.stringify(pluginFile?._meta?.["openai/fileParams"]) === JSON.stringify(["file"]) &&
+      ["download_url", "file_id", "mime_type", "file_name"].every((k) => k in (pluginFileProps.file?.properties ?? {})) &&
+      JSON.stringify(pluginFileProps.file?.required) === JSON.stringify(["download_url", "file_id"]) &&
+      pluginFileProps.file?.additionalProperties === false,
+    JSON.stringify(pluginFileProps.file),
+  );
+  assert(
+    "link-taking directory tools are open-world; pure reads are not",
+    ["versely_generate_image", "versely_generate_video", "versely_generate_lipsync", "versely_prepare_remix_clip", "versely_swap_video", "versely_generate_music", "versely_slideshow_to_video"].every((n) => byName(pluginTools, n)?.annotations?.openWorldHint === true) &&
+      byName(pluginTools, "versely_get_credits")?.annotations?.openWorldHint === false,
+  );
+  const outsideDirectory = await call(plugin, "versely_create_workflow", { name: "x" });
+  assert(
+    "a tool outside the directory cannot be called on /mcp/openai",
+    outsideDirectory.isError === true && textOf(outsideDirectory).includes("Unknown tool"),
+    textOf(outsideDirectory),
+  );
   const pluginSlash = await connect(`${PLUGIN_URL}/`, TOKEN);
   assert(
     "a trailing slash on /mcp/openai/ does not widen the catalog",
-    ((await pluginSlash.listTools()).tools as AnyTool[]).length === OPENAI_TOOLS.length,
+    ((await pluginSlash.listTools()).tools as AnyTool[]).length === CHATGPT_TOOLS.length,
   );
   await pluginSlash.close();
   const pluginCredits = await call(plugin, "versely_get_credits", {});
@@ -1521,7 +1656,7 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const jwt = mintJwt(backend.url, { ck: "openai" });
   const chatgpt = await connect(`${MCP_URL}?profile=full`, jwt);
   const cTools = (await chatgpt.listTools()).tools as AnyTool[];
-  assert("a ck:\"openai\" JWT gets the openai profile even with ?profile=full", cTools.length === OPENAI_TOOLS.length && !cTools.some((t) => t.name === "versely_list_api_key_scopes"), `${cTools.length} tools`);
+  assert("a ck:\"openai\" JWT gets the directory catalog even with ?profile=full", cTools.length === CHATGPT_TOOLS.length && cTools.every((t) => CHATGPT_TOOLS.includes(t.name)), `${cTools.length} tools`);
   const credits = JSON.parse(textOf(await call(chatgpt, "versely_get_credits", {}))) as Record<string, unknown>;
   assert("get_credits (openai) reports the plugin block", credits.free_account === true && credits.plugin_free_credits === 87 && credits.credits === 0, JSON.stringify(credits));
   assert("get_credits (openai) never shows trial / trial_offer", !("trial" in credits) && !("trial_offer" in credits));
@@ -1547,8 +1682,8 @@ async function run(backend: FakeBackend, proc: ChildProcess, stderr: () => strin
   const codexJwt = await connect(`${BASE_URL}/mcp/openai`, mintJwt(backend.url, {}));
   const codexNames = ((await codexJwt.listTools()).tools as AnyTool[]).map((t) => t.name);
   assert(
-    "an OAuth JWT without ck gets the openai profile on /mcp/openai",
-    codexNames.length === OPENAI_TOOLS.length && codexNames.every((n) => OPENAI_TOOLS.includes(n)),
+    "an OAuth JWT without ck gets the directory catalog on /mcp/openai",
+    codexNames.length === CHATGPT_TOOLS.length && codexNames.every((n) => CHATGPT_TOOLS.includes(n)),
     `got ${codexNames.length}`,
   );
 
@@ -1603,8 +1738,6 @@ async function main(): Promise<void> {
       // The upload tool fetches from the fake backend on 127.0.0.1; its
       // address guard is checked in-process instead (see "Uploads").
       MCP_UPLOAD_FETCH_GUARD: "off-for-smoke-test",
-      // The temporary scan probe trims the plugin list in production; test the whole catalog.
-      MCP_OPENAI_SCAN_PROBE: "off",
       // One room set in the fake backend never answers: the tool gives up waiting quickly here.
       VERSELY_ROOMS_WAIT_MS: "1500",
     },

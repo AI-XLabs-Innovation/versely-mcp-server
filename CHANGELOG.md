@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed — ChatGPT gets an 80-tool directory catalog (2026-11-14)
+
+OpenAI's plugin portal could not scan the 209-tool `openai` profile: it read the list three times (200 each time) and reported "The latest scan did not complete". The cause is size. The definitions were 56k tokens (name + description + input schema); a 39-tool, 13.8k-token list scanned at once. OpenAI support's stated ceiling is 16k tokens for all tools combined.
+
+- **Directory catalog** (`src/tools/_directory.ts`): the 80 tools ChatGPT is served, each with compact wording, hidden rarely-used inputs and narrowed enums. 12.9k tokens. Connections on `/mcp/openai` and ChatGPT's own tokens (`ck: "openai"`) can list and call only these. `?profile=openai` with any other token still serves the whole 209-tool profile. The catalog's own server instructions carry the rules every paid or background tool shares, so they are not repeated per tool.
+- Covered: generation (image, video, voiceover, music, sound effects, lip sync), Remix, hooks, talking ads, avatars, captions, slideshows, inspiration, brands, posting and analytics, dubbing, music videos, photo looks, scripts, short dramas, movies and AI creators. Left out of ChatGPT: workflows, hook packs and the hook library, slideshow automations, manual slideshow and overlay editing, post analysis, templates, and most list / update / delete housekeeping.
+- **Open-world flag**: a tool whose advertised inputs take a link (`image_url`, `video_url`, `link`, `media_urls` ...) is now `openWorldHint: true` in every profile; the scan flagged seven such tools marked false.
+- `/healthz` reports `tools_chatgpt`. The smoke test pins the catalog's names, holds it to 58,000 characters, and checks that it names no tool outside itself.
+- `GET /.well-known/openai-apps-challenge` serves the domain verification token.
+
+
 ### Added — Every feature shipped since October, 46 new tools (2026-11-14)
 
 The server had not gained a feature since early October, so Swap, Remix, the captions studio, talking ads and the rest could not be reached from an assistant, and the ChatGPT listing could not mention them. Full profile 177 → 223 tools, `openai` 163 → 209.
